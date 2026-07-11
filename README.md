@@ -3,7 +3,13 @@
 **Beautiful physical-modeled instruments for the browser.**
 `npm install` → piano, guitar, marimba in tens of kilobytes. No samples. Works offline. One `noteOn()` call. Full multi-track arrangements, one engine.
 
-> **Status: pre-alpha (Phase 0).** Nothing is published to npm yet. The harness, architecture, and roadmap are in place; the first sound (modal mallets) is Q1's exit gate.
+> **Status: pre-alpha, but playable.** Nothing on npm yet — but the engine is real: 9 instruments
+> (marimba, vibraphone, glockenspiel, music box, guitar, bass, e-piano, synth pad, drum kit)
+> in an 18 KB gzipped WASM core, playing multi-track arrangements inside one AudioWorklet.
+>
+> ```sh
+> scripts/dev/serve.sh        # → http://localhost:8173/apps/playground/
+> ```
 
 ```ts
 // The API this library exists to make true (v0 contract, see packages/core):

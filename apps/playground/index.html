@@ -5,17 +5,237 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>instruments.js playground</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; }
-    button { font-size: 1.5rem; padding: 1rem 2rem; cursor: pointer; }
+    :root { color-scheme: light dark; --accent: #e07840; --key-w: 44px; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 46rem; margin: 2rem auto; padding: 0 1rem;
+      background: light-dark(#faf7f2, #191512); color: light-dark(#2b2118, #ece4da);
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 0.2rem; }
+    h1 .badge {
+      font-size: 0.65rem; vertical-align: middle; background: var(--accent); color: #fff;
+      border-radius: 999px; padding: 0.15rem 0.6rem; margin-left: 0.5rem; letter-spacing: 0.03em;
+    }
+    .sub { opacity: 0.7; margin-top: 0; }
+    .row { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; margin: 1rem 0; }
+    button, select {
+      font: inherit; padding: 0.55rem 1rem; border-radius: 0.6rem; cursor: pointer;
+      border: 1px solid light-dark(#d8cbbd, #4a3f35); background: light-dark(#fff, #241f1a); color: inherit;
+    }
+    button.primary { background: var(--accent); color: #fff; border-color: transparent; font-weight: 600; }
+    button:disabled { opacity: 0.45; cursor: default; }
+    label { font-size: 0.85rem; opacity: 0.8; }
+    input[type="range"] { accent-color: var(--accent); }
+    #keys { display: flex; position: relative; margin: 1rem 0 0.4rem; user-select: none; touch-action: none; }
+    .wk {
+      width: var(--key-w); height: 150px; border: 1px solid light-dark(#c9bcae, #443a30);
+      border-radius: 0 0 6px 6px; background: light-dark(#fffdf9, #efe9e1); margin-right: -1px; position: relative;
+    }
+    .bk {
+      position: absolute; top: 0; width: calc(var(--key-w) * 0.62); height: 92px; z-index: 2;
+      background: light-dark(#2b2118, #0d0a08); border-radius: 0 0 5px 5px; border: 1px solid #000;
+    }
+    .wk.down { background: var(--accent); }
+    .bk.down { background: #b45525; }
+    .hint { position: absolute; bottom: 6px; width: 100%; text-align: center; font-size: 0.62rem; opacity: 0.45; }
+    #pads { display: none; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; margin: 1rem 0; }
+    #pads button { padding: 1.4rem 0.5rem; font-size: 0.9rem; }
+    #status { font-size: 0.8rem; opacity: 0.6; min-height: 1.2em; font-variant-numeric: tabular-nums; }
+    .foot { margin-top: 1.6rem; font-size: 0.8rem; opacity: 0.6; line-height: 1.5; }
+    #overlay {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: light-dark(#faf7f2ee, #191512ee); z-index: 10; flex-direction: column; gap: 1rem;
+    }
+    #overlay button { font-size: 1.3rem; padding: 1.1rem 2.6rem; }
   </style>
 </head>
 <body>
-  <h1>instruments.js playground</h1>
-  <p>The daily does-it-sound-good surface. Comes alive with issue #5 (worklet+WASM pipeline: this button plays a sine) and issue #8 (marimba).</p>
-  <button id="play" disabled>▶ nothing to play yet</button>
+  <div id="overlay">
+    <button class="primary" id="start">▶ Start audio</button>
+    <div class="sub">one tap unlocks the AudioContext (hello, iOS)</div>
+  </div>
+
+  <h1>instruments.js <span class="badge" id="size-badge">…</span></h1>
+  <p class="sub">Physical-modeled instruments in your browser. No samples were harmed — none exist.</p>
+
+  <div class="row">
+    <button class="primary" id="play-song">▶ Play demo arrangement</button>
+    <button id="stop">■ Stop</button>
+    <button id="download">⬇ Render WAV offline</button>
+  </div>
+
+  <div class="row">
+    <label>Instrument
+      <select id="inst">
+        <option value="marimba" selected>Marimba</option>
+        <option value="vibraphone">Vibraphone</option>
+        <option value="glockenspiel">Glockenspiel</option>
+        <option value="musicbox">Music box</option>
+        <option value="guitar">Guitar (plucked)</option>
+        <option value="bass">Bass</option>
+        <option value="epiano">Electric piano</option>
+        <option value="synthpad">Synth pad</option>
+        <option value="drums">Drum kit</option>
+      </select>
+    </label>
+    <label>Velocity <input type="range" id="vel" min="10" max="127" value="96" /></label>
+  </div>
+
+  <div id="keys"></div>
+  <div id="pads"></div>
+  <div id="status">loading engine…</div>
+
+  <p class="foot">
+    Every sound on this page is synthesized in real time by a ~18 KB (gzipped) WASM engine —
+    modal bars, Karplus-Strong strings, a tine e-piano, an anti-aliased subtractive pad,
+    and a drum kit, mixed across independent tracks inside one AudioWorklet. Keyboard: <b>Z–M</b> lower octave, <b>Q–U</b> upper,
+    number row = drums when the kit is selected.
+  </p>
+
   <script type="module">
-    // Wire to packages/core once createEngine() is real (issue #5).
-    // Must be driven by a user gesture (iOS Safari audio unlock).
+    import { createEngine } from "../../packages/core/dist/index.js";
+    import { demoSong } from "./demo-song.mjs";
+
+    const $ = (id) => document.getElementById(id);
+    const status = (t) => ($("status").textContent = t);
+
+    // size badge: honest number = wasm (transfer-encoded) + core js
+    fetch("../../packages/core/wasm/instruments_dsp.wasm").then(async (r) => {
+      const kb = ((await r.arrayBuffer()).byteLength / 1024).toFixed(0);
+      $("size-badge").textContent = `${kb} KB wasm, 0 samples`;
+    });
+
+    let engine = null;
+    let tracks = new Map(); // instrument name -> Track
+
+    function track(name) {
+      if (!tracks.has(name)) tracks.set(name, engine.createTrack(name, { gain: 0.85 }));
+      return tracks.get(name);
+    }
+
+    $("start").addEventListener("click", async () => {
+      $("overlay").remove();
+      status("compiling WASM…");
+      try {
+        engine = await createEngine();
+        await engine.ready;
+        engine.onStats((s) => status(`engine live — voices: ${s.activeVoices}`));
+        status("engine live — play something");
+      } catch (err) {
+        status(`engine failed: ${err.message}`); // loud on failure
+        throw err;
+      }
+    });
+
+    // ---------- keyboard ----------
+    const KEYS = "zsxdcvgbhnjm,q2w3er5t6y7u"; // C3..C5-ish chromatic run across two rows
+    const BASE = 48; // C3
+    const keysEl = $("keys");
+    const isBlack = (m) => [1, 3, 6, 8, 10].includes(m % 12);
+    const keyEls = new Map();
+    let whiteX = 0;
+    for (let i = 0; i < 25; i++) {
+      const midi = BASE + i;
+      if (!isBlack(midi)) {
+        const el = document.createElement("div");
+        el.className = "wk";
+        el.dataset.midi = midi;
+        const hint = document.createElement("div");
+        hint.className = "hint";
+        hint.textContent = (KEYS[i] ?? "").toUpperCase();
+        el.appendChild(hint);
+        keysEl.appendChild(el);
+        keyEls.set(midi, el);
+        whiteX++;
+      } else {
+        const el = document.createElement("div");
+        el.className = "bk";
+        el.dataset.midi = midi;
+        el.style.left = `calc(${whiteX} * (var(--key-w) - 1px) - var(--key-w) * 0.31)`;
+        keysEl.appendChild(el);
+        keyEls.set(midi, el);
+      }
+    }
+
+    const down = new Set();
+    function noteOn(midi) {
+      if (!engine || down.has(midi)) return;
+      down.add(midi);
+      keyEls.get(midi)?.classList.add("down");
+      const inst = $("inst").value;
+      track(inst).noteOn(midi, Number($("vel").value));
+    }
+    function noteOff(midi) {
+      if (!down.delete(midi)) return;
+      keyEls.get(midi)?.classList.remove("down");
+      track($("inst").value).noteOff(midi);
+    }
+
+    keysEl.addEventListener("pointerdown", (e) => {
+      const m = e.target.dataset?.midi;
+      if (m) { e.target.setPointerCapture(e.pointerId); noteOn(+m); }
+    });
+    keysEl.addEventListener("pointerup", (e) => { const m = e.target.dataset?.midi; if (m) noteOff(+m); });
+    keysEl.addEventListener("pointercancel", (e) => { const m = e.target.dataset?.midi; if (m) noteOff(+m); });
+
+    window.addEventListener("keydown", (e) => {
+      if (e.repeat || e.metaKey || e.ctrlKey) return;
+      if ($("inst").value === "drums") {
+        const pad = PAD_KEYS[e.key];
+        if (pad) hitPad(pad);
+        return;
+      }
+      const i = KEYS.indexOf(e.key.toLowerCase());
+      if (i >= 0) noteOn(BASE + i);
+    });
+    window.addEventListener("keyup", (e) => {
+      const i = KEYS.indexOf(e.key.toLowerCase());
+      if (i >= 0) noteOff(BASE + i);
+    });
+
+    // ---------- drum pads ----------
+    const PADS = [
+      ["Kick", 36], ["Snare", 38], ["Hat", 42], ["Open hat", 46],
+      ["Crash", 49], ["Ride", 51], ["Tom lo", 45], ["Tom hi", 50],
+    ];
+    const PAD_KEYS = { 1: 36, 2: 38, 3: 42, 4: 46, 5: 49, 6: 51, 7: 45, 8: 50 };
+    const padsEl = $("pads");
+    for (const [name, note] of PADS) {
+      const b = document.createElement("button");
+      b.textContent = name;
+      b.addEventListener("pointerdown", () => hitPad(note));
+      padsEl.appendChild(b);
+    }
+    function hitPad(note) {
+      if (!engine) return;
+      track("drums").noteOn(note, Number($("vel").value));
+    }
+    $("inst").addEventListener("change", () => {
+      const drums = $("inst").value === "drums";
+      padsEl.style.display = drums ? "grid" : "none";
+      keysEl.style.display = drums ? "none" : "flex";
+    });
+
+    // ---------- demo song / offline render ----------
+    $("play-song").addEventListener("click", async () => {
+      if (!engine) return;
+      $("play-song").disabled = true;
+      status("playing the arrangement — 5 tracks, one engine…");
+      try { await engine.play(demoSong()); status("done — engine live"); }
+      finally { $("play-song").disabled = false; }
+    });
+    $("stop").addEventListener("click", () => engine?.stop());
+    $("download").addEventListener("click", async () => {
+      if (!engine) return;
+      status("rendering offline…");
+      const wav = await engine.renderOffline(demoSong());
+      const url = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
+      const a = Object.assign(document.createElement("a"), { href: url, download: "instruments-js-demo.wav" });
+      a.click();
+      URL.revokeObjectURL(url);
+      status("WAV downloaded — engine live");
+    });
   </script>
 </body>
 </html>
