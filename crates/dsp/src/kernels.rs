@@ -94,6 +94,10 @@ pub struct ModalVoice {
     click_env: f32,
     /// pickup nonlinearity drive (0 = linear) — e-piano
     drive: f32,
+    /// rotary tremolo (vibraphone motor); rate in radians/sample, depth 0..1
+    trem_rate: f32,
+    trem_depth: f32,
+    trem_phase: f32,
     rng: Lcg,
     life: u64,
     age: u64,
@@ -131,6 +135,9 @@ impl ModalVoice {
             click_decay: t60_gain(0.006, sr),
             click_env: 1.0,
             drive,
+            trem_rate: 0.0,
+            trem_depth: 0.0,
+            trem_phase: 0.0,
             rng: Lcg(seed | 1),
             life: 0,
             age: 0,
@@ -192,6 +199,10 @@ impl ModalVoice {
                 let d = 1.0 + self.drive;
                 s = (d * s).tanh() / d.tanh().max(1e-6) * 0.8;
             }
+            if self.trem_depth > 0.0 {
+                self.trem_phase += self.trem_rate;
+                s *= 1.0 - self.trem_depth * (0.5 + 0.5 * self.trem_phase.sin());
+            }
             *o += s;
         }
         for m in 0..self.n_modes {
@@ -241,18 +252,24 @@ pub struct PluckVoice {
 
 impl PluckVoice {
     pub fn start(f0: f32, vel: f32, sr: f32, t60: f32, bright: f32, pick_pos: f32, seed: u32) -> Self {
-        // total loop delay = len + allpass frac + ~0.5 (loop LP phase delay near f0)
+        // Loop-filter tuning compensation (Jaffe-Smith): the one-pole loop lowpass
+        // delays the loop by ~(1-c)/c samples, and c depends on brightness/velocity —
+        // a fixed compensation detunes the string with velocity. Subtract the actual
+        // filter delay, and bias the allpass fraction into [0.5, 1.5) so its pole
+        // stays well inside the unit circle (ill-conditioned as frac→0).
+        let lp_c = (bright * (0.35 + 0.6 * vel)).clamp(0.05, 0.995);
+        let lp_delay = (1.0 - lp_c) / lp_c;
         let period = sr / f0;
-        let ideal = period - 0.5;
-        let len = (ideal.floor() as usize).clamp(2, PLUCK_BUF - 1);
-        let frac = ideal - len as f32;
+        let total = (period - lp_delay).max(3.0);
+        let len = ((total - 0.5).floor() as usize).clamp(2, PLUCK_BUF - 1);
+        let frac = (total - len as f32).clamp(0.1, 1.5);
         let ap_c = (1.0 - frac) / (1.0 + frac);
         let mut v = Self {
             buf: [0.0; PLUCK_BUF],
             len,
             pos: 0,
             lp: 0.0,
-            lp_c: (bright * (0.35 + 0.6 * vel)).clamp(0.05, 0.995),
+            lp_c,
             loss: t60_gain(t60, sr),
             ap_c,
             ap_x1: 0.0,
@@ -661,7 +678,7 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
         }
         Instrument::Vibraphone => {
             let t = 6.0 - 3.0 * ((midi as f32 - 53.0) / 36.0).clamp(0.0, 1.0);
-            Kernel::Modal(ModalVoice::start(
+            let mut m = ModalVoice::start(
                 f0,
                 vel,
                 sr,
@@ -674,7 +691,11 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 0.05,
                 0.0,
                 seed,
-            ))
+            );
+            // rotary-motor tremolo — the vibraphone's signature (≈4.5 Hz, medium fan)
+            m.trem_rate = core::f32::consts::TAU * 4.5 / sr;
+            m.trem_depth = 0.35;
+            Kernel::Modal(m)
         }
         Instrument::Glockenspiel => Kernel::Modal(ModalVoice::start(
             f0,
@@ -718,9 +739,12 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
             Kernel::Pluck(PluckVoice::start(f0, vel, sr, t60, 0.38, 0.18, seed))
         }
         Instrument::EPiano => {
-            // tine + tone-bar partial through a velocity-driven pickup nonlinearity
+            // tine + tone-bar partial through a velocity-driven pickup nonlinearity.
+            // Drive is key-tracked DOWN in the top octaves: tanh harmonics of a high
+            // fundamental would fold past Nyquist (no oversampling yet — issue #8).
             let key = ((midi as f32) - 40.0) / 48.0;
             let t = (7.0 - 4.5 * key).clamp(1.2, 7.0);
+            let drive_scale = (1.2 - key).clamp(0.25, 1.0);
             Kernel::Modal(ModalVoice::start(
                 f0,
                 vel,
@@ -732,7 +756,7 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 ],
                 2.2,
                 0.03,
-                0.6 + 2.4 * vel,
+                (0.5 + 1.6 * vel) * drive_scale,
                 seed,
             ))
         }

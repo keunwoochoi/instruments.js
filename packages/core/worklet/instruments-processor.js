@@ -16,8 +16,9 @@ class InstrumentsProcessor extends AudioWorkletProcessor {
     this.engine = 0;
     this.viewL = null;
     this.viewR = null;
-    /** time-sorted pending events */
+    /** time-sorted pending events + monotonic read cursor (never shift() — O(N²)) */
     this.queue = [];
+    this.qHead = 0;
     this.framesBehind = 0;
     this.port.onmessage = (ev) => this.onMessage(ev.data);
     // Offline rendering path: an OfflineAudioContext may not service port messages
@@ -56,17 +57,28 @@ class InstrumentsProcessor extends AudioWorkletProcessor {
       case "event": {
         const q = this.queue;
         let i = q.length;
-        while (i > 0 && q[i - 1].when > msg.when) i--;
-        q.splice(i, 0, msg);
+        while (i > this.qHead && q[i - 1].when > msg.when) i--;
+        q.splice(Math.max(i, this.qHead), 0, msg);
         break;
       }
       case "events": {
-        // batch schedule (MIDI files) — one message, one sort
-        this.queue = this.queue.concat(msg.list).sort((a, b) => a.when - b.when);
+        // batch schedule (MIDI files): main thread pre-sorts; merge two sorted
+        // lists in O(n). Runs on the message task, not inside process().
+        const pending = this.queue.slice(this.qHead);
+        const inc = msg.list;
+        const merged = new Array(pending.length + inc.length);
+        let a = 0, b = 0, k = 0;
+        while (a < pending.length && b < inc.length)
+          merged[k++] = pending[a].when <= inc[b].when ? pending[a++] : inc[b++];
+        while (a < pending.length) merged[k++] = pending[a++];
+        while (b < inc.length) merged[k++] = inc[b++];
+        this.queue = merged;
+        this.qHead = 0;
         break;
       }
       case "allOff":
         this.queue.length = 0;
+        this.qHead = 0;
         if (this.engine) this.exports.ij_all_off(this.engine);
         break;
       case "dispose":
@@ -99,22 +111,32 @@ class InstrumentsProcessor extends AudioWorkletProcessor {
 
     // Sample-accurate scheduling: render in segments between event boundaries,
     // applying each event at its exact frame offset within the quantum.
+    // Allocation-free: cursor into the queue (no shift), manual copy (no subarray).
     const q = this.queue;
-    const frames = out[0].length;
+    const outL = out[0];
+    const outR = out[1];
+    const frames = outL.length;
     let done = 0;
     while (done < frames) {
       const tNow = currentTime + done / sampleRate;
-      while (q.length > 0 && q[0].when <= tNow) this.apply(q.shift());
+      while (this.qHead < q.length && q[this.qHead].when <= tNow) this.apply(q[this.qHead++]);
       let next = frames;
-      if (q.length > 0) {
-        const f = Math.ceil((q[0].when - currentTime) * sampleRate);
+      if (this.qHead < q.length) {
+        const f = Math.ceil((q[this.qHead].when - currentTime) * sampleRate);
         if (f < frames) next = Math.max(done + 1, f);
       }
       const n = next - done;
       this.exports.ij_process(this.engine, n);
-      out[0].set(this.viewL.subarray(0, n), done);
-      if (out[1]) out[1].set(this.viewR.subarray(0, n), done);
+      const vL = this.viewL;
+      const vR = this.viewR;
+      for (let i = 0; i < n; i++) outL[done + i] = vL[i];
+      if (outR) for (let i = 0; i < n; i++) outR[done + i] = vR[i];
       done = next;
+    }
+    // reclaim consumed prefix outside the hot loop, occasionally
+    if (this.qHead > 512 && this.qHead * 2 > q.length) {
+      this.queue = q.slice(this.qHead);
+      this.qHead = 0;
     }
 
     // ~1 Hz diagnostics for UIs ("processor fell behind" style honesty)

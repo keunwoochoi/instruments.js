@@ -8,10 +8,11 @@
  * - Loud on failure: engine init errors reject `ready`; nothing falls back silently.
  *
  * v0 honesty notes:
- * - Events are applied at quantum boundaries in the worklet (≤2.67 ms jitter @48k);
- *   sample-offset accuracy inside the quantum is issue #6 follow-up.
+ * - Scheduled events are sample-accurate (the worklet renders in segments between
+ *   event frame offsets). LIVE input (noteOn with no timestamp) lands at the next
+ *   quantum boundary — up to 2.67 ms of timing jitter on live playing.
  * - Some GM families are placeholders until their physical models land (see
- *   GROUP_TO_INSTRUMENT): piano→electric piano, strings→vibraphone, etc.
+ *   GROUP_TO_INSTRUMENT): piano→electric piano, strings→synth pad, etc.
  */
 
 export interface NoteEvent {

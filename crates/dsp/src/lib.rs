@@ -108,11 +108,13 @@ impl Engine {
         if slot.is_none() {
             slot = self.voices.iter().position(|v| !v.active());
         }
+        // steal preference: an already-releasing (quiet, fading) voice before a
+        // still-ringing one — cutting a live tail is the audible failure mode
         let slot = slot.unwrap_or_else(|| {
             self.voices
                 .iter()
                 .enumerate()
-                .max_by_key(|(_, v)| v.age)
+                .max_by_key(|(_, v)| (v.releasing, v.age))
                 .map(|(i, _)| i)
                 .unwrap_or(0)
         });
@@ -259,12 +261,18 @@ impl Engine {
     }
 }
 
+/// Master safety limiter: exactly linear below the knee, then a tanh that is
+/// value- AND slope-continuous at the knee (no step, no grit), asymptote 1.0.
 #[inline(always)]
 fn soft_clip(x: f32) -> f32 {
-    if x.abs() < 0.25 {
+    const KNEE: f32 = 0.6;
+    const REST: f32 = 1.0 - KNEE;
+    let a = x.abs();
+    if a <= KNEE {
         x
     } else {
-        (x * 1.2).tanh() / 1.2
+        let y = KNEE + REST * ((a - KNEE) / REST).tanh();
+        y.copysign(x)
     }
 }
 
@@ -421,14 +429,40 @@ mod tests {
     }
 
     #[test]
-    fn guitar_a3_is_in_tune() {
-        let mut e = Engine::new(48_000.0);
-        e.set_track(0, Instrument::Guitar, 0.8, 0.0);
-        e.note_on(0, 57, 0.8); // A3 = 220 Hz
-        let out = render_seconds(&mut e, 0.6);
-        let tail = &out[(0.25 * 48_000.0) as usize..(0.55 * 48_000.0) as usize];
-        let f_est = zero_crossings(tail) as f32 / 2.0 / 0.3;
-        assert!((f_est - 220.0).abs() < 220.0 * 0.05, "estimated {f_est} Hz, want 220");
+    fn guitar_a3_is_in_tune_at_both_sample_rates() {
+        // Pluck tuning is SR-dependent (delay length + fractional allpass) and iOS
+        // locks contexts to 44.1 kHz — both rates must be verified.
+        for sr in [44_100.0f32, 48_000.0f32] {
+            let mut e = Engine::new(sr);
+            e.set_track(0, Instrument::Guitar, 0.8, 0.0);
+            e.note_on(0, 57, 0.8); // A3 = 220 Hz
+            let out = render_seconds(&mut e, 0.6);
+            let tail = &out[(0.25 * sr) as usize..(0.55 * sr) as usize];
+            let f_est = zero_crossings(tail) as f32 / 2.0 / 0.3;
+            assert!((f_est - 220.0).abs() < 220.0 * 0.02, "sr={sr}: estimated {f_est} Hz, want 220");
+        }
+    }
+
+    #[test]
+    fn pluck_tuning_is_velocity_independent() {
+        // The loop-lowpass phase delay depends on velocity→brightness; without
+        // compensation the string detunes with velocity (Juhan panel finding).
+        let mut ests = Vec::new();
+        for vel in [0.3f32, 0.9f32] {
+            let mut e = Engine::new(48_000.0);
+            e.set_track(0, Instrument::Guitar, 0.8, 0.0);
+            e.note_on(0, 69, vel); // A4 = 440 Hz — short period exposes the error
+            let out = render_seconds(&mut e, 0.6);
+            let tail = &out[(0.25 * 48_000.0) as usize..(0.55 * 48_000.0) as usize];
+            let f_est = zero_crossings(tail) as f32 / 2.0 / 0.3;
+            assert!(
+                (f_est - 440.0).abs() < 440.0 * 0.02,
+                "vel={vel}: estimated {f_est} Hz, want 440"
+            );
+            ests.push(f_est);
+        }
+        let spread = (ests[0] - ests[1]).abs() / 440.0;
+        assert!(spread < 0.01, "tuning drifts {:.2}% between velocities", spread * 100.0);
     }
 
     #[test]

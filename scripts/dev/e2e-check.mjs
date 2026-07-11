@@ -91,10 +91,8 @@ const report = {
   offlineRender: { ...offline, rms: +offline.rms.toFixed(4), peak: +offline.peak.toFixed(3) },
   livePath: live,
   consoleErrors: errors,
-  verdict:
-    errors.length === 0 && offline.rms > 0.005 && (live.peak > 0.005 || live.clockAdvancedSeconds === 0)
-      ? "PASS"
-      : "FAIL",
+  // no escape hatches: BOTH paths must produce real audio (panel finding)
+  verdict: errors.length === 0 && offline.rms > 0.005 && live.peak > 0.005 ? "PASS" : "FAIL",
 };
 console.log(JSON.stringify(report, null, 2));
 if (report.verdict !== "PASS") {

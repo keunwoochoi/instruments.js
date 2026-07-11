@@ -13,8 +13,14 @@ const SR = 48000;
 const Q = 128;
 const WASM = fileURLToPath(new URL("../../packages/core/wasm/instruments_dsp.wasm", import.meta.url));
 
-// mirror of GROUP_TO_INSTRUMENT for the families the demo uses
-const GROUP = { marimba: 0, vibraphone: 1, glockenspiel: 2, musicbox: 3, guitar: 4, bass: 5, epiano: 6, drums: 7, percussion: 7, synthpad: 8, strings: 8, synth: 8 };
+// FULL mirror of packages/core GROUP_TO_INSTRUMENT (panel finding: a partial map
+// silently rendered unknown families as marimba, diverging from the shipped path)
+const GROUP = {
+  marimba: 0, mallet: 0, unknown: 0, vibraphone: 1, strings_placeholder: 1,
+  glockenspiel: 2, woodwind: 2, musicbox: 3, guitar: 4, bass: 5,
+  epiano: 6, piano: 6, drums: 7, percussion: 7,
+  synthpad: 8, strings: 8, brass: 8, voice: 8, synth: 8,
+};
 
 async function makeEngine() {
   const { instance } = await WebAssembly.instantiate(await readFile(WASM), {});
@@ -87,25 +93,32 @@ async function render() {
   const lPtr = x.ij_out_l(p), rPtr = x.ij_out_r(p);
   let ei = 0, maxVoices = 0;
   const t0 = process.hrtime.bigint();
-  for (let f = 0; f < total; f += Q) {
+  // sample-accurate segment scheduling — mirrors the shipped worklet exactly
+  let f = 0;
+  while (f < total) {
     while (ei < events.length && events[ei].f <= f) applyEvent(x, p, events[ei++], styleByTrack);
-    const n = Math.min(Q, total - f);
+    let next = Math.min(f + Q, total);
+    if (ei < events.length && events[ei].f < next) next = Math.max(f + 1, events[ei].f);
+    const n = next - f;
     x.ij_process(p, n);
     L.set(new Float32Array(x.memory.buffer, lPtr, n), f);
     R.set(new Float32Array(x.memory.buffer, rPtr, n), f);
     maxVoices = Math.max(maxVoices, x.ij_active_voices(p));
+    f = next;
   }
   const elapsedMs = Number(process.hrtime.bigint() - t0) / 1e6;
 
-  // ---- stats (the "did it render music, cleanly?" report) ----
+  // ---- stats over BOTH channels (the "did it render music, cleanly?" report) ----
   let peak = 0, sumSq = 0, nan = 0, maxJump = 0;
-  for (let i = 0; i < total; i++) {
-    const s = L[i];
-    if (Number.isNaN(s)) nan++;
-    const a = Math.abs(s);
-    if (a > peak) peak = a;
-    sumSq += s * s;
-    if (i > 0) maxJump = Math.max(maxJump, Math.abs(s - L[i - 1]));
+  for (const ch of [L, R]) {
+    for (let i = 0; i < total; i++) {
+      const s = ch[i];
+      if (Number.isNaN(s)) nan++;
+      const a = Math.abs(s);
+      if (a > peak) peak = a;
+      sumSq += (s * s) / 2;
+      if (i > 0) maxJump = Math.max(maxJump, Math.abs(s - ch[i - 1]));
+    }
   }
   const rms = Math.sqrt(sumSq / total);
   const quanta = total / Q;
