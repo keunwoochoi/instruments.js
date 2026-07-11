@@ -55,20 +55,22 @@ impl Instrument {
 /// and derives these from RMS against the marimba reference. Re-run after any
 /// preset change and paste the table it prints.
 pub fn makeup_gain(inst: Instrument) -> f32 {
-    // Measured 2026-07-11 (scripts/dev/measure-loudness.mjs), target ≈ -26 dB RMS at
-    // vel 0.8 / gain 1.0. HF families (glock, music box) are clamped well below their
-    // RMS-parity gains — equal-loudness discount, they read louder than RMS suggests.
+    // Measured 2026-07-11 with pyloudnorm (BS.1770 integrated LUFS, K-weighted) via
+    // scripts/dev/measure-loudness.{mjs,py} — all families referenced to marimba at
+    // vel 0.8 / gain 1.0. Perceptual, not RMS: K-weighting is why glock/music box
+    // need far more gain than RMS suggested and why the piano needed −4.4 LU.
+    // Re-run both scripts after any preset change and paste the corrected values.
     match inst {
-        Instrument::Marimba => 2.1,      // -32.6 dB
-        Instrument::Vibraphone => 3.0,   // -39.4 dB
-        Instrument::Glockenspiel => 6.0, // -55.8 dB, HF-clamped
-        Instrument::MusicBox => 5.0,     // -49.0 dB, HF-clamped
-        Instrument::Guitar => 0.8,       // -24.2 dB
-        Instrument::Bass => 0.78,        // -23.9 dB ("too loud" — user + measurement agree)
-        Instrument::EPiano => 1.4,       // -28.9 dB
-        Instrument::Drums => 0.53,       // -20.5 dB
-        Instrument::SynthPad => 0.46,    // -19.3 dB
-        Instrument::Piano => 0.8,        // -24.3 dB
+        Instrument::Marimba => 2.1,       // reference
+        Instrument::Vibraphone => 4.9,    // was -30.5 LUFS
+        Instrument::Glockenspiel => 28.0, // was -39.6 LUFS (tiny raw kernel level)
+        Instrument::MusicBox => 14.8,     // was -35.6 LUFS
+        Instrument::Guitar => 0.85,       // was -26.7 LUFS
+        Instrument::Bass => 0.70,         // was -25.3 LUFS
+        Instrument::EPiano => 1.47,       // was -26.6 LUFS
+        Instrument::Drums => 0.61,        // was -27.4 LUFS
+        Instrument::SynthPad => 0.48,     // was -26.5 LUFS
+        Instrument::Piano => 0.48,        // was -21.8 LUFS (+4.4 LU hot — user's ear was right)
     }
 }
 
@@ -413,20 +415,31 @@ impl StringLoop {
         }
     }
 
-    /// Fill the delay line with the hammer excitation: velocity-brightened noise,
-    /// comb-filtered at the strike position (~1/8 of the string), DC-removed.
-    fn excite(&mut self, exc_c: f32, strike_pos: f32, rng: &mut Lcg) {
+    /// Fill the delay line with a HAMMER-shaped excitation (piano v2): a smooth
+    /// raised-cosine displacement pulse at the strike point (contact-time width —
+    /// harder hits = shorter contact = brighter) blended with velocity-brightened
+    /// noise, comb-filtered at the strike position, DC-removed. A pure noise burst
+    /// reads as a pluck (harpsichord); the pulse blend reads as a hammer.
+    fn excite(&mut self, exc_c: f32, strike_pos: f32, pulse_w: f32, noise_mix: f32, rng: &mut Lcg) {
         let len = self.len;
+        let p = ((strike_pos * len as f32) as usize).clamp(1, len - 1);
+        let w = (pulse_w.max(2.0) as usize).min(len / 2);
         let mut lp = 0.0f32;
         let mut tmp = [0.0f32; PLUCK_BUF];
-        for t in tmp.iter_mut().take(len) {
+        for (i, t) in tmp.iter_mut().enumerate().take(len) {
             lp += exc_c * (rng.next() - lp);
-            *t = lp;
+            let mut s = noise_mix * lp;
+            // raised-cosine hammer pulse centered on the strike point
+            let d = if i >= p { i - p } else { p - i };
+            if d < w {
+                let ph = d as f32 / w as f32;
+                s += 0.5 * (1.0 + (core::f32::consts::PI * ph).cos());
+            }
+            *t = s;
         }
-        let p = ((strike_pos * len as f32) as usize).clamp(1, len - 1);
         let mut mean = 0.0;
         for i in 0..len {
-            let comb = tmp[i] - 0.92 * tmp[(i + len - p) % len];
+            let comb = tmp[i] - 0.88 * tmp[(i + len - p) % len];
             self.buf[i] = comb;
             mean += comb;
         }
@@ -470,6 +483,14 @@ pub struct PianoVoice {
     strings: [StringLoop; 3],
     n_strings: usize,
     level: f32,
+    // soundboard/case knock: 3 fixed low modes excited by the hammer pulse
+    body_a1: [f32; 3],
+    body_r2: [f32; 3],
+    body_y1: [f32; 3],
+    body_y2: [f32; 3],
+    body_g: [f32; 3],
+    body_pulse_pos: u32,
+    body_pulse_len: u32,
     thump_env: f32,
     thump_decay: f32,
     thump_amp: f32,
@@ -485,41 +506,95 @@ impl PianoVoice {
         // register scaling: long singing bass → short bright top
         let t60 = (11.0 * (1.0 - key).powf(1.7) + 0.9).min(11.0);
         // hammer: harder hit and higher register → brighter excitation & loop
-        let exc_c = (0.10 + 0.75 * vel.powf(1.3) + 0.15 * key).clamp(0.08, 0.97);
-        let lp_c = (0.30 + 0.45 * key + 0.20 * vel).clamp(0.25, 0.95);
-        // stiffness (inharmonicity): strong on wound bass strings, mild in mid,
-        // rising again slightly at the very top
-        let disp_c = if key < 0.35 { 0.32 * (1.0 - key / 0.35) + 0.06 } else { 0.04 + 0.05 * (key - 0.35) };
-        // real pianos: 1 wound string low, 2 mid-low, 3 elsewhere
-        let n_strings = if midi < 32 { 1 } else if midi < 44 { 2 } else { 3 };
-        let detune = [0.0, 1.6 - 0.8 * key, -(1.3 - 0.6 * key)];
+        let exc_c = (0.12 + 0.72 * vel.powf(1.3) + 0.14 * key).clamp(0.10, 0.95);
+        let lp_c = (0.32 + 0.44 * key + 0.18 * vel).clamp(0.25, 0.95);
+        // stiffness (inharmonicity): audible on wound bass strings, mild in mid,
+        // rising slightly at the top ("watery" v1 bass had too much — retuned)
+        let disp_c =
+            if key < 0.35 { 0.20 * (1.0 - key / 0.35) + 0.05 } else { 0.035 + 0.04 * (key - 0.35) };
+        // hammer contact width as a FRACTION of the string period (spatial extent),
+        // so attack brightness is consistent across registers; harder = narrower
+        let pulse_frac = (0.030 + 0.050 * (1.0 - vel)).clamp(0.025, 0.10);
+        let noise_mix = 0.30 + 0.35 * vel;
+
+        // Two-stage decay (piano v2): string 0 is the SUSTAIN mode (darker loop,
+        // full t60); the others are the ATTACK bloom — brighter and decaying in
+        // ABSOLUTE seconds (a bloom that lasts 4 s is not an attack). Physically:
+        // coupled strings + polarization split the energy into a fast bright
+        // transient and a slow singing tail (Weinreich 1977).
+        // bloom length scales with velocity — a soft touch barely blooms
+        let t_attack = ((0.35 + 1.0 * (1.0 - key)) * (0.4 + 0.6 * vel)).min(0.45 * t60);
+        let n_strings = if midi < 32 { 2 } else { 3 };
+        let detune_spread = if midi < 32 { 0.35 } else { 1.5 - 0.7 * key };
+        // (detune cents, t60 s, lp_c mult, excitation-brightness scale)
+        // The sustain string is fed a DARKER excitation than the bloom strings, so
+        // the attack is guaranteed to be the brightest moment of the note.
+        let cfg: [(f32, f32, f32, f32); 3] = [
+            (0.0, t60, 0.80, 0.60),                              // sustain
+            (detune_spread, t_attack, 1.25, 1.0),                // attack bloom +
+            (-0.8 * detune_spread, t_attack * 1.15, 1.15, 1.0),  // attack bloom −
+        ];
         let mut rng = Lcg(seed | 1);
         let mut strings = [StringLoop::new(f0, 0.0, sr, t60, lp_c, disp_c); 3];
         for (i, s) in strings.iter_mut().enumerate().take(n_strings) {
-            *s = StringLoop::new(f0, detune[i], sr, t60, lp_c, disp_c);
-            s.excite(exc_c, 0.12, &mut rng);
+            let (cents, t_sec, lp_mul, exc_scale) = cfg[i];
+            *s = StringLoop::new(f0, cents, sr, t_sec, (lp_c * lp_mul).min(0.97), disp_c);
+            let pulse_w = (pulse_frac * s.len as f32).max(2.0);
+            s.excite((exc_c * exc_scale).clamp(0.06, 0.95), 0.12, pulse_w, noise_mix, &mut rng);
         }
-        Self {
+
+        // body knock: fixed case/soundboard modes (85/172/318 Hz), short decay
+        let mut v = Self {
             strings,
             n_strings,
-            level: 0.55 * (0.25 + 0.75 * vel.powf(1.2)) / (n_strings as f32).sqrt(),
+            level: 0.62 * (0.22 + 0.78 * vel.powf(1.35)) / (n_strings as f32).sqrt(),
+            body_a1: [0.0; 3],
+            body_r2: [0.0; 3],
+            body_y1: [0.0; 3],
+            body_y2: [0.0; 3],
+            body_g: [0.0; 3],
+            body_pulse_pos: 0,
+            body_pulse_len: ((0.003 * sr) as u32).max(2),
             thump_env: 1.0,
-            thump_decay: t60_gain(0.012, sr),
-            thump_amp: 0.12 * vel,
+            thump_decay: t60_gain(0.010, sr),
+            thump_amp: 0.05 * vel,
             rng,
             sr,
             life: ((t60 * 1.4 + 0.1) * sr) as u64,
             age: 0,
+        };
+        let body = [(85.0f32, 0.40f32, 0.30f32), (172.0, 0.28, 0.20), (318.0, 0.18, 0.13)];
+        for (i, &(bf, bt, ba)) in body.iter().enumerate() {
+            let r = t60_gain(bt, sr);
+            let w = core::f32::consts::TAU * bf / sr;
+            v.body_a1[i] = 2.0 * r * w.cos();
+            v.body_r2[i] = r * r;
+            v.body_g[i] = ba * (1.0 - r) * 2.5 * vel;
         }
+        v
     }
 
     pub fn render(&mut self, out: &mut [f32]) -> bool {
+        let inv_pulse = 1.0 / self.body_pulse_len as f32;
         for o in out.iter_mut() {
             let mut s = 0.0;
             for st in self.strings.iter_mut().take(self.n_strings) {
                 s += st.tick();
             }
-            // key/hammer contact thump, first ~10 ms
+            // hammer pulse into the body modes (case knock) + key thump noise
+            let mut x = 0.0;
+            if self.body_pulse_pos < self.body_pulse_len {
+                let ph = self.body_pulse_pos as f32 * inv_pulse;
+                x = 0.5 * (1.0 - (core::f32::consts::TAU * ph).cos());
+                self.body_pulse_pos += 1;
+            }
+            for m in 0..3 {
+                let y = self.body_a1[m] * self.body_y1[m] - self.body_r2[m] * self.body_y2[m]
+                    + self.body_g[m] * x;
+                self.body_y2[m] = self.body_y1[m];
+                self.body_y1[m] = y;
+                s += y;
+            }
             if self.thump_amp > 1e-5 && self.thump_env > 1e-4 {
                 s += self.thump_amp * self.thump_env * self.rng.next();
                 self.thump_env *= self.thump_decay;
@@ -528,6 +603,10 @@ impl PianoVoice {
         }
         for st in self.strings.iter_mut().take(self.n_strings) {
             st.flush();
+        }
+        for m in 0..3 {
+            self.body_y1[m] = flush_denormal(self.body_y1[m]);
+            self.body_y2[m] = flush_denormal(self.body_y2[m]);
         }
         self.age += out.len() as u64;
         self.age < self.life
