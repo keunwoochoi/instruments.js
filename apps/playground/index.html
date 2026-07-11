@@ -66,6 +66,13 @@
   </div>
 
   <div class="row">
+    <button id="midi-file-btn">🎼 Play a MIDI file…</button>
+    <input type="file" id="midi-file" accept=".mid,.midi,audio/midi" style="display:none" />
+    <button id="webmidi">🎹 Enable MIDI keyboard</button>
+    <span id="midi-info" style="font-size:0.8rem;opacity:0.65"></span>
+  </div>
+
+  <div class="row">
     <label>Instrument
       <select id="inst">
         <option value="marimba" selected>Marimba</option>
@@ -95,6 +102,7 @@
 
   <script type="module">
     import { createEngine } from "../../packages/core/dist/index.js";
+    import { parseMidi } from "../../packages/midi/dist/index.js";
     import { demoSong } from "./demo-song.mjs";
 
     const $ = (id) => document.getElementById(id);
@@ -233,6 +241,56 @@
       finally { $("play-song").disabled = false; }
     });
     $("stop").addEventListener("click", () => engine?.stop());
+
+    // ---------- MIDI file playback (file picker + drag-drop) ----------
+    async function playMidiBytes(buf, label) {
+      if (!engine) { status("click Start audio first", true); return; }
+      let parsed;
+      try { parsed = parseMidi(buf); }
+      catch (err) { status(`could not parse ${label}: ${err.message}`, true); return; }
+      const title = parsed.name || label;
+      status(`playing "${title}" — ${parsed.notes.length} notes, ${parsed.durationSeconds.toFixed(1)}s, ${parsed.trackCount} tracks…`);
+      engine.stop();
+      try {
+        await engine.play(parsed.notes, { pedals: parsed.pedals });
+        status(`finished "${title}" — engine live`);
+      } catch (err) { status(`playback failed: ${err.message}`, true); }
+    }
+    $("midi-file-btn").addEventListener("click", () => $("midi-file").click());
+    $("midi-file").addEventListener("change", async (e) => {
+      const f = e.target.files?.[0];
+      if (f) playMidiBytes(await f.arrayBuffer(), f.name);
+    });
+    document.body.addEventListener("dragover", (e) => e.preventDefault());
+    document.body.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      const f = e.dataTransfer?.files?.[0];
+      if (f && /\.midi?$/i.test(f.name)) playMidiBytes(await f.arrayBuffer(), f.name);
+    });
+
+    // ---------- live Web MIDI input ----------
+    $("webmidi").addEventListener("click", async () => {
+      if (!navigator.requestMIDIAccess) { status("Web MIDI unsupported in this browser (try Chrome)", true); return; }
+      try {
+        const access = await navigator.requestMIDIAccess();
+        const names = [];
+        const hook = (input) => {
+          names.push(input.name);
+          input.onmidimessage = (m) => {
+            if (!engine) return;
+            const [st, d1, d2] = m.data;
+            const type = st & 0xf0, ch = st & 0x0f;
+            const target = ch === 9 ? track("drums") : track($("inst").value === "drums" ? "marimba" : $("inst").value);
+            if (type === 0x90 && d2 > 0) target.noteOn(d1, d2);
+            else if (type === 0x80 || (type === 0x90 && d2 === 0)) target.noteOff(d1);
+            else if (type === 0xb0 && d1 === 64) target.pedal(d2 >= 64);
+          };
+        };
+        access.inputs.forEach(hook);
+        access.onstatechange = (e) => { if (e.port.type === "input" && e.port.state === "connected") hook(e.port); };
+        $("midi-info").textContent = names.length ? `MIDI in: ${names.join(", ")}` : "no MIDI devices found (plug one in — hot-plug works)";
+      } catch (err) { status(`MIDI access denied: ${err.message}`, true); }
+    });
     $("download").addEventListener("click", async () => {
       if (!engine) return;
       status("rendering offline…");

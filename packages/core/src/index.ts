@@ -21,7 +21,9 @@ export interface NoteEvent {
   /** 0–127. Changes timbre, not just level. */
   velocity: number;
   isDrum?: boolean;
-  instrumentGroup?: InstrumentGroup;
+  /** Family name; unknown strings fall back to marimba. Loose type so decoupled
+   *  producers (e.g. @instrumentsjs/midi) interoperate without a cast. */
+  instrumentGroup?: InstrumentGroup | (string & {});
 }
 
 export type InstrumentGroup =
@@ -94,6 +96,8 @@ export interface Track {
   readonly index: number;
   noteOn(midiPitch: number, velocity?: number, timeSeconds?: number): void;
   noteOff(midiPitch: number, timeSeconds?: number): void;
+  /** Sustain pedal (CC64): while down, note-offs are deferred until pedal-up. */
+  pedal(on: boolean, timeSeconds?: number): void;
   set(options: TrackOptions): void;
 }
 
@@ -110,10 +114,10 @@ export interface Engine {
   readonly output: AudioWorkletNode;
   createTrack(instrument: InstrumentGroup, options?: TrackOptions): Track;
   /** Play a full (possibly multi-track) timeline. Resolves when playback finishes. */
-  play(notes: readonly NoteEvent[]): Promise<void>;
+  play(notes: readonly NoteEvent[], options?: PlayOptions): Promise<void>;
   stop(): void;
-  /** Deterministic offline bounce → 16-bit stereo WAV bytes. */
-  renderOffline(notes: readonly NoteEvent[]): Promise<Uint8Array>;
+  /** Deterministic offline bounce → 16-bit stereo WAV bytes (same options as play). */
+  renderOffline(notes: readonly NoteEvent[], options?: PlayOptions): Promise<Uint8Array>;
   onStats(cb: (stats: EngineStats) => void): void;
   dispose(): Promise<void>;
 }
@@ -134,13 +138,26 @@ const SCHED_LEAD = 0.08; // seconds of lead-in when playing a timeline
 interface WorkletEvent {
   type: "event";
   when: number;
-  kind: "on" | "off" | "track";
+  kind: "on" | "off" | "track" | "pedal";
   track: number;
   midi?: number;
   vel?: number;
   inst?: number;
   gain?: number;
   pan?: number;
+  on?: number;
+}
+
+/** Sustain-pedal event (CC64) accompanying a note timeline. */
+export interface PedalEvent {
+  instrumentGroup?: InstrumentGroup | string;
+  isDrum?: boolean;
+  on: boolean;
+  timeSeconds: number;
+}
+
+export interface PlayOptions {
+  pedals?: readonly PedalEvent[];
 }
 
 async function fetchWasmBytes(url: string | URL): Promise<ArrayBuffer> {
@@ -245,6 +262,9 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
       noteOff(midiPitch, timeSeconds = 0) {
         post({ type: "event", when: timeSeconds, kind: "off", track: idx, midi: Math.round(midiPitch) });
       },
+      pedal(on, timeSeconds = 0) {
+        post({ type: "event", when: timeSeconds, kind: "pedal", track: idx, on: on ? 1 : 0 });
+      },
       set(o: TrackOptions) {
         post({
           type: "event",
@@ -259,24 +279,51 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
     };
   }
 
-  /** Schedule a note list onto auto-managed per-family tracks. Returns end time (ctx seconds). */
-  function scheduleNotes(notes: readonly NoteEvent[], t0: number): number {
+  /**
+   * Build a batched event schedule for a note timeline (+ optional pedal lane).
+   * `resolve` maps a family key to a track index, appending the track-config
+   * event to `events` on first use.
+   */
+  function buildSchedule(
+    notes: readonly NoteEvent[],
+    pedals: readonly PedalEvent[] | undefined,
+    t0: number,
+    resolve: (group: InstrumentGroup, events: WorkletEvent[]) => number,
+  ): { events: WorkletEvent[]; end: number } {
+    const events: WorkletEvent[] = [];
     let end = t0;
     for (const n of notes) {
-      const key = n.isDrum ? "drums" : (n.instrumentGroup ?? "unknown");
-      let idx = groupTracks.get(key);
-      if (idx === undefined) {
-        idx = allocTrack(n.isDrum ? "drums" : (n.instrumentGroup ?? "unknown"), {}, 0);
-        groupTracks.set(key, idx);
-      }
+      const group = (n.isDrum ? "drums" : (n.instrumentGroup ?? "unknown")) as InstrumentGroup;
+      const idx = resolve(group, events);
       const vel = Math.min(127, Math.max(1, n.velocity)) / 127;
-      post({ type: "event", when: t0 + n.startSeconds, kind: "on", track: idx, midi: Math.round(n.midiPitch), vel });
+      events.push({ type: "event", when: t0 + n.startSeconds, kind: "on", track: idx, midi: Math.round(n.midiPitch), vel });
       if (!n.isDrum) {
-        post({ type: "event", when: t0 + n.endSeconds, kind: "off", track: idx, midi: Math.round(n.midiPitch) });
+        events.push({ type: "event", when: t0 + n.endSeconds, kind: "off", track: idx, midi: Math.round(n.midiPitch) });
       }
       end = Math.max(end, t0 + n.endSeconds);
     }
-    return end;
+    for (const p of pedals ?? []) {
+      const group = (p.isDrum ? "drums" : (p.instrumentGroup ?? "unknown")) as InstrumentGroup;
+      const idx = resolve(group, events);
+      events.push({ type: "event", when: t0 + p.timeSeconds, kind: "pedal", track: idx, on: p.on ? 1 : 0 });
+      end = Math.max(end, t0 + p.timeSeconds);
+    }
+    return { events, end };
+  }
+
+  /** Track resolver for the live engine: per-family tracks persist across play() calls. */
+  function liveResolver(group: InstrumentGroup, events: WorkletEvent[]): number {
+    let idx = groupTracks.get(group);
+    if (idx === undefined) {
+      if (nextTrack >= MAX_TRACKS) throw new Error(`instruments.js: track limit (${MAX_TRACKS}) reached`);
+      idx = nextTrack++;
+      groupTracks.set(group, idx);
+      events.push({
+        type: "event", when: 0, kind: "track", track: idx,
+        inst: GROUP_TO_INSTRUMENT[group] ?? 0, gain: 0.8, pan: 0,
+      });
+    }
+    return idx;
   }
 
   const engine: Engine = {
@@ -287,14 +334,16 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
       const idx = allocTrack(instrument, opts);
       return makeTrack(instrument, idx);
     },
-    async play(notes) {
+    async play(notes, options = {}) {
       await ready;
       resumeIfNeeded();
       const t0 = context.currentTime + SCHED_LEAD;
-      const end = scheduleNotes(notes, t0) + 2.0; // let tails ring
+      const { events, end } = buildSchedule(notes, options.pedals, t0, liveResolver);
+      node.port.postMessage({ type: "events", list: events });
+      const finish = end + 2.0; // let tails ring
       await new Promise<void>((resolve) => {
         const tick = () => {
-          if (context.currentTime >= end) resolve();
+          if (context.currentTime >= finish) resolve();
           else setTimeout(tick, 120);
         };
         tick();
@@ -303,40 +352,29 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
     stop() {
       node.port.postMessage({ type: "allOff" });
     },
-    async renderOffline(notes) {
-      const duration = Math.max(...notes.map((n) => n.endSeconds), 0) + 2.5;
+    async renderOffline(notes, options = {}) {
+      const duration =
+        Math.max(...notes.map((n) => n.endSeconds), ...(options.pedals ?? []).map((p) => p.timeSeconds), 0) + 2.5;
       const sr = context.sampleRate;
       const off = new OfflineAudioContext(2, Math.ceil(duration * sr), sr);
       await off.audioWorklet.addModule(workletUrl);
       // An OfflineAudioContext may not service port messages before its render loop
       // finishes — deliver init bytes AND the full schedule via processorOptions,
       // which is cloned synchronously at construction.
-      const events: WorkletEvent[] = [];
-      const local = new Map<string, number>();
+      const local = new Map<InstrumentGroup, number>();
       let localNext = 0;
-      for (const n of notes) {
-        const key = n.isDrum ? "drums" : (n.instrumentGroup ?? "unknown");
-        let idx = local.get(key);
+      const { events } = buildSchedule(notes, options.pedals, 0.05, (group, evts) => {
+        let idx = local.get(group);
         if (idx === undefined) {
           idx = localNext++;
-          local.set(key, idx);
-          events.push({
+          local.set(group, idx);
+          evts.push({
             type: "event", when: 0, kind: "track", track: idx,
-            inst: GROUP_TO_INSTRUMENT[n.isDrum ? "drums" : (n.instrumentGroup ?? "unknown")] ?? 0,
-            gain: 0.8, pan: 0,
+            inst: GROUP_TO_INSTRUMENT[group] ?? 0, gain: 0.8, pan: 0,
           });
         }
-        const vel = Math.min(127, Math.max(1, n.velocity)) / 127;
-        events.push({
-          type: "event", when: 0.05 + n.startSeconds, kind: "on", track: idx,
-          midi: Math.round(n.midiPitch), vel,
-        });
-        if (!n.isDrum) {
-          events.push({
-            type: "event", when: 0.05 + n.endSeconds, kind: "off", track: idx, midi: Math.round(n.midiPitch),
-          });
-        }
-      }
+        return idx;
+      });
       const offNode = new AudioWorkletNode(off, "instruments-processor", {
         numberOfInputs: 0,
         numberOfOutputs: 1,

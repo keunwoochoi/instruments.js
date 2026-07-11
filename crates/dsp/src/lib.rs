@@ -35,6 +35,8 @@ pub struct TrackBus {
     pub instrument: Instrument,
     pub gain: f32,
     pub pan: f32, // -1.0 .. 1.0
+    /// sustain pedal (CC64): note-offs are deferred while down
+    pub pedal: bool,
     // smoothed equal-power gains (one-pole per block, no zipper noise)
     gl: f32,
     gr: f32,
@@ -69,6 +71,7 @@ impl Engine {
                 instrument: Instrument::Marimba,
                 gain: 0.8,
                 pan: 0.0,
+                pedal: false,
                 gl: 0.0,
                 gr: 0.0,
             }; MAX_TRACKS],
@@ -118,6 +121,7 @@ impl Engine {
             track: track as u8,
             midi: midi as u8,
             releasing: false,
+            pedal_held: false,
             age: 0,
         };
     }
@@ -136,9 +140,38 @@ impl Engine {
         if !damps {
             return;
         }
+        let pedal = self.tracks[track].pedal;
         let sr = self.sample_rate;
         for v in self.voices.iter_mut() {
             if v.active() && v.track as usize == track && v.midi as u32 == midi && !v.releasing {
+                if pedal {
+                    v.pedal_held = true; // defer the release until pedal-up
+                } else {
+                    v.releasing = true;
+                    match &mut v.kernel {
+                        Kernel::Modal(m) => m.damp(sr),
+                        Kernel::Pluck(p) => p.damp(),
+                        Kernel::Synth(s) => s.release(),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// Sustain pedal (CC64). Pedal-up releases every note whose note-off was deferred.
+    pub fn set_pedal(&mut self, track: usize, on: bool) {
+        if track >= MAX_TRACKS {
+            return;
+        }
+        self.tracks[track].pedal = on;
+        if on {
+            return;
+        }
+        let sr = self.sample_rate;
+        for v in self.voices.iter_mut() {
+            if v.active() && v.track as usize == track && v.pedal_held && !v.releasing {
+                v.pedal_held = false;
                 v.releasing = true;
                 match &mut v.kernel {
                     Kernel::Modal(m) => m.damp(sr),
@@ -287,6 +320,13 @@ pub mod ffi {
     }
 
     #[no_mangle]
+    pub extern "C" fn ij_pedal(p: *mut Engine, track: u32, on: u32) {
+        if let Some(e) = engine(p) {
+            e.set_pedal(track as usize, on != 0);
+        }
+    }
+
+    #[no_mangle]
     pub extern "C" fn ij_all_off(p: *mut Engine) {
         if let Some(e) = engine(p) {
             e.all_off();
@@ -402,6 +442,26 @@ mod tests {
         let late = &out[(0.3 * 48_000.0) as usize..];
         let peak = late.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(peak < 0.01, "string still ringing after damp: {peak}");
+    }
+
+    #[test]
+    fn sustain_pedal_defers_release_until_pedal_up() {
+        let mut e = Engine::new(48_000.0);
+        e.set_track(0, Instrument::Guitar, 0.8, 0.0);
+        e.set_pedal(0, true);
+        e.note_on(0, 57, 0.9);
+        let _ = render_seconds(&mut e, 0.1);
+        e.note_off(0, 57); // pedal is down — must keep ringing
+        let held = render_seconds(&mut e, 0.4);
+        let held_peak = held[(0.3 * 48_000.0) as usize..]
+            .iter()
+            .fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(held_peak > 0.005, "pedal failed to hold the note: {held_peak}");
+        e.set_pedal(0, false); // pedal-up releases the deferred note-off
+        let out = render_seconds(&mut e, 0.4);
+        let late = &out[(0.3 * 48_000.0) as usize..];
+        let peak = late.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(peak < 0.01, "string still ringing after pedal-up: {peak}");
     }
 
     #[test]

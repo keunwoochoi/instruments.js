@@ -150,7 +150,19 @@ if (process.argv.includes("--bench")) {
 } else {
   const { L, R, stats } = await render();
   console.log(JSON.stringify(stats, null, 2));
-  const out = process.argv[2] ?? "/tmp/instruments-demo.wav";
-  await writeFile(out, wavBytes(L, R, SR));
-  console.log(`wrote ${out}`);
+  // hard gates (CI smoke): silent, clipping, NaN, or budget-blown renders fail loudly
+  const fail = [];
+  if (stats.nanSamples > 0) fail.push(`NaN samples: ${stats.nanSamples}`);
+  if (stats.peak < 0.05) fail.push(`near-silent render: peak ${stats.peak}`);
+  if (stats.peak > 0.99) fail.push(`clipping: peak ${stats.peak}`);
+  if (stats.budgetPct > 50) fail.push(`over 50% of audio budget: ${stats.budgetPct}%`);
+  if (fail.length) {
+    console.error("RENDER GATES FAILED:\n - " + fail.join("\n - "));
+    process.exit(1);
+  }
+  const out = process.argv[2];
+  if (out) {
+    await writeFile(out, wavBytes(L, R, SR));
+    console.log(`wrote ${out}`);
+  }
 }

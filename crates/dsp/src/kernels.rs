@@ -620,12 +620,14 @@ pub struct Voice {
     pub track: u8,
     pub midi: u8,
     pub releasing: bool,
+    /// note-off arrived while the sustain pedal was down; release on pedal-up
+    pub pedal_held: bool,
     pub age: u64,
 }
 
 impl Voice {
     pub const fn off() -> Self {
-        Self { kernel: Kernel::Off, track: 0, midi: 0, releasing: false, age: 0 }
+        Self { kernel: Kernel::Off, track: 0, midi: 0, releasing: false, pedal_held: false, age: 0 }
     }
     pub fn active(&self) -> bool {
         !matches!(self.kernel, Kernel::Off)

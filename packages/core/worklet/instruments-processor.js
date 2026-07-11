@@ -60,6 +60,11 @@ class InstrumentsProcessor extends AudioWorkletProcessor {
         q.splice(i, 0, msg);
         break;
       }
+      case "events": {
+        // batch schedule (MIDI files) — one message, one sort
+        this.queue = this.queue.concat(msg.list).sort((a, b) => a.when - b.when);
+        break;
+      }
       case "allOff":
         this.queue.length = 0;
         if (this.engine) this.exports.ij_all_off(this.engine);
@@ -78,6 +83,7 @@ class InstrumentsProcessor extends AudioWorkletProcessor {
     const p = this.engine;
     if (e.kind === "on") x.ij_note_on(p, e.track, e.midi, e.vel);
     else if (e.kind === "off") x.ij_note_off(p, e.track, e.midi);
+    else if (e.kind === "pedal") x.ij_pedal(p, e.track, e.on);
     else if (e.kind === "track") x.ij_set_track(p, e.track, e.inst, e.gain, e.pan);
   }
 
@@ -85,19 +91,31 @@ class InstrumentsProcessor extends AudioWorkletProcessor {
     const out = outputs[0];
     if (!this.engine || !out || out.length === 0) return true;
 
-    const q = this.queue;
-    while (q.length > 0 && q[0].when <= currentTime) this.apply(q.shift());
-
-    const frames = out[0].length;
-    this.exports.ij_process(this.engine, frames);
-
     const mem = this.exports.memory.buffer;
     if (!this.viewL || this.viewL.buffer !== mem) {
       this.viewL = new Float32Array(mem, this.exports.ij_out_l(this.engine), 128);
       this.viewR = new Float32Array(mem, this.exports.ij_out_r(this.engine), 128);
     }
-    out[0].set(this.viewL.subarray(0, frames));
-    if (out[1]) out[1].set(this.viewR.subarray(0, frames));
+
+    // Sample-accurate scheduling: render in segments between event boundaries,
+    // applying each event at its exact frame offset within the quantum.
+    const q = this.queue;
+    const frames = out[0].length;
+    let done = 0;
+    while (done < frames) {
+      const tNow = currentTime + done / sampleRate;
+      while (q.length > 0 && q[0].when <= tNow) this.apply(q.shift());
+      let next = frames;
+      if (q.length > 0) {
+        const f = Math.ceil((q[0].when - currentTime) * sampleRate);
+        if (f < frames) next = Math.max(done + 1, f);
+      }
+      const n = next - done;
+      this.exports.ij_process(this.engine, n);
+      out[0].set(this.viewL.subarray(0, n), done);
+      if (out[1]) out[1].set(this.viewR.subarray(0, n), done);
+      done = next;
+    }
 
     // ~1 Hz diagnostics for UIs ("processor fell behind" style honesty)
     this.framesBehind += frames;
