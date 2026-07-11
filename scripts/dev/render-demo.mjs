@@ -18,8 +18,9 @@ const WASM = fileURLToPath(new URL("../../packages/core/wasm/instruments_dsp.was
 const GROUP = {
   marimba: 0, mallet: 0, unknown: 0, vibraphone: 1, strings_placeholder: 1,
   glockenspiel: 2, woodwind: 2, musicbox: 3, guitar: 4, bass: 5,
-  epiano: 6, piano: 6, drums: 7, percussion: 7,
+  epiano: 6, drums: 7, percussion: 7,
   synthpad: 8, strings: 8, brass: 8, voice: 8, synth: 8,
+  piano: 9,
 };
 
 async function makeEngine() {
@@ -49,7 +50,8 @@ function scheduleSong(notes) {
 }
 
 // per-track pans/gains matching a reasonable mix
-const TRACK_STYLE = { epiano: [0.55, 0.25], bass: [0.85, 0.0], marimba: [0.75, -0.25], glockenspiel: [0.4, 0.35], drums: [0.8, 0.1], percussion: [0.8, 0.1], strings: [0.5, -0.15], synthpad: [0.5, -0.15] };
+// post-normalization: track gains are musical choices, not loudness compensation
+const TRACK_STYLE = { piano: [0.8, 0.25], epiano: [0.8, 0.25], bass: [0.85, 0.0], marimba: [0.8, -0.25], glockenspiel: [0.6, 0.35], drums: [0.75, 0.1], percussion: [0.75, 0.1], strings: [0.55, -0.15], synthpad: [0.55, -0.15] };
 
 function applyEvent(x, p, e, styleByTrack) {
   if (e.kind === "track") {

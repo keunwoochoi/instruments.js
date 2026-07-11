@@ -70,11 +70,11 @@ export function demoSong() {
       // dynamic arc across the form: build through each pass, pass 2 hotter
       const arc = 0.85 + 0.1 * (b / 3) + (pass === 1 ? 0.12 : 0);
 
-      // E-piano: rolled chord on the downbeat, quieter octave answer on beat 3
+      // Acoustic piano: rolled chord on the downbeat, quieter octave answer on beat 3
       chord.forEach((p, i) =>
-        add("epiano", p, human(bar + i * 0.018, 5), 2.6 * BEAT, (60 + i * 4 + rand() * 8) * arc));
+        add("piano", p, human(bar + i * 0.018, 5), 2.6 * BEAT, (60 + i * 4 + rand() * 8) * arc));
       chord.slice(0, 2).forEach((p, i) =>
-        add("epiano", p + 12, human(bar + 2 * BEAT + i * 0.02, 6), 1.5 * BEAT, (44 + rand() * 10) * arc));
+        add("piano", p + 12, human(bar + 2 * BEAT + i * 0.02, 6), 1.5 * BEAT, (44 + rand() * 10) * arc));
 
       // Bass: 1 · and-of-2 (swung) · 3 · approach on 4+
       add("bass", bass, human(bar, 4), 1.4 * BEAT, (92 + rand() * 8) * arc);

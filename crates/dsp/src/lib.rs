@@ -13,7 +13,7 @@
 
 pub mod kernels;
 
-use kernels::{start_voice, Instrument, Kernel, Voice, MAX_BLOCK};
+use kernels::{makeup_gain, start_voice, Instrument, Kernel, Voice, MAX_BLOCK};
 
 pub const MAX_VOICES: usize = 64;
 pub const MAX_TRACKS: usize = 16;
@@ -45,7 +45,9 @@ pub struct TrackBus {
 impl TrackBus {
     fn targets(&self) -> (f32, f32) {
         let th = (self.pan.clamp(-1.0, 1.0) + 1.0) * core::f32::consts::FRAC_PI_4;
-        (self.gain * th.cos(), self.gain * th.sin())
+        // measured per-family loudness normalization (kernels::makeup_gain)
+        let g = self.gain * makeup_gain(self.instrument);
+        (g * th.cos(), g * th.sin())
     }
 }
 
@@ -138,6 +140,7 @@ impl Engine {
                 | Instrument::Guitar
                 | Instrument::Bass
                 | Instrument::SynthPad
+                | Instrument::Piano
         );
         if !damps {
             return;
@@ -154,6 +157,7 @@ impl Engine {
                         Kernel::Modal(m) => m.damp(sr),
                         Kernel::Pluck(p) => p.damp(),
                         Kernel::Synth(s) => s.release(),
+                        Kernel::Piano(p) => p.damp(),
                         _ => {}
                     }
                 }
@@ -179,6 +183,7 @@ impl Engine {
                     Kernel::Modal(m) => m.damp(sr),
                     Kernel::Pluck(p) => p.damp(),
                     Kernel::Synth(s) => s.release(),
+                    Kernel::Piano(p) => p.damp(),
                     _ => {}
                 }
             }
@@ -194,6 +199,7 @@ impl Engine {
                     Kernel::Modal(m) => m.damp(sr),
                     Kernel::Pluck(p) => p.damp(),
                     Kernel::Synth(s) => s.release(),
+                    Kernel::Piano(p) => p.damp(),
                     Kernel::Drum(_) => {} // short one-shots; let them ring out
                     Kernel::Off => {}
                 }
@@ -226,6 +232,7 @@ impl Engine {
                     Kernel::Pluck(p) => p.render(&mut self.track_buf[..frames]),
                     Kernel::Drum(d) => d.render(&mut self.track_buf[..frames], sr),
                     Kernel::Synth(s) => s.render(&mut self.track_buf[..frames]),
+                    Kernel::Piano(pn) => pn.render(&mut self.track_buf[..frames]),
                     Kernel::Off => false,
                 };
                 v.age += frames as u64;
@@ -385,6 +392,35 @@ mod tests {
         x.windows(2).filter(|w| (w[0] >= 0.0) != (w[1] >= 0.0)).count()
     }
 
+    /// Autocorrelation pitch estimate (panel finding: zero-crossing counting is
+    /// fooled by partial-rich tails). Searches lags for `lo..hi` Hz, parabolic
+    /// refinement around the peak.
+    fn estimate_pitch(x: &[f32], sr: f32, lo: f32, hi: f32) -> f32 {
+        let min_lag = (sr / hi) as usize;
+        let max_lag = ((sr / lo) as usize).min(x.len() / 2);
+        let mut best_lag = min_lag;
+        let mut best = f32::NEG_INFINITY;
+        let n = x.len() - max_lag;
+        let energy: f32 = x[..n].iter().map(|s| s * s).sum::<f32>().max(1e-12);
+        for lag in min_lag..=max_lag {
+            let mut acc = 0.0f32;
+            for i in 0..n {
+                acc += x[i] * x[i + lag];
+            }
+            let score = acc / energy;
+            if score > best {
+                best = score;
+                best_lag = lag;
+            }
+        }
+        // parabolic interpolation for sub-sample lag
+        let corr = |lag: usize| -> f32 { (0..n).map(|i| x[i] * x[i + lag]).sum() };
+        let (a, b, c) = (corr(best_lag - 1), corr(best_lag), corr(best_lag + 1));
+        let denom = a - 2.0 * b + c;
+        let delta = if denom.abs() > 1e-9 { 0.5 * (a - c) / denom } else { 0.0 };
+        sr / (best_lag as f32 + delta.clamp(-0.5, 0.5))
+    }
+
     #[test]
     fn denormals_are_flushed() {
         assert_eq!(flush_denormal(1.0e-30), 0.0);
@@ -476,6 +512,54 @@ mod tests {
         let late = &out[(0.3 * 48_000.0) as usize..];
         let peak = late.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(peak < 0.01, "string still ringing after damp: {peak}");
+    }
+
+    #[test]
+    fn piano_is_in_tune_at_both_sample_rates_and_velocities() {
+        // dispersion + loop-lowpass delays are both compensated in the string length;
+        // any regression shows up as pitch drift across sr or velocity
+        for sr in [44_100.0f32, 48_000.0f32] {
+            for vel in [0.3f32, 0.9f32] {
+                let mut e = Engine::new(sr);
+                e.set_track(0, Instrument::Piano, 0.8, 0.0);
+                e.note_on(0, 69, vel); // A4
+                let out = render_seconds(&mut e, 0.7);
+                let tail = &out[(0.3 * sr) as usize..(0.6 * sr) as usize];
+                let f_est = estimate_pitch(tail, sr, 200.0, 900.0);
+                assert!(
+                    (f_est - 440.0).abs() < 440.0 * 0.015,
+                    "sr={sr} vel={vel}: estimated {f_est} Hz, want 440"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn piano_sings_then_damps() {
+        let mut e = Engine::new(48_000.0);
+        e.set_track(0, Instrument::Piano, 0.8, 0.0);
+        e.note_on(0, 48, 0.8); // C3 — long-decay register
+        let held = render_seconds(&mut e, 2.0);
+        let late_held = &held[(1.8 * 48_000.0) as usize..];
+        let sing = late_held.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(sing > 0.003, "piano C3 died too fast while held: {sing}");
+        e.note_off(0, 48);
+        let out = render_seconds(&mut e, 0.8);
+        let late = &out[(0.7 * 48_000.0) as usize..];
+        let peak = late.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(peak < 0.01, "damper failed: {peak}");
+    }
+
+    #[test]
+    fn piano_bass_and_treble_render_clean() {
+        let mut e = Engine::new(48_000.0);
+        e.set_track(0, Instrument::Piano, 0.8, 0.0);
+        e.note_on(0, 21, 1.0); // A0 — longest string, most dispersion
+        e.note_on(0, 105, 1.0); // A7 — shortest string
+        let out = render_seconds(&mut e, 1.0);
+        let peak = out.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(out.iter().all(|s| s.is_finite()));
+        assert!(peak > 0.01 && peak <= 1.0, "extremes peak={peak}");
     }
 
     #[test]

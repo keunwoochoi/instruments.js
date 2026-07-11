@@ -58,6 +58,7 @@ const INST = {
   epiano: 6,
   drums: 7,
   synthpad: 8,
+  piano: 9,
 } as const;
 
 /**
@@ -76,7 +77,7 @@ const GROUP_TO_INSTRUMENT: Record<InstrumentGroup, number> = {
   epiano: INST.epiano,
   drums: INST.drums,
   synthpad: INST.synthpad,
-  piano: INST.epiano, // (placeholder — acoustic piano is v1.x)
+  piano: INST.piano, // multi-string waveguide acoustic piano
   strings: INST.synthpad, // (placeholder — bowed string is Q3)
   brass: INST.synthpad, // (placeholder — winds are Q3)
   woodwind: INST.glockenspiel, // (placeholder)

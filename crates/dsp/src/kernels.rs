@@ -28,6 +28,8 @@ pub enum Instrument {
     Drums = 7,
     /// Classic subtractive pad (PRINCIPLES #5: no paradigm purity — fast + beautiful wins).
     SynthPad = 8,
+    /// Acoustic piano: multi-string waveguide with dispersion + hammer excitation.
+    Piano = 9,
 }
 
 impl Instrument {
@@ -41,8 +43,32 @@ impl Instrument {
             6 => Self::EPiano,
             7 => Self::Drums,
             8 => Self::SynthPad,
+            9 => Self::Piano,
             _ => Self::Marimba,
         }
+    }
+}
+
+/// Per-instrument loudness makeup, applied at the track bus so equal velocity lands
+/// at roughly equal perceived level across families. Values are MEASURED, not tuned
+/// by eye: `scripts/dev/measure-loudness.mjs` renders a reference note per family
+/// and derives these from RMS against the marimba reference. Re-run after any
+/// preset change and paste the table it prints.
+pub fn makeup_gain(inst: Instrument) -> f32 {
+    // Measured 2026-07-11 (scripts/dev/measure-loudness.mjs), target ≈ -26 dB RMS at
+    // vel 0.8 / gain 1.0. HF families (glock, music box) are clamped well below their
+    // RMS-parity gains — equal-loudness discount, they read louder than RMS suggests.
+    match inst {
+        Instrument::Marimba => 2.1,      // -32.6 dB
+        Instrument::Vibraphone => 3.0,   // -39.4 dB
+        Instrument::Glockenspiel => 6.0, // -55.8 dB, HF-clamped
+        Instrument::MusicBox => 5.0,     // -49.0 dB, HF-clamped
+        Instrument::Guitar => 0.8,       // -24.2 dB
+        Instrument::Bass => 0.78,        // -23.9 dB ("too loud" — user + measurement agree)
+        Instrument::EPiano => 1.4,       // -28.9 dB
+        Instrument::Drums => 0.53,       // -20.5 dB
+        Instrument::SynthPad => 0.46,    // -19.3 dB
+        Instrument::Piano => 0.8,        // -24.3 dB
     }
 }
 
@@ -325,6 +351,194 @@ impl PluckVoice {
     pub fn damp(&mut self) {
         self.loss = t60_gain(0.07, self.sr);
         self.life = self.age + (0.1 * self.sr) as u64;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Acoustic piano — physically-informed (Bank 2003 / Smith-Van Duyne lineage):
+// 1–3 detuned string waveguides per note (unison beating), cascaded dispersion
+// allpasses (inharmonicity / stretched partials), velocity-dependent hammer
+// excitation with strike-position comb, register-scaled decay, damper on
+// note-off (deferred by the sustain pedal at the engine level).
+// Deferred until demanded: commuted soundboard IR, sympathetic resonance.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+struct StringLoop {
+    buf: [f32; PLUCK_BUF],
+    len: usize,
+    pos: usize,
+    lp: f32,
+    lp_c: f32,
+    loss: f32,
+    // fractional tuning allpass
+    ap_c: f32,
+    ap_x1: f32,
+    ap_y1: f32,
+    // two cascaded dispersion allpasses (stiffness → stretched partials)
+    disp_c: f32,
+    d1_x1: f32,
+    d1_y1: f32,
+    d2_x1: f32,
+    d2_y1: f32,
+}
+
+impl StringLoop {
+    /// `detune_cents` shifts this string against the nominal pitch (unison beating).
+    fn new(f0: f32, detune_cents: f32, sr: f32, t60: f32, lp_c: f32, disp_c: f32) -> Self {
+        let f = f0 * (detune_cents / 1200.0).exp2();
+        // Total loop delay budget: buffer + tuning-allpass fraction + loop-lowpass
+        // phase delay + 2× dispersion-allpass DC delay (Jaffe-Smith compensation —
+        // without the dispersion term the stiff strings would all play flat).
+        let lp_delay = (1.0 - lp_c) / lp_c;
+        let disp_delay = 2.0 * (1.0 - disp_c) / (1.0 + disp_c);
+        let total = (sr / f - lp_delay - disp_delay).max(3.0);
+        let len = ((total - 0.5).floor() as usize).clamp(2, PLUCK_BUF - 1);
+        let frac = (total - len as f32).clamp(0.1, 1.5);
+        Self {
+            buf: [0.0; PLUCK_BUF],
+            len,
+            pos: 0,
+            lp: 0.0,
+            lp_c,
+            loss: t60_gain(t60, sr),
+            ap_c: (1.0 - frac) / (1.0 + frac),
+            ap_x1: 0.0,
+            ap_y1: 0.0,
+            disp_c,
+            d1_x1: 0.0,
+            d1_y1: 0.0,
+            d2_x1: 0.0,
+            d2_y1: 0.0,
+        }
+    }
+
+    /// Fill the delay line with the hammer excitation: velocity-brightened noise,
+    /// comb-filtered at the strike position (~1/8 of the string), DC-removed.
+    fn excite(&mut self, exc_c: f32, strike_pos: f32, rng: &mut Lcg) {
+        let len = self.len;
+        let mut lp = 0.0f32;
+        let mut tmp = [0.0f32; PLUCK_BUF];
+        for t in tmp.iter_mut().take(len) {
+            lp += exc_c * (rng.next() - lp);
+            *t = lp;
+        }
+        let p = ((strike_pos * len as f32) as usize).clamp(1, len - 1);
+        let mut mean = 0.0;
+        for i in 0..len {
+            let comb = tmp[i] - 0.92 * tmp[(i + len - p) % len];
+            self.buf[i] = comb;
+            mean += comb;
+        }
+        mean /= len as f32;
+        for b in self.buf.iter_mut().take(len) {
+            *b -= mean;
+        }
+    }
+
+    #[inline(always)]
+    fn tick(&mut self) -> f32 {
+        let y = self.buf[self.pos];
+        // loop lowpass (frequency-dependent loss)
+        self.lp += self.lp_c * (y - self.lp);
+        // dispersion: two cascaded first-order allpasses delay highs vs lows
+        let d1 = self.disp_c * (self.lp - self.d1_y1) + self.d1_x1;
+        self.d1_x1 = self.lp;
+        self.d1_y1 = d1;
+        let d2 = self.disp_c * (d1 - self.d2_y1) + self.d2_x1;
+        self.d2_x1 = d1;
+        self.d2_y1 = d2;
+        // fractional tuning allpass
+        let ap = self.ap_c * (d2 - self.ap_y1) + self.ap_x1;
+        self.ap_x1 = d2;
+        self.ap_y1 = ap;
+        self.buf[self.pos] = ap * self.loss;
+        self.pos = (self.pos + 1) % self.len;
+        y
+    }
+
+    fn flush(&mut self) {
+        self.lp = flush_denormal(self.lp);
+        self.ap_y1 = flush_denormal(self.ap_y1);
+        self.d1_y1 = flush_denormal(self.d1_y1);
+        self.d2_y1 = flush_denormal(self.d2_y1);
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct PianoVoice {
+    strings: [StringLoop; 3],
+    n_strings: usize,
+    level: f32,
+    thump_env: f32,
+    thump_decay: f32,
+    thump_amp: f32,
+    rng: Lcg,
+    sr: f32,
+    life: u64,
+    age: u64,
+}
+
+impl PianoVoice {
+    pub fn start(midi: u32, f0: f32, vel: f32, sr: f32, seed: u32) -> Self {
+        let key = ((midi as f32) - 21.0) / 87.0; // 0 = A0 … 1 = C8
+        // register scaling: long singing bass → short bright top
+        let t60 = (11.0 * (1.0 - key).powf(1.7) + 0.9).min(11.0);
+        // hammer: harder hit and higher register → brighter excitation & loop
+        let exc_c = (0.10 + 0.75 * vel.powf(1.3) + 0.15 * key).clamp(0.08, 0.97);
+        let lp_c = (0.30 + 0.45 * key + 0.20 * vel).clamp(0.25, 0.95);
+        // stiffness (inharmonicity): strong on wound bass strings, mild in mid,
+        // rising again slightly at the very top
+        let disp_c = if key < 0.35 { 0.32 * (1.0 - key / 0.35) + 0.06 } else { 0.04 + 0.05 * (key - 0.35) };
+        // real pianos: 1 wound string low, 2 mid-low, 3 elsewhere
+        let n_strings = if midi < 32 { 1 } else if midi < 44 { 2 } else { 3 };
+        let detune = [0.0, 1.6 - 0.8 * key, -(1.3 - 0.6 * key)];
+        let mut rng = Lcg(seed | 1);
+        let mut strings = [StringLoop::new(f0, 0.0, sr, t60, lp_c, disp_c); 3];
+        for (i, s) in strings.iter_mut().enumerate().take(n_strings) {
+            *s = StringLoop::new(f0, detune[i], sr, t60, lp_c, disp_c);
+            s.excite(exc_c, 0.12, &mut rng);
+        }
+        Self {
+            strings,
+            n_strings,
+            level: 0.55 * (0.25 + 0.75 * vel.powf(1.2)) / (n_strings as f32).sqrt(),
+            thump_env: 1.0,
+            thump_decay: t60_gain(0.012, sr),
+            thump_amp: 0.12 * vel,
+            rng,
+            sr,
+            life: ((t60 * 1.4 + 0.1) * sr) as u64,
+            age: 0,
+        }
+    }
+
+    pub fn render(&mut self, out: &mut [f32]) -> bool {
+        for o in out.iter_mut() {
+            let mut s = 0.0;
+            for st in self.strings.iter_mut().take(self.n_strings) {
+                s += st.tick();
+            }
+            // key/hammer contact thump, first ~10 ms
+            if self.thump_amp > 1e-5 && self.thump_env > 1e-4 {
+                s += self.thump_amp * self.thump_env * self.rng.next();
+                self.thump_env *= self.thump_decay;
+            }
+            *o += s * self.level;
+        }
+        for st in self.strings.iter_mut().take(self.n_strings) {
+            st.flush();
+        }
+        self.age += out.len() as u64;
+        self.age < self.life
+    }
+
+    /// Damper falls: fast but not instant (real dampers take ~0.1 s to kill a string).
+    pub fn damp(&mut self) {
+        for st in self.strings.iter_mut().take(self.n_strings) {
+            st.loss = t60_gain(0.12, self.sr);
+        }
+        self.life = self.age + (0.25 * self.sr) as u64;
     }
 }
 
@@ -629,6 +843,7 @@ pub enum Kernel {
     Pluck(PluckVoice),
     Drum(DrumVoice),
     Synth(SynthVoice),
+    Piano(PianoVoice),
 }
 
 #[derive(Clone, Copy)]
@@ -735,8 +950,11 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
             Kernel::Pluck(PluckVoice::start(f0, vel, sr, t60, 0.55, 0.28, seed))
         }
         Instrument::Bass => {
+            // warm fingered upright/electric hybrid: dark loop, pluck near the neck
+            // (user listening note 2026-07-11: bridge-picked bright bass read as
+            // "loud and weird" — rounder is right for the default)
             let t60 = 5.0 - 2.0 * (((midi as f32) - 28.0) / 32.0).clamp(0.0, 1.0);
-            Kernel::Pluck(PluckVoice::start(f0, vel, sr, t60, 0.38, 0.18, seed))
+            Kernel::Pluck(PluckVoice::start(f0, vel, sr, t60, 0.26, 0.31, seed))
         }
         Instrument::EPiano => {
             // tine + tone-bar partial through a velocity-driven pickup nonlinearity.
@@ -762,5 +980,6 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
         }
         Instrument::Drums => Kernel::Drum(DrumVoice::start(midi, vel, sr, seed)),
         Instrument::SynthPad => Kernel::Synth(SynthVoice::start(f0, vel, sr)),
+        Instrument::Piano => Kernel::Piano(PianoVoice::start(midi, f0, vel, sr, seed)),
     }
 }
