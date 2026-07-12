@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Synthetic and metamorphic validation for the loop metric kernel."""
+
+import os
+import sys
+import tempfile
+import unittest
+
+import numpy as np
+import soundfile as sf
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import compare
+
+
+SR = 48_000
+
+
+def tone(freq=440.0, seconds=0.6, amp=0.25, lead=0.0):
+    n = int(seconds * SR)
+    t = np.arange(n) / SR
+    x = amp * np.sin(2 * np.pi * freq * t)
+    if lead:
+        x = np.concatenate([np.zeros(int(lead * SR)), x])
+    return x.astype(np.float64)
+
+
+class ResamplingTests(unittest.TestCase):
+    def test_in_band_tone_level_is_preserved(self):
+        sr = 96_000
+        t = np.arange(sr) / sr
+        x = 0.25 * np.sin(2 * np.pi * 1000 * t)
+        y = compare.resample_to(x, sr, 48_000)
+        interior = y[1000:-1000]
+        rms = np.sqrt(np.mean(interior ** 2))
+        self.assertAlmostEqual(rms, 0.25 / np.sqrt(2), delta=3e-4)
+
+    def test_above_nyquist_tone_is_rejected_not_aliased(self):
+        sr = 96_000
+        t = np.arange(sr) / sr
+        x = np.sin(2 * np.pi * 30_000 * t)
+        y = compare.resample_to(x, sr, 48_000)
+        self.assertLess(np.sqrt(np.mean(y[1000:-1000] ** 2)), 0.01)
+
+
+class TrustGateTests(unittest.TestCase):
+    def test_clean_tone_passes_required_gates(self):
+        x = tone()
+        gates = compare.artifact_gates(x, x, SR)
+        self.assertTrue(gates["all_pass"])
+        self.assertIsNone(gates["pre_onset_energy"]["pass"])
+        self.assertIsNone(gates["release_discontinuity"]["pass"])
+
+    def test_single_sample_flip_fails_jump_gate(self):
+        x = tone()
+        x[1000] = 1.0
+        x[1001] = -1.0
+        gates = compare.artifact_gates(x, tone(), SR)
+        self.assertFalse(gates["max_sample_jump"]["pass"])
+        self.assertFalse(gates["trusted"])
+
+    def test_dc_is_peak_relative(self):
+        x = tone() + 0.02
+        gates = compare.artifact_gates(x, tone(), SR)
+        self.assertFalse(gates["dc_offset"]["pass"])
+
+    def test_nonfinite_render_fails_closed(self):
+        x = tone()
+        x[100] = np.nan
+        gates = compare.artifact_gates(x, tone(), SR)
+        self.assertFalse(gates["finite"]["pass"])
+        self.assertFalse(gates["trusted"])
+
+    def test_hard_clipping_occupancy_fails(self):
+        x = np.clip(tone(amp=2.0), -1.0, 1.0)
+        gates = compare.artifact_gates(x, tone(), SR)
+        self.assertFalse(gates["clipping"]["pass"])
+
+    def test_ultrasonic_injection_fails(self):
+        x = tone(440, amp=0.05)
+        t = np.arange(len(x)) / SR
+        x += 0.3 * np.sin(2 * np.pi * 19_000 * t)
+        gates = compare.artifact_gates(x, tone(), SR)
+        self.assertFalse(gates["ultrasonic_ratio"]["pass"])
+
+    def test_declared_pre_onset_noise_fails(self):
+        x = tone(lead=0.05)
+        x[: int(0.045 * SR)] = 0.03
+        gates = compare.artifact_gates(x, x, SR, expected_onset_s=0.05)
+        self.assertFalse(gates["pre_onset_energy"]["pass"])
+
+    def test_release_discontinuity_fails(self):
+        x = tone(seconds=0.6)
+        at = int(0.3 * SR)
+        x[at:] += 0.5
+        gates = compare.artifact_gates(x, tone(), SR, note_off_s=0.3)
+        self.assertFalse(gates["release_discontinuity"]["pass"])
+
+
+class AlignmentAndDistanceTests(unittest.TestCase):
+    def test_bounded_alignment_reports_shift_and_restores_identity(self):
+        x = tone(lead=0.005)
+        y = np.concatenate([np.zeros(120), x])
+        xr, yf, meta = compare.onset_align(y, x, SR)
+        self.assertEqual(meta["status"], "applied")
+        self.assertEqual(meta["lag_samples"], 120)
+        n = min(len(xr), len(yf))
+        np.testing.assert_allclose(xr[:n], yf[:n], atol=1e-12)
+
+    def test_excessive_alignment_is_rejected(self):
+        x = tone(lead=0.002)
+        y = np.concatenate([np.zeros(int(0.02 * SR)), x])
+        _, _, meta = compare.onset_align(y, x, SR, max_lag_s=0.01)
+        self.assertEqual(meta["status"], "rejected")
+
+    def test_identical_mr_stft_is_zero(self):
+        x = tone()
+        result = compare.mr_stft_dist(x, x, SR)
+        self.assertEqual(result["mean"], 0.0)
+
+
+class ReportContractTests(unittest.TestCase):
+    def test_reports_are_deterministic_and_content_addressed(self):
+        x = tone(seconds=0.7)
+        with tempfile.TemporaryDirectory() as d:
+            a = os.path.join(d, "candidate.wav")
+            b = os.path.join(d, "reference.wav")
+            sf.write(a, x, SR, subtype="FLOAT")
+            sf.write(b, x, SR, subtype="FLOAT")
+            first = compare.compare_files(a, b)
+            second = compare.compare_files(a, b)
+        self.assertEqual(first, second)
+        self.assertEqual(first["schema_version"], compare.REPORT_SCHEMA_VERSION)
+        self.assertEqual(first["metric_version"], compare.METRIC_VERSION)
+        self.assertEqual(first["inputs"]["render"]["sha256"], first["inputs"]["reference"]["sha256"])
+
+    def test_invalid_loudness_axis_is_removed(self):
+        report = {
+            "lufs": {"render": -20.0, "reference": -22.0, "delta": 2.0},
+            "partial_decay_dbps": {"render": [], "reference": []},
+            "envelope": {"render": {"t60_early": 1, "t60_late": 2, "time_to_peak_ms": 1},
+                         "reference": {"t60_early": 1, "t60_late": 2, "time_to_peak_ms": 1}},
+            "logmel_dist": {"attack": 1, "tail": 1},
+            "centroid": {"render": {"attack": 1}, "reference": {"attack": 1}},
+        }
+        compare.disable_invalid_axes(report, {"lufs": "normalized"})
+        self.assertFalse(report["lufs"]["valid"])
+        self.assertIsNone(report["lufs"]["delta"])
+
+    def test_manifest_contract_disables_invalid_axis_in_full_report(self):
+        x = tone(seconds=0.7)
+        with tempfile.TemporaryDirectory() as d:
+            ref_dir = os.path.join(d, "references", "guitar-acoustic")
+            os.makedirs(ref_dir)
+            a = os.path.join(d, "candidate.wav")
+            b = os.path.join(ref_dir, "reference.wav")
+            sf.write(a, x, SR, subtype="FLOAT")
+            sf.write(b, x, SR, subtype="FLOAT")
+            report = compare.compare_files(a, b)
+        self.assertFalse(report["axis_validity"]["lufs"]["valid"])
+        self.assertIsNone(report["lufs"]["delta"])
+        self.assertIn("release", report["axis_validity"])
+
+
+if __name__ == "__main__":
+    unittest.main()

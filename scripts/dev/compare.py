@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Multi-axis render↔reference comparison for the match-reference loop.
 
-Usage: python3 scripts/dev/compare.py <render.wav> <reference.wav> [--json]
+Usage: python3 scripts/dev/compare.py <render.wav> <reference.wav> [options]
 
 Axes (never optimize a single number — see skills/match-reference):
   - log-mel spectrogram distance (overall + attack/mid/tail thirds)
@@ -12,14 +12,33 @@ Axes (never optimize a single number — see skills/match-reference):
 
 Both files are mono-ized, resampled to the lower rate, and loudness-normalized
 before spectral comparison (loudness reported separately, pre-normalization).
-Self-contained: numpy + soundfile + pyloudnorm only.
+Dependencies are owned by scripts/dev/requirements-loop.txt. Reports are
+versioned and content-addressed so an iteration can be reproduced exactly.
 """
+import argparse
+import hashlib
 import json
+import os
+import platform
 import sys
 
 import numpy as np
 import pyloudnorm
+import scipy
+from scipy.signal import resample_poly
 import soundfile as sf
+
+
+REPORT_SCHEMA_VERSION = "1.0.0"
+METRIC_VERSION = "2026.07.12-l1"
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def load_mono(path):
@@ -28,12 +47,21 @@ def load_mono(path):
 
 
 def resample_to(x, sr, target_sr):
+    """Band-limited deterministic resampling with an exact output length.
+
+    Linear interpolation aliases energy above the destination Nyquist into the
+    comparison band, which can reward an artifact. scipy's polyphase FIR path
+    applies the anti-alias filter before decimation.
+    """
     if sr == target_sr:
         return x
+    from math import gcd
+    g = gcd(int(sr), int(target_sr))
+    y = resample_poly(x, int(target_sr) // g, int(sr) // g, padtype="constant")
     n_out = int(round(len(x) * target_sr / sr))
-    t_in = np.arange(len(x)) / sr
-    t_out = np.arange(n_out) / target_sr
-    return np.interp(t_out, t_in, x)
+    if len(y) < n_out:
+        y = np.pad(y, (0, n_out - len(y)))
+    return np.asarray(y[:n_out], dtype=np.float64)
 
 
 def lufs(x, sr):
@@ -136,48 +164,79 @@ def logmel_dist(xr, xf, sr, perceptual=True, **kw):
     }
 
 
-def mr_stft_dist(xr, xf, sr, perceptual=True):
-    """Multi-resolution STFT distance (256/1024/4096, K-weighted, onset-aligned):
-    single-window metrics miss transient-vs-tonal trades. Additive axis for now
-    (agents mid-round keep logmel continuity); becomes the headline next round."""
-    # onset-align: cross-correlate first 50 ms envelopes so micro-timing
-    # differences don't pollute timbre distance
-    n50 = int(0.05 * sr)
-    er, ef = np.abs(xr[:n50]), np.abs(xf[:n50])
-    if len(er) == len(ef) and len(er) > 64:
-        xc = np.correlate(er - er.mean(), ef - ef.mean(), mode="full")
-        lag = int(np.argmax(xc)) - (len(er) - 1)
-        if 0 < lag < n50:
-            xr = xr[lag:]
-        elif -n50 < lag < 0:
-            xf = xf[-lag:]
+def onset_align(xr, xf, sr, max_lag_s=0.012, search_s=0.05):
+    """Bounded onset-envelope alignment; report rather than hide the shift.
+
+    Alignment may remove capture latency, but it must not warp an attack. A lag
+    outside max_lag_s fails closed and leaves both signals untouched.
+    """
+    n = min(len(xr), len(xf), int(search_s * sr))
+    max_lag = max(1, int(max_lag_s * sr))
+    if n <= 64:
+        return xr, xf, {"status": "not_evaluated", "lag_samples": 0, "lag_ms": 0.0,
+                        "max_lag_ms": round(max_lag_s * 1000, 3)}
+    er = np.abs(xr[:n])
+    ef = np.abs(xf[:n])
+    xc = np.correlate(er - er.mean(), ef - ef.mean(), mode="full")
+    lag = int(np.argmax(xc)) - (n - 1)
+    if abs(lag) > max_lag:
+        return xr, xf, {"status": "rejected", "lag_samples": lag,
+                        "lag_ms": round(1000 * lag / sr, 3),
+                        "max_lag_ms": round(max_lag_s * 1000, 3)}
+    if lag > 0:
+        xr = xr[lag:]
+    elif lag < 0:
+        xf = xf[-lag:]
+    return xr, xf, {"status": "applied", "lag_samples": lag,
+                    "lag_ms": round(1000 * lag / sr, 3),
+                    "max_lag_ms": round(max_lag_s * 1000, 3)}
+
+
+def mr_stft_dist(xr, xf, sr, perceptual=True, alignment=None):
+    """Multi-resolution STFT distance (256/1024/4096, K-weighted).
+
+    The caller may provide a precomputed bounded alignment so its operation is
+    visible in report provenance. Direct callers get the same bounded default.
+    """
+    if alignment is None:
+        xr, xf, alignment = onset_align(xr, xf, sr)
     out = {}
     for n in (256, 1024, 4096):
         d = logmel_dist(xr, xf, sr, perceptual=perceptual,
                         n=n, hop=n // 4, mels=min(64, n // 8), fmin=25.0)
         out[f"w{n}"] = d["overall"]
     out["mean"] = round(float(np.mean([out["w256"], out["w1024"], out["w4096"]])), 4)
+    out["alignment"] = alignment
     return out
 
 
-def artifact_gates(xr, xf, sr, sr_ref=None):
+def artifact_gates(xr, xf, sr, sr_ref=None, expected_onset_s=None, note_off_s=None,
+                   max_post_note_off_db=None):
     """Adversarial sanity gates: a red gate means the spectral distances are
     NOT to be trusted for this render (the loop twice optimized FOR artifacts
     the refs could not see — 2026-07-12 audit). All computed on the render,
     crest compared against the reference."""
     gates = {}
+    finite = bool(np.isfinite(xr).all())
+    gates["finite"] = {"value": finite, "pass": finite}
+    if not finite:
+        gates["all_pass"] = False
+        gates["trusted"] = False
+        return gates
     # onset crest: attack (first 3 ms after onset) vs body (10 ms..60%) —
     # render must not exceed the reference's crest by >6 dB (impulse/click
     # artifacts). Onset = first sample above 2% of peak (refs have lead-in
     # silence); both signals peak-referenced so loudness scaling cancels.
-    def crest_db(x):
+    def crest_db(x, rate):
         pk = float(np.abs(x).max()) + 1e-12
         on = int(np.argmax(np.abs(x) > 0.02 * pk))
         seg = x[on:]
-        a = float(np.abs(seg[: int(sr * 0.003)]).max()) + 1e-9
-        b = float(np.abs(seg[int(sr * 0.01): max(int(len(seg) * 0.6), int(sr * 0.02))]).max()) + 1e-9
+        attack = seg[: max(1, int(rate * 0.003))]
+        body = seg[int(rate * 0.01): max(int(len(seg) * 0.6), int(rate * 0.02))]
+        a = float(np.abs(attack).max()) + 1e-9 if len(attack) else 1e-9
+        b = float(np.abs(body).max()) + 1e-9 if len(body) else a
         return 20.0 * np.log10(a / b)
-    cr, cf = crest_db(xr), crest_db(xf)
+    cr, cf = crest_db(xr, sr), crest_db(xf, sr_ref or sr)
     gates["onset_crest_db"] = {"render": round(cr, 1), "reference": round(cf, 1),
                                "pass": bool(cr <= cf + 6.0)}
     # adjacent-sample jump relative to own peak: a near-full-scale single-sample
@@ -185,6 +244,12 @@ def artifact_gates(xr, xf, sr, sr_ref=None):
     pk = float(np.abs(xr).max()) + 1e-12
     j = float(np.abs(np.diff(xr)).max()) / pk
     gates["max_sample_jump"] = {"value": round(j, 3), "pass": bool(j < 1.6)}
+    # Hard clipping occupancy. A single true peak near 1 can be legitimate; a
+    # run of samples pinned there is not. Render floats may exceed 1 in debug,
+    # which also fails this gate.
+    clipped = float(np.mean(np.abs(xr) >= 0.999))
+    gates["clipping"] = {"occupancy": round(clipped, 6), "peak": round(pk, 5),
+                         "pass": bool(clipped <= 1e-4 and pk <= 1.05)}
     # ultrasonic ratio: energy above 16 kHz vs 1-8 kHz band (needs sr > 32k);
     # references recorded at <=16 kHz cannot police this region
     if sr > 33000:  # native render rate — never gate on the resampled signal
@@ -197,9 +262,46 @@ def artifact_gates(xr, xf, sr, sr_ref=None):
         r = hi / total
         gates["ultrasonic_ratio"] = {"value": round(r, 4), "pass": bool(r < 0.05)}
     # DC offset
-    dc = float(np.abs(np.mean(xr)))
-    gates["dc_offset"] = {"value": round(dc, 5), "pass": bool(dc < 0.01)}
-    gates["all_pass"] = bool(all(v["pass"] for v in gates.values() if isinstance(v, dict)))
+    dc = float(np.abs(np.mean(xr))) / pk
+    gates["dc_offset"] = {"peak_ratio": round(dc, 5), "pass": bool(dc < 0.01)}
+    # Optional case-aware gates. L2 case manifests will make these required for
+    # families where the reference declares a stable onset/note-off contract.
+    if expected_onset_s is None:
+        gates["pre_onset_energy"] = {"status": "not_evaluated", "pass": None}
+    else:
+        cut = max(0, min(len(xr), int(expected_onset_s * sr)))
+        pre = xr[: max(0, cut - int(0.002 * sr))]
+        body = xr[cut: min(len(xr), cut + int(0.1 * sr))]
+        pre_rms = float(np.sqrt(np.mean(pre ** 2))) if len(pre) else 0.0
+        body_rms = float(np.sqrt(np.mean(body ** 2))) + 1e-12 if len(body) else 1e-12
+        pre_db = 20 * np.log10(pre_rms / body_rms + 1e-12)
+        gates["pre_onset_energy"] = {"relative_db": round(float(pre_db), 1),
+                                     "pass": bool(pre_db <= -35.0)}
+    if note_off_s is None:
+        gates["release_discontinuity"] = {"status": "not_evaluated", "pass": None}
+        gates["post_note_off_energy"] = {"status": "not_evaluated", "pass": None}
+    else:
+        at = max(1, min(len(xr) - 2, int(note_off_s * sr)))
+        radius = max(2, int(0.002 * sr))
+        lo, hi = max(1, at - radius), min(len(xr) - 1, at + radius)
+        release_jump = float(np.abs(np.diff(xr[lo:hi])).max()) / pk
+        gates["release_discontinuity"] = {"peak_ratio": round(release_jump, 4),
+                                          "pass": bool(release_jump < 0.35)}
+        post = xr[at:]
+        post_rms = float(np.sqrt(np.mean(post ** 2))) / pk if len(post) else 0.0
+        post_db = 20 * np.log10(post_rms + 1e-12)
+        gates["post_note_off_energy"] = {
+            "relative_db": round(float(post_db), 1),
+            "limit_db": max_post_note_off_db,
+            "status": "not_evaluated" if max_post_note_off_db is None else "evaluated",
+            "pass": None if max_post_note_off_db is None else bool(post_db <= max_post_note_off_db),
+        }
+    # Ignore explicitly unavailable optional gates in the aggregate; any real
+    # failure invalidates interpretation of every downstream distance.
+    evaluated = [v["pass"] for v in gates.values()
+                 if isinstance(v, dict) and v.get("pass") is not None]
+    gates["all_pass"] = bool(all(evaluated))
+    gates["trusted"] = gates["all_pass"]
     return gates
 
 
@@ -331,33 +433,97 @@ def manifest_lookup(ref_path):
     return None
 
 
-def main():
-    render_path, ref_path = sys.argv[1], sys.argv[2]
-    profile = "default"
-    if "--profile" in sys.argv:
-        profile = sys.argv[sys.argv.index("--profile") + 1]
+def disable_invalid_axes(report, invalid_axes):
+    """Fail closed: remove values a corpus contract says cannot be trusted."""
+    if not invalid_axes:
+        report["axis_validity"] = {}
+        return
+    report["axis_validity"] = {
+        axis: {"valid": False, "reason": reason}
+        for axis, reason in sorted(invalid_axes.items())
+    }
+    if "lufs" in invalid_axes:
+        report["lufs"] = {"valid": False, "reason": invalid_axes["lufs"],
+                          "render": None, "reference": None, "delta": None}
+    if "decay" in invalid_axes:
+        report["partial_decay_dbps"] = {"valid": False,
+                                         "reason": invalid_axes["decay"],
+                                         "render": None, "reference": None}
+        for side in ("render", "reference"):
+            report["envelope"][side]["t60_early"] = None
+            report["envelope"][side]["t60_late"] = None
+    if "attack" in invalid_axes:
+        report["logmel_dist"]["attack"] = None
+        for side in ("render", "reference"):
+            report["centroid"][side]["attack"] = None
+            report["envelope"][side]["time_to_peak_ms"] = None
+    if "tail" in invalid_axes:
+        report["logmel_dist"]["tail"] = None
+
+
+def compare_files(render_path, ref_path, profile="default", flat=False,
+                  expected_onset_s=None, note_off_s=None,
+                  max_post_note_off_db=None):
     prof = PROFILES.get(profile, PROFILES["default"])
     xr, sr_r = load_mono(render_path)
     xf, sr_f = load_mono(ref_path)
-    gates = artifact_gates(xr, xf, sr_r, sr_ref=sr_f)  # native rate, pre-resample/pre-normalize
+    native_frames = {"render": len(xr), "reference": len(xf)}
+    gates = artifact_gates(xr, xf, sr_r, sr_ref=sr_f,
+                           expected_onset_s=expected_onset_s,
+                           note_off_s=note_off_s,
+                           max_post_note_off_db=max_post_note_off_db)
     ref_meta = manifest_lookup(ref_path)
+    operations = []
     if ref_meta and ref_meta.get("mask_after_s"):
         # hard release gates in the corpus tax physically-correct tails: truncate
         m = ref_meta["mask_after_s"]
         xr, xf = xr[: int(m * sr_r)], xf[: int(m * sr_f)]
+        operations.append({"operation": "mask_after_s", "value": m})
     sr = min(sr_r, sr_f)
     xr, xf = resample_to(xr, sr_r, sr), resample_to(xf, sr_f, sr)
+    if sr_r != sr:
+        operations.append({"operation": "resample_render", "from_sr": sr_r, "to_sr": sr,
+                           "method": "scipy.signal.resample_poly"})
+    if sr_f != sr:
+        operations.append({"operation": "resample_reference", "from_sr": sr_f, "to_sr": sr,
+                           "method": "scipy.signal.resample_poly"})
     l_r, l_f = lufs(xr, sr), lufs(xf, sr)
     # loudness-normalize render to reference for spectral comparison
     if np.isfinite(l_r) and np.isfinite(l_f):
-        xr = xr * (10 ** ((l_f - l_r) / 20))
+        gain_db = l_f - l_r
+        xr = xr * (10 ** (gain_db / 20))
+        operations.append({"operation": "loudness_normalize_render", "gain_db": round(gain_db, 6)})
     n = min(len(xr), len(xf))
     xr, xf = xr[:n], xf[:n]
 
-    flat = "--flat-weighting" in sys.argv
+    ar, af, alignment = onset_align(xr, xf, sr)
     lm = logmel_dist(xr, xf, sr, perceptual=not flat,
                      n=prof["n"], hop=prof["hop"], mels=prof["mels"], fmin=prof["fmin"])
     report = {
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "metric_version": METRIC_VERSION,
+        "interpretation": "trusted" if gates["all_pass"] else "untrusted",
+        "inputs": {
+            "render": {"path": str(render_path), "sha256": file_sha256(render_path),
+                       "sample_rate": sr_r, "frames": native_frames["render"]},
+            "reference": {"path": str(ref_path), "sha256": file_sha256(ref_path),
+                          "sample_rate": sr_f, "frames": native_frames["reference"]},
+        },
+        "runtime": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "scipy": scipy.__version__,
+            "soundfile": getattr(sf, "__version__", "unknown"),
+            "pyloudnorm": getattr(pyloudnorm, "__version__", "unknown"),
+        },
+        "configuration": {
+            "profile": profile,
+            "weighting": "flat" if flat else "K (BS.1770)",
+            "expected_onset_s": expected_onset_s,
+            "note_off_s": note_off_s,
+            "max_post_note_off_db": max_post_note_off_db,
+        },
+        "operations": operations,
         "profile": profile,
         "partial_decay_dbps": {
             "render": partial_decay(xr, sr),
@@ -368,12 +534,12 @@ def main():
         "lufs": {"render": round(l_r, 1), "reference": round(l_f, 1), "delta": round(l_r - l_f, 1)},
         "logmel_dist": lm,
         "weighting": "flat" if flat else "K (BS.1770)",
-        "ref_corpus": ({k: ref_meta[k] for k in ("corpus", "sr", "level_normalized", "mask_after_s", "notes") if k in ref_meta} if ref_meta else None),
+        "ref_corpus": ({k: ref_meta[k] for k in ("corpus", "sr", "level_normalized", "mask_after_s", "invalid_axes", "notes") if k in ref_meta} if ref_meta else None),
         "centroid": {"render": centroid_traj(xr, sr), "reference": centroid_traj(xf, sr)},
         "envelope": {"render": envelope_stats(xr, sr), "reference": envelope_stats(xf, sr)},
         "partials": {"render": partials(xr, sr), "reference": partials(xf, sr)},
         "crest": {"render": crest_factor(xr), "reference": crest_factor(xf)},
-        "mr_stft": mr_stft_dist(xr, xf, sr, perceptual=not flat),
+        "mr_stft": mr_stft_dist(ar, af, sr, perceptual=not flat, alignment=alignment),
         "gates": gates,
     }
     if "lf" in prof:
@@ -381,6 +547,30 @@ def main():
         report["logmel_lf"] = logmel_dist(xr, xf, sr, perceptual=False, n=lf["n"], hop=lf["hop"],
                                           mels=lf["mels"], fmin=lf["fmin"], fmax=lf["fmax"])
         report["glide_hz"] = {"render": glide_track(xr, sr), "reference": glide_track(xf, sr)}
+    disable_invalid_axes(report, (ref_meta or {}).get("invalid_axes", {}))
+    return report
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("render")
+    p.add_argument("reference")
+    p.add_argument("--profile", choices=sorted(PROFILES), default="default")
+    p.add_argument("--flat-weighting", action="store_true")
+    p.add_argument("--expected-onset-s", type=float)
+    p.add_argument("--note-off-s", type=float)
+    p.add_argument("--max-post-note-off-db", type=float)
+    p.add_argument("--json", action="store_true", help="retained for CLI compatibility; JSON is always emitted")
+    return p.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    report = compare_files(args.render, args.reference, profile=args.profile,
+                           flat=args.flat_weighting,
+                           expected_onset_s=args.expected_onset_s,
+                           note_off_s=args.note_off_s,
+                           max_post_note_off_db=args.max_post_note_off_db)
     print(json.dumps(report, indent=2))
 
 
