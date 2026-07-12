@@ -89,10 +89,44 @@ def log_mel(x, sr, n=1024, hop=256, mels=64, fmin=30.0, fmax=None):
     return np.log10(mel + 1e-10)
 
 
-def logmel_dist(xr, xf, sr, **kw):
+def k_weight(freqs):
+    """BS.1770 K-weighting magnitude at `freqs` (Hz) — the same perceptual
+    curve the loudness pipeline uses (pyloudnorm), evaluated from the
+    standard's 48 kHz biquads. Returned as linear weights, floored at 0.2 so
+    no band drops below 1/5 influence (deep-LF distances still count), then
+    normalized to mean 1 so weighted distances stay scale-comparable."""
+    w = 2.0 * np.pi * np.asarray(freqs, dtype=float) / 48000.0
+    def mag(b, a):
+        z = np.exp(-1j * w)
+        return np.abs((b[0] + b[1] * z + b[2] * z * z) / (a[0] + a[1] * z + a[2] * z * z))
+    shelf = mag([1.53512485958697, -2.69169618940638, 1.19839281085285],
+                [1.0, -1.69065929318241, 0.73248077421585])
+    rlb = mag([1.0, -2.0, 1.0], [1.0, -1.99004745483398, 0.99007225036621])
+    k = np.maximum(shelf * rlb, 0.2)
+    return k / k.mean()
+
+
+def mel_centers(sr, n_mels, fmin, fmax=None):
+    fmax = fmax or 0.47 * sr
+    def hz2mel(f):
+        return 2595.0 * np.log10(1.0 + f / 700.0)
+    def mel2hz(m):
+        return 700.0 * (10 ** (m / 2595.0) - 1.0)
+    return mel2hz(np.linspace(hz2mel(fmin), hz2mel(fmax), n_mels + 2))[1:-1]
+
+
+def logmel_dist(xr, xf, sr, perceptual=True, **kw):
+    """Log-mel distance. `perceptual=True` (default, Keunwoo 2026-07-12)
+    weights each mel band by K-weighting at its center frequency — bands the
+    ear barely hears no longer count as much as the presence region. The LF
+    zoom views (e.g. kick 20-400 Hz) are called with perceptual=False: their
+    whole purpose is inspecting a band the weighted main view de-emphasizes."""
     mr, mf = log_mel(xr, sr, **kw), log_mel(xf, sr, **kw)
     t = min(len(mr), len(mf))
     d = np.abs(mr[:t] - mf[:t])
+    if perceptual:
+        cw = k_weight(mel_centers(sr, kw.get("mels", 64), kw.get("fmin", 30.0), kw.get("fmax")))
+        d = d * cw[None, :]
     thirds = np.array_split(d, 3)
     return {
         "overall": round(float(d.mean()), 4),
@@ -228,7 +262,9 @@ def main():
     n = min(len(xr), len(xf))
     xr, xf = xr[:n], xf[:n]
 
-    lm = logmel_dist(xr, xf, sr, n=prof["n"], hop=prof["hop"], mels=prof["mels"], fmin=prof["fmin"])
+    flat = "--flat-weighting" in sys.argv
+    lm = logmel_dist(xr, xf, sr, perceptual=not flat,
+                     n=prof["n"], hop=prof["hop"], mels=prof["mels"], fmin=prof["fmin"])
     report = {
         "profile": profile,
         "partial_decay_dbps": {
@@ -239,6 +275,7 @@ def main():
         "seconds": round(n / sr, 2),
         "lufs": {"render": round(l_r, 1), "reference": round(l_f, 1), "delta": round(l_r - l_f, 1)},
         "logmel_dist": lm,
+        "weighting": "flat" if flat else "K (BS.1770)",
         "centroid": {"render": centroid_traj(xr, sr), "reference": centroid_traj(xf, sr)},
         "envelope": {"render": envelope_stats(xr, sr), "reference": envelope_stats(xf, sr)},
         "partials": {"render": partials(xr, sr), "reference": partials(xf, sr)},
@@ -246,7 +283,7 @@ def main():
     }
     if "lf" in prof:
         lf = prof["lf"]
-        report["logmel_lf"] = logmel_dist(xr, xf, sr, n=lf["n"], hop=lf["hop"],
+        report["logmel_lf"] = logmel_dist(xr, xf, sr, perceptual=False, n=lf["n"], hop=lf["hop"],
                                           mels=lf["mels"], fmin=lf["fmin"], fmax=lf["fmax"])
         report["glide_hz"] = {"render": glide_track(xr, sr), "reference": glide_track(xf, sr)}
     print(json.dumps(report, indent=2))
