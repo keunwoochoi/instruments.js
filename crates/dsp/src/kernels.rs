@@ -95,6 +95,57 @@ pub fn amp_defaults(inst: Instrument) -> (f32, f32) {
     }
 }
 
+/// Amp gain-ride per instrument: (threshold, exponent p = 1 − 1/R, max gain,
+/// recovery seconds). 0.0 threshold = bypass. The "amplifier factor" (owner
+/// verdict 2026-07-12: notes must remain longer): a tube amp's supply rail sags
+/// under attack current and RECOVERS as the string decays, and bias shift in
+/// the power stage acts the same way — the amp's gain effectively rises
+/// relative to the signal, flattening the envelope so the note sings instead
+/// of dying at the string's own rate (Pakarinen & Yeh, "A Review of Digital
+/// Techniques for Modeling Vacuum-Tube Guitar Amplifiers", CMJ 33(2) 2009:
+/// sag/bias-shift = program-dependent compression). Implemented on the track
+/// bus PRE-drive as an upward-only slow gain ride: unity at attack (velocity
+/// dynamics and pick transients pass untouched — the guard), rising toward
+/// (thr/env)^p as the envelope falls below thr, capped. For the distorted
+/// channel the rising gain re-feeds the ADAA-tanh limiter and extends its
+/// hold the way a cascaded-triode preamp does (single tanh at drive 90 spans
+/// ~35 dB of limiter range; the FreePats refs behave like 60+ dB — measured
+/// t_-3dB 3.6–22.6 s vs our 1.1–3.9 s baseline).
+pub fn amp_ride_defaults(inst: Instrument) -> (f32, f32, f32, f32) {
+    match inst {
+        // clean: ratio 2:1 above the ride knee (p = 0.5), +12 dB cap —
+        // NSynth 022 (deep-sag rig) holds slope_sustain −3.0…−3.4 dB/s where
+        // the raw string gives −8…−13; moderate ratio keeps the 028 rig's
+        // velocity/attack character (owner kept the bright rig, r3).
+        Instrument::GuitarElectric => (0.14, 0.67, 6.0, 0.5),
+        // distorted: ratio 4:1 (p = 0.75), +20 dB cap — the drive-sustain of
+        // a multi-stage preamp; refs hold output within −3 dB for 3.6–8.8 s
+        // (wound strings) and 22 s soft-picked.
+        Instrument::GuitarDistorted => (0.18, 0.75, 10.0, 0.4),
+        _ => (0.0, 0.0, 1.0, 0.1),
+    }
+}
+
+/// Post-drive cab/presence EQ per instrument: two RBJ peaking sections
+/// ((freq Hz, Q, gain dB) × 2), applied on the track bus AFTER the ADAA drive
+/// and tone lowpass. 0.0 freq = bypass. This is r3's filed recommendation #1:
+/// at drive 90 the tanh is a limiter, so no pre-clip EQ survives into the
+/// output spectrum — presence and the cab's LF bump must be POST-clip (r3
+/// measured a pre-drive 60 Hz/Q2 bump NEUTRAL-to-worse). A guitar cab is the
+/// speaker's own response: a strong low resonance bump and a presence edge
+/// before the HF collapse (Zollner ch. 10 speaker curves). Linear stage — no
+/// aliasing, no allocation.
+pub fn amp_post_eq_defaults(inst: Instrument) -> ((f32, f32, f32), (f32, f32, f32)) {
+    match inst {
+        // FreePats dist2 refs, band balance re band max (measured 2026-07-12):
+        // A2/E2 refs put 250 Hz–2.5 kHz at −12…−22 below the 60–250 Hz cab
+        // bump (we sat −4.7…−7.5 — the chug's LF dominance is a cab feature);
+        // the B3 ref keeps 2.5–7.5 kHz presence at −9…−13 (we sat −18…−27).
+        Instrument::GuitarDistorted => ((105.0, 0.9, 9.0), (4800.0, 0.7, 11.0)),
+        _ => ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+    }
+}
+
 /// Magnetic-pickup resonance per instrument: (resonant-lowpass Hz, Q). The RLC
 /// resonance of a real pickup is the core "electric" tone; 0.0 = bypass.
 pub fn pickup_defaults(inst: Instrument) -> (f32, f32) {
@@ -239,8 +290,8 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::SynthPad => 0.50,     // was -26.5 LUFS
         Instrument::Piano => 0.066, // P1 per-key calibration re-bake (per-key LUFS trims raised the mid; was -14.9 LUFS at 0.130, x0.51 per measure-loudness)
         Instrument::GuitarSteel => 0.362,   // re-bake after onset-impulse fix (the impulse carried 4.6 LU of K-weighted loudness)
-        Instrument::GuitarElectric => 0.41, // electric r3 re-bake (bright-028 rig, pyloudnorm -22.5 pre-bake)
-        Instrument::GuitarDistorted => 0.21, // electric r3 re-bake (drive-90 lead, tone 5.5k)
+        Instrument::GuitarElectric => 0.41, // amp-round re-bake: pyloudnorm flat at -20.8 (x1.01, kept; gain-ride tail energy is gating-neutral)
+        Instrument::GuitarDistorted => 0.132, // amp-round re-bake: gain-ride + post-drive cab EQ carried +4 LU (was -16.8 at 0.21, x0.63 per pyloudnorm)
         Instrument::DrumsRock => 0.35,      // kick round re-bake (beater-transient kick, x0.93)
         Instrument::DrumsJazz => 0.60,      // kick round re-bake (open membrane-modal kick ran +3 LU, x0.71)
     }
@@ -2800,6 +2851,12 @@ pub struct ElectricVoice {
     rel_hp_c: f32,
     rel_lp: f32,
     rel_lp2: f32,
+    /// distorted-channel voice (drive-90 bus): scales the release injection
+    /// down — r3's burst calibration was vs the CLEAN 028 refs; through the
+    /// amp round's gain-ride (at cap by note-off) + tanh limiter + presence
+    /// EQ the same injection re-saturated the limiter and read +4.7 dB ABOVE
+    /// the note's own attack (measured 2026-07-12; a pop on every note-off).
+    dist: bool,
     vel: f32,
     level: f32,
     life: u64,
@@ -2867,6 +2924,7 @@ impl ElectricVoice {
             rel_hp_c: 0.0,
             rel_lp: 0.0,
             rel_lp2: 0.0,
+            dist: false,
             vel,
             level: 0.5 * (0.35 + 0.65 * vel),
             life: ((t60 * 1.5) * sr) as u64,
@@ -3025,6 +3083,7 @@ impl ElectricVoice {
             rel_hp_c: 1.0 - (-core::f32::consts::TAU * 1400.0 / sr).exp(),
             rel_lp: 0.0,
             rel_lp2: 0.0,
+            dist,
             vel,
             // Velocity moves loudness far less than timbre on an electric (NSynth
             // layer spread ≈ 5 LU, most of it spectral): keep the level curve
@@ -3242,12 +3301,20 @@ impl ElectricVoice {
             let force = (1.0 - 0.55 * self.vel) * wound;
             // scrape stays velocity-flat: the refs' 700–1400 lobe is
             // proportionally LARGER at ff (−9 re burst) than at mp (−20)
-            self.rel_amp = 0.20 * wound;
+            // dist: the r3 thump is an H1-PURE injection (raised cosine) — on
+            // the drive-90 bus the limiter re-saturates on it and the whole
+            // burst lands on the post-drive 105 Hz cab bump (+9 dB), reading
+            // +3.6…+4.7 dB ABOVE the note's own attack (measured: a −9 dB
+            // injection cut only moved the output −1 dB — a limiter eats
+            // amplitude changes, only spectrum survives). A high-gain note-off
+            // is a SCRAPE, not a boom: drop the thump, keep a reduced scrape.
+            let dist_rel = if self.dist { 0.35 } else { 1.0 };
+            self.rel_amp = 0.20 * wound * dist_rel;
             // thump = pure-fundamental injection (raised cosine minus its
             // mean is a clean H1 with zero DC): the refs put ~99% of the
             // burst below 300 Hz; a triangle re-pluck leaked −8 dB of
             // harmonics into 300–700 Hz where the refs keep −15…−18.
-            let thump = 0.17 * force;
+            let thump = if self.dist { 0.0 } else { 0.17 * force };
             let len = self.len;
             let w = core::f32::consts::TAU / len as f32;
             for (i, b) in self.buf.iter_mut().enumerate().take(len) {
