@@ -14,8 +14,10 @@
     "demo": "npm run build --workspaces --if-present && scripts/dev/serve.sh",
     "render": "node scripts/dev/render-demo.mjs",
     "bench": "node scripts/dev/render-demo.mjs --bench",
-    "test:loop": "python3 scripts/dev/test_loop_metrics.py",
+    "test:loop": "python3 -m unittest discover -s scripts/dev -p 'test_loop_*.py'",
     "audit:loop": "scripts/audit/loop-metrics-audit.sh",
+    "loop:validate": "python3 scripts/dev/loop_campaign.py validate",
+    "loop:run": "python3 scripts/dev/loop_campaign.py run",
     "audit:harness": "scripts/audit/harness-audit.sh"
   },
   "devDependencies": {
