@@ -1043,6 +1043,11 @@ pub struct PianoVoice {
     ph_c: f32,
     ph_lp1: f32,
     ph_lp2: f32,
+    // air/radiation rolloff: fixed one-pole LP ~10 kHz. The 44.1 kHz VSCO
+    // check caught the render +17 dB above 8 kHz (NSynth's 16 kHz refs are
+    // blind there): board directivity + air absorption kill the top octave.
+    air_c: f32,
+    air_lp: f32,
     rng: Lcg,
     sr: f32,
     key: f32,
@@ -1216,6 +1221,8 @@ impl PianoVoice {
             ph_c: 1.0 - (-core::f32::consts::TAU * (6.0 * f0).min(0.1 * sr) / sr).exp(),
             ph_lp1: 0.0,
             ph_lp2: 0.0,
+            air_c: 1.0 - (-core::f32::consts::TAU * (10_000.0f32).min(0.4 * sr) / sr).exp(),
+            air_lp: 0.0,
             rng,
             sr,
             key,
@@ -1315,6 +1322,9 @@ impl PianoVoice {
                 self.ph_lp2 += self.ph_c * (h1 - self.ph_lp2);
                 s += self.ph_gain * (h1 - self.ph_lp2);
             }
+            // air/radiation top-octave rolloff (see field docs)
+            self.air_lp += self.air_c * (s - self.air_lp);
+            s = self.air_lp;
             // soundboard radiation buildup (see field docs): strings bloom in,
             // the percussive knock/thump below stay immediate
             self.bloom += self.bloom_c * (1.0 - self.bloom);
@@ -1355,6 +1365,7 @@ impl PianoVoice {
         }
         self.rad_lp = flush_denormal(self.rad_lp);
         self.rad_lp2 = flush_denormal(self.rad_lp2);
+        self.air_lp = flush_denormal(self.air_lp);
         self.ph_lp1 = flush_denormal(self.ph_lp1);
         self.ph_lp2 = flush_denormal(self.ph_lp2);
         self.age += out.len() as u64;
@@ -2813,6 +2824,107 @@ mod tests {
         let denom = a - 2.0 * b + c;
         let delta = if denom.abs() > 1e-9 { 0.5 * (a - c) / denom } else { 0.0 };
         sr / (best_lag as f32 + delta.clamp(-0.5, 0.5))
+    }
+
+    fn render_piano(midi: u32, vel: f32, sr: f32, secs: f32, damp_at: Option<f32>) -> Vec<f32> {
+        let mut v = PianoVoice::start(midi, midi_to_hz(midi as f32), vel, sr, 777);
+        let total = (secs * sr) as usize;
+        let mut out = vec![0.0f32; total];
+        let damp_i = damp_at.map(|t| (t * sr) as usize);
+        let mut i = 0usize;
+        for chunk in out.chunks_mut(128) {
+            if let Some(d) = damp_i {
+                if i <= d && d < i + chunk.len() {
+                    v.damp();
+                }
+            }
+            v.render(chunk);
+            i += chunk.len();
+        }
+        out
+    }
+
+    /// Goertzel-style band energy: sum of |projection| onto sin/cos at freqs.
+    fn band_energy(x: &[f32], sr: f32, freqs: &[f32]) -> f32 {
+        let n = x.len() as f32;
+        freqs
+            .iter()
+            .map(|&f| {
+                let w = core::f32::consts::TAU * f / sr;
+                let (mut c, mut s) = (0.0f32, 0.0f32);
+                for (i, &xi) in x.iter().enumerate() {
+                    let ph = w * i as f32;
+                    c += xi * ph.cos();
+                    s += xi * ph.sin();
+                }
+                (c * c + s * s) / (n * n)
+            })
+            .sum()
+    }
+
+    /// Phantom partials (Conklin 1999): an ff bass note must carry MUCH more
+    /// energy around partials 10–12 than pp, beyond the linear model's
+    /// velocity-brightening — the quadratic tension tap is what provides it.
+    #[test]
+    fn piano_ff_bass_grows_phantom_partials() {
+        let sr = 48_000.0;
+        let f0 = midi_to_hz(31.0);
+        // dense grid across partials 9.5–12.5: dispersion shifts the real
+        // partials off n·f0, and a 0.5 s projection is only ~2 Hz wide
+        let mut freqs = [0.0f32; 50];
+        for (i, f) in freqs.iter_mut().enumerate() {
+            *f = 9.5 * f0 + (3.0 * f0) * (i as f32) / 49.0;
+        }
+        let ff = render_piano(31, 1.0, sr, 1.0, None);
+        let pp = render_piano(31, 0.2, sr, 1.0, None);
+        let (a, b) = ((0.1 * sr) as usize, (0.6 * sr) as usize);
+        let e_ff = band_energy(&ff[a..b], sr, &freqs);
+        let e_pp = band_energy(&pp[a..b], sr, &freqs);
+        let tot_ff = ff[a..b].iter().map(|s| s * s).sum::<f32>();
+        let tot_pp = pp[a..b].iter().map(|s| s * s).sum::<f32>();
+        let r_ff = e_ff / tot_ff.max(1e-12);
+        let r_pp = e_pp / tot_pp.max(1e-12);
+        assert!(r_ff > 1e-7, "no phantom-band energy at ff: {r_ff}");
+        // The band holds transverse partials too (they scale ~linearly, so the
+        // fraction cancels); the >35% superlinear EXCESS is the phantom tap's
+        // signature — with ph_gain = 0 this ratio measures ≈ 1.0.
+        assert!(
+            r_ff > 1.35 * r_pp,
+            "phantom band should grow superlinearly with velocity: ff {r_ff} vs pp {r_pp}"
+        );
+    }
+
+    /// Damper felt/key release (Askenfelt & Jansson 1990): after note-off a
+    /// broadband thud must appear BETWEEN the partials (where the harmonic
+    /// string can't put energy), decay away, and be RELATIVELY louder on a
+    /// soft note (the mechanism doesn't shrink with a soft touch).
+    #[test]
+    fn piano_release_thud_present_decaying_and_velocity_relative() {
+        let sr = 48_000.0;
+        let f0 = midi_to_hz(48.0);
+        // inter-partial gap bands: harmonic content is absent here
+        let gaps = [2.5 * f0, 3.5 * f0, 4.5 * f0];
+        let mut ratio = [0.0f32; 2];
+        for (i, vel) in [0.25f32, 1.0].iter().enumerate() {
+            let out = render_piano(48, *vel, sr, 2.4, Some(1.5));
+            let pre = band_energy(&out[(1.30 * sr) as usize..(1.42 * sr) as usize], sr, &gaps);
+            let thud = band_energy(&out[(1.51 * sr) as usize..(1.63 * sr) as usize], sr, &gaps);
+            let late = band_energy(&out[(2.10 * sr) as usize..(2.22 * sr) as usize], sr, &gaps);
+            assert!(thud > 1e-12, "vel {vel}: no release transient ({thud})");
+            assert!(late < thud, "vel {vel}: release does not decay ({thud} -> {late})");
+            ratio[i] = thud / pre.max(1e-15);
+        }
+        assert!(
+            ratio[0] > 1.6,
+            "pp release thud should rise above the string's gap leakage: {}",
+            ratio[0]
+        );
+        assert!(
+            ratio[0] > 1.3 * ratio[1],
+            "soft-note release should be relatively louder: pp {} vs ff {}",
+            ratio[0],
+            ratio[1]
+        );
     }
 
     /// Steel-string tuning at both deploy sample rates (the acoustic constructor
