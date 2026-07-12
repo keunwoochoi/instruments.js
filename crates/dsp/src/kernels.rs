@@ -130,7 +130,10 @@ pub fn body_defaults(inst: Instrument) -> (f32, &'static [(f32, f32, f32)]) {
                 (3600.0, 0.045, 0.908), // P=1.0
             ],
         ),
-        // piano: soundboard low-mode ladder (broad, subtle — per-voice knock stays)
+        // piano: soundboard low-mode ladder (broad, subtle — per-voice knock
+        // stays). r2: extended to 8 modes — the sustained board coloration
+        // reaches the mid band (gentle peaks, P≈0.4–0.6), where the refs keep
+        // a near-partial mode cluster singing in the tail.
         Instrument::Piano => (
             0.75,
             &[
@@ -140,6 +143,8 @@ pub fn body_defaults(inst: Instrument) -> (f32, &'static [(f32, f32, f32)]) {
                 (255.0, 0.13, 0.6),
                 (370.0, 0.10, 0.45),
                 (520.0, 0.08, 0.3),
+                (720.0, 0.07, 0.12),
+                (1400.0, 0.05, 0.15),
             ],
         ),
         _ => (1.0, &[]),
@@ -1013,12 +1018,14 @@ pub struct PianoVoice {
     // radiated sum gets a 1−e^(−t/τ) rise, τ ≈ 2.5 periods; knock/thump bypass.
     bloom: f32,
     bloom_c: f32,
-    // radiation highpass at 0.35·f0: the board cannot radiate far below the
-    // string's fundamental (dipole rolloff below the first board modes), and the
-    // hammer's unipolar injection otherwise leaks a subsonic pedestal transient
-    // (measured: a ~20 Hz component 7 dB ABOVE C5's fundamental in the attack).
+    // radiation highpass, 2nd order at max(0.35·f0, 88 Hz): the board cannot
+    // radiate below its first modes REGARDLESS of the string's pitch — the
+    // deep-bass refs radiate p2 ABOVE p1 (G1-ff: p1 −13.6 dB rel p2) where an
+    // f0-tracked cutoff passed our p1 untouched. Also drains the hammer's
+    // unipolar subsonic pedestal (round-1 fix, kept).
     rad_c: f32,
     rad_lp: f32,
+    rad_lp2: f32,
     // phantom partials: tension modulation pumps the string's LONGITUDINAL
     // direction with force ∝ (∂y/∂x)² — quadratic in the transverse motion —
     // radiating "phantom" partials at SUM frequencies of transverse partial
@@ -1195,15 +1202,16 @@ impl PianoVoice {
             noise_lp_c: 1.0,
             bloom: 0.0,
             bloom_c: 1.0 - (-f0.max(50.0) / (2.5 * sr)).exp(),
-            rad_c: 1.0 - (-core::f32::consts::TAU * 0.35 * f0 / sr).exp(),
+            rad_c: 1.0 - (-core::f32::consts::TAU * (0.35 * f0).max(80.0) / sr).exp(),
             rad_lp: 0.0,
+            rad_lp2: 0.0,
             // gain: register-tapered (off above key≈0.55) and velocity-curved —
             // the s² source alone gave pp phantoms ~11 dB hotter relative to
             // their soft references (felt at pp is too soft to pump the
             // longitudinal direction; Conklin hears phantoms "at forte")
             ph_gain: {
                 let reg = ((0.55 - key) / 0.55).clamp(0.0, 1.0);
-                8.0 * reg * reg * (0.25 + 0.75 * vel * vel)
+                6.0 * reg * reg * (0.25 + 0.75 * vel * vel)
             },
             ph_c: 1.0 - (-core::f32::consts::TAU * (6.0 * f0).min(0.1 * sr) / sr).exp(),
             ph_lp1: 0.0,
@@ -1282,8 +1290,14 @@ impl PianoVoice {
             let mut ph_src = 0.0;
             for (i, st) in self.strings.iter_mut().enumerate().take(self.n_strings) {
                 let y = st.tick();
-                if i < 2 {
+                if i == 0 {
                     ph_src += y;
+                } else if i == 1 {
+                    // aftersound at reduced weight: full weight left the ff-bass
+                    // SUSTAINED centroid ~2× the ref (t03 295 vs 156) while the
+                    // attack was right — the cross/after² sum-terms are what
+                    // persist, so they get the trim
+                    ph_src += 0.6 * y;
                 }
                 s += y * self.out_w[i];
             }
@@ -1305,9 +1319,11 @@ impl PianoVoice {
             // the percussive knock/thump below stay immediate
             self.bloom += self.bloom_c * (1.0 - self.bloom);
             s *= self.bloom;
-            // radiation highpass at 0.35·f0 (see field docs)
+            // radiation highpass (see field docs): two cascaded one-poles
             self.rad_lp += self.rad_c * (s - self.rad_lp);
             s -= self.rad_lp;
+            self.rad_lp2 += self.rad_c * (s - self.rad_lp2);
+            s -= self.rad_lp2;
             // hammer pulse into the body modes (case knock) + key thump noise
             let mut x = 0.0;
             if self.body_pulse_pos < self.body_pulse_len {
@@ -1338,6 +1354,7 @@ impl PianoVoice {
             self.body_y2[m] = flush_denormal(self.body_y2[m]);
         }
         self.rad_lp = flush_denormal(self.rad_lp);
+        self.rad_lp2 = flush_denormal(self.rad_lp2);
         self.ph_lp1 = flush_denormal(self.ph_lp1);
         self.ph_lp2 = flush_denormal(self.ph_lp2);
         self.age += out.len() as u64;
@@ -1669,6 +1686,10 @@ const SYMP_BUF: usize = 1024;
 /// C2 G2 C3 E3 G3 A#3 C4 D4 E4 G4 A4 C5 — spread of common overtone anchors
 const SYMP_TUNING: [u32; SYMP_STRINGS] = [36, 43, 48, 52, 55, 58, 60, 62, 64, 67, 69, 72];
 
+/// Always-on send fraction: duplex/aliquot string segments are never damped
+/// (Conklin), so a sliver of every note reaches the bank even pedal-up.
+const DUPLEX_SEND: f32 = 0.12;
+
 #[derive(Clone)]
 pub struct SympBank {
     bufs: [[f32; SYMP_BUF]; SYMP_STRINGS],
@@ -1682,6 +1703,9 @@ pub struct SympBank {
     send: f32,
     send_target: f32,
     send_c: f32,
+    /// recent-input activity follower (lets silent tracks skip the bank even
+    /// though the duplex floor keeps a small send alive)
+    hot: f32,
     pub enabled: bool,
     wet: f32,
 }
@@ -1696,35 +1720,40 @@ impl SympBank {
             loss_open: [0.0; SYMP_STRINGS],
             loss_damped: [0.0; SYMP_STRINGS],
             open: false,
-            send: 0.0,
-            send_target: 0.0,
+            send: DUPLEX_SEND,
+            send_target: DUPLEX_SEND,
             send_c: 1.0 - (-1.0 / (0.015 * sr)).exp(),
+            hot: 0.0,
             enabled: false,
             wet: 0.4,
         };
         for (i, &m) in SYMP_TUNING.iter().enumerate() {
             let f0 = midi_to_hz(m as f32);
             b.len[i] = ((sr / f0 - 0.5) as usize).clamp(2, SYMP_BUF - 1);
-            // per-period loss (the fleet's convergent lesson): long open ring,
-            // fast collapse when the dampers fall back
+            // per-period loss (the fleet's convergent lesson): long open ring;
+            // pedal-up is NOT dead — duplex/aliquot segments and the bridge
+            // keep a short undamped ring (~0.4 s; Conklin's duplex scaling)
             b.loss_open[i] = 10f32.powf(-3.0 / (5.0 * f0));
-            b.loss_damped[i] = 10f32.powf(-3.0 / (0.15 * f0));
+            b.loss_damped[i] = 10f32.powf(-3.0 / (0.4 * f0));
         }
         b
     }
 
     pub fn set_pedal(&mut self, on: bool) {
         self.open = on;
-        self.send_target = if on { 1.0 } else { 0.0 };
+        // pedal-up keeps the duplex floor: undamped string segments ring
+        // regardless of the dampers (the faint metallic halo of a real piano)
+        self.send_target = if on { 1.0 } else { DUPLEX_SEND };
     }
 
     /// True while the bank could still be audible (skip processing otherwise).
     pub fn ringing(&self) -> bool {
-        self.send > 1e-4 || self.open
+        self.open || self.send > DUPLEX_SEND + 1e-3 || self.hot > 1e-5
     }
 
     #[inline]
     pub fn tick(&mut self, input: f32) -> f32 {
+        self.hot = (self.hot * 0.9995).max(input.abs());
         self.send += self.send_c * (self.send_target - self.send);
         let inj = input * self.send * (1.0 / SYMP_STRINGS as f32) * 0.9;
         let mut sum = 0.0;
