@@ -522,11 +522,25 @@ pub struct PluckVoice {
     /// Differenced noise alone tilts +6 dB/oct to Nyquist — a hi-hat-like tick
     /// the 16 kHz refs can't penalize (real pick scrape lives ~1-6 kHz), so the
     /// difference is followed by a one-pole LP (tr_lc) at ~4.2 kHz.
+    /// Pick round 2026-07-12: rebuilt as a 2-pole contact resonator (center
+    /// click_hz, Q≈1.5 — smooth sample-to-sample, no Nyquist alternation; the
+    /// one-pole chain still jumped ±0.8× peak between adjacent samples) with
+    /// TWO envelopes: tr_env = snap (release corner, ~8 ms, ∝ vel²) and
+    /// tr2_env = scrape (pick sliding, 55→25 ms as velocity rises, ~∝ vel —
+    /// refs keep the scrape/body energy ratio flat across velocity while the
+    /// CREST collapses at pp: soft strokes slide, hard strokes snap through).
+    /// ri_env: ~1.5 ms contact ramp-in kills the t=0 cliff.
     tr_env: f32,
     tr_dec: f32,
-    tr_hp: f32,
-    tr_lp: f32,
-    tr_lc: f32,
+    tr2_env: f32,
+    tr2_dec: f32,
+    bp_y1: f32,
+    bp_y2: f32,
+    bp_a1: f32,
+    bp_r2: f32,
+    bp_g: f32,
+    ri_env: f32,
+    ri_c: f32,
     tr_rng: Lcg,
     /// body-pump transient (see AcPluck::thump): one windowed bipolar cycle,
     /// active while th_ph < 1
@@ -567,8 +581,14 @@ pub struct AcPluck {
     pub scrape: f32,
     /// direct (non-looped) contact-click transient level (0 = none): most pick
     /// noise radiates immediately instead of persisting as string modes — with
-    /// the HF loss floor, keeping it all in-loop ran +30…+47 dB hot mid-note
+    /// the HF loss floor, keeping it all in-loop ran +30…+47 dB hot mid-note.
+    /// Pick round: `click` is the SNAP component (release corner, ∝ vel²);
+    /// `click_slow` the SCRAPE component (slide friction, ~∝ vel, longer and
+    /// softer at low velocity); `click_hz` centers the shared 2-pole contact
+    /// resonator (pick on wound steel ~2.8 kHz; fingertip/nail lower).
     pub click: f32,
+    pub click_slow: f32,
+    pub click_hz: f32,
     /// second-polarization output level (0 = single string)
     pub pol_mix: f32,
     pub pol_detune_cents: f32,
@@ -638,6 +658,8 @@ impl Default for AcPluck {
             snap: 0.3,
             scrape: 0.0,
             click: 0.0,
+            click_slow: 0.0,
+            click_hz: 2800.0,
             pol_mix: 0.0,
             pol_detune_cents: 0.0,
             pol_t60_ratio: 1.0,
@@ -1122,9 +1144,15 @@ impl PluckVoice {
             frac2: 0.0,
             tr_env: 0.0,
             tr_dec: 0.0,
-            tr_hp: 0.0,
-            tr_lp: 0.0,
-            tr_lc: 0.0,
+            tr2_env: 0.0,
+            tr2_dec: 0.0,
+            bp_y1: 0.0,
+            bp_y2: 0.0,
+            bp_a1: 0.0,
+            bp_r2: 0.0,
+            bp_g: 0.0,
+            ri_env: 0.0,
+            ri_c: 1.0,
             tr_rng: Lcg(1),
             th_amp: 0.0,
             th_dph: 0.0,
@@ -1421,15 +1449,31 @@ impl PluckVoice {
             tm_c: 1.0 - (-core::f32::consts::TAU * 6.0 / sr).exp(),
             frac1,
             frac2,
-            // contact click: ~35 ms HP-shaped noise burst, velocity-scaled like
-            // the snap; scaled by the pre-acceleration level (see level_tr)
-            // quadratic velocity law: refs' attack/body crest collapses from
-            // ~0 dB at ff to −22 dB at pp — soft plucks have almost no scrape
-            tr_env: p.click * (0.1 + 0.9 * p.vel * p.vel) * level_tr,
-            tr_dec: t60_gain(0.035, sr),
-            // scrape band LP at 4.2 kHz; ×1.3 output comp keeps the in-band
-            // (≤6 kHz) scrape level the refs were fit against (see tr_lc docs)
-            tr_lc: 1.0 - (-core::f32::consts::TAU * 4200.0 / sr).exp(),
+            // pick transients (see struct docs): snap ∝ vel² (crest law from
+            // the refs: ~0 dB at ff, −22 dB at pp), scrape keeps its energy
+            // at low velocity but spreads it over a longer, softer slide
+            tr_env: p.click * (0.05 + 0.95 * p.vel * p.vel) * level_tr,
+            tr_dec: t60_gain(0.008, sr),
+            tr2_env: p.click_slow * (0.25 + 0.75 * p.vel) * level_tr,
+            tr2_dec: t60_gain(0.055 - 0.030 * p.vel, sr),
+            // 2-pole contact resonator at click_hz, BW ≈ 0.65·f (Q ≈ 1.5),
+            // peak-normalized to 1 so click levels keep their fitted scale
+            bp_a1: {
+                let w = core::f32::consts::TAU * p.click_hz / sr;
+                let r = (-core::f32::consts::PI * 0.65 * p.click_hz / sr).exp();
+                2.0 * r * w.cos()
+            },
+            bp_r2: {
+                let r = (-core::f32::consts::PI * 0.65 * p.click_hz / sr).exp();
+                r * r
+            },
+            bp_g: {
+                let w = core::f32::consts::TAU * p.click_hz / sr;
+                let r = (-core::f32::consts::PI * 0.65 * p.click_hz / sr).exp();
+                (1.0 - r) * 2.0 * w.sin().max(0.1)
+            },
+            ri_env: 0.0,
+            ri_c: 1.0 - (-1.0 / (0.0015 * sr)).exp(),
             tr_rng: Lcg(seed.rotate_left(13) | 1),
             // body-pump: one bipolar cycle at thump_hz (see AcPluck::thump);
             // amp on the pre-differencer level scale like the click
@@ -1707,15 +1751,17 @@ impl PluckVoice {
                 outv = a;
             }
             let mut sig = outv * self.level;
-            // direct contact-click transient (bypasses the string loop):
-            // differenced noise band-limited to the pick-scrape band (tr_lc)
-            if self.tr_env > 1e-7 {
+            // pick transients (bypass the string loop): snap + scrape share
+            // the 2-pole contact resonator; ~1.5 ms ramp-in, no t=0 cliff
+            if self.tr_env > 1e-7 || self.tr2_env > 1e-7 {
                 let n = self.tr_rng.next();
-                let d = 0.5 * (n - self.tr_hp);
-                self.tr_hp = n;
-                self.tr_lp += self.tr_lc * (d - self.tr_lp);
-                sig += self.tr_env * 1.3 * self.tr_lp;
+                let y = self.bp_a1 * self.bp_y1 - self.bp_r2 * self.bp_y2 + self.bp_g * n;
+                self.bp_y2 = self.bp_y1;
+                self.bp_y1 = y;
+                self.ri_env += self.ri_c * (1.0 - self.ri_env);
+                sig += (self.tr_env + self.tr2_env) * self.ri_env * y;
                 self.tr_env *= self.tr_dec;
+                self.tr2_env *= self.tr2_dec;
             }
             // radiation monopole high-pass (see rad_k docs)
             if self.rad_k > 0.0 {
@@ -1755,7 +1801,9 @@ impl PluckVoice {
             self.ds2y[k] = flush_denormal(self.ds2y[k]);
         }
         self.tm_env = flush_denormal(self.tm_env);
-        self.tr_lp = flush_denormal(self.tr_lp);
+        self.bp_y1 = flush_denormal(self.bp_y1);
+        self.bp_y2 = flush_denormal(self.bp_y2);
+        self.tr2_env = flush_denormal(self.tr2_env);
         self.br_x1 = flush_denormal(self.br_x1);
         self.acc_x1 = flush_denormal(self.acc_x1);
         self.rad_y1 = flush_denormal(self.rad_y1);
@@ -5121,6 +5169,11 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // subtle - metrics prefer it slightly over 0 and single-note
                 // peaks are unchanged (0.042)
                 click: 5.0,
+                // fingertip/nail contact: lower band than a pick, and only a
+                // light slide component (ref mf scrape/body sits 13 dB below
+                // the old render's — tirando is mostly flesh)
+                click_slow: 0.8,
+                click_hz: 2000.0,
                 // nylon refs' post-off slopes (68-171 dB/s) are contaminated
                 // by the NSynth release fade/gate (014 mids are hard-gated;
                 // steel 015's 31-51 dB/s proves slower decays survive the
@@ -5270,6 +5323,11 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // metric optimum (8-16) rides the clip ceiling again; 3.0 is
                 // the best clean-crest point (solo ff onset peak ~0.5).
                 click: 3.0,
+                // scrape: refs' 1-6.5 kHz attack-band/body ratio stays ~flat
+                // from pp to ff (+1..2 dB) — the slide friction keeps its
+                // energy at low velocity, spread over a longer stroke
+                click_slow: 1.0,
+                click_hz: 2800.0,
                 // measured on 015 post-note-off envelopes (body round,
                 // 2026-07-12): E2 ff 33.6 dB/s (t60 1.8), D2 mf 31.7, E2 mf
                 // 37.8, G2 ff 51.3 (1.17), F#2 pp 70.1 (0.86) — slower ring
