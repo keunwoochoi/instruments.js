@@ -2681,6 +2681,10 @@ pub struct PianoVoice {
     // A symmetric half-sine pulse left the attack ~12 dB short around partial 5.
     h_tau: f32,
     h_cp1: f32,
+    // Analytic elastic peak force for this strike velocity. The body cloud is
+    // driven by F/F_peak, so the actual Stulov loading and
+    // unloading trajectory owns its attack without an arbitrary pulse.
+    h_force_ref: f32,
     // soundboard knock: a dense modal CLOUD (init-time synthesized board
     // response), not 3 lonely case modes — see PIANO_BOARD_MODES
     body_a1: [f32; PIANO_BOARD_MODES],
@@ -2688,6 +2692,13 @@ pub struct PianoVoice {
     body_y1: [f32; PIANO_BOARD_MODES],
     body_y2: [f32; PIANO_BOARD_MODES],
     body_g: [f32; PIANO_BOARD_MODES],
+    // Legacy structural bridge impulse retained as the broad component of the
+    // onset; the actual Stulov force supplies an asymmetric felt-detail path.
+    body_attack_pos: u32,
+    body_attack_len: u32,
+    body_force_mix: f32,
+    // Raised-cosine body pulse reserved for the damper/key release knock.
+    // Note-on excitation comes from h_force_ref-normalized contact force.
     body_pulse_pos: u32,
     body_pulse_len: u32,
     /// board cloud active until this age (longest mode T60 0.55 s → the bank
@@ -2910,6 +2921,15 @@ impl PianoVoice {
         let omega = core::f32::consts::PI / (contact_ms * 1e-3 * sr);
         let comp_ref = (v_ref / omega).max(1e-6);
         let h_k = omega * omega * comp_ref.powf(1.0 - h_p);
+        // Normalize the body drive by the CURRENT strike's elastic peak force,
+        // derived from 1/2 v² = K x^(p+1)/(p+1). This preserves the Stulov
+        // force trajectory and hysteretic asymmetry without applying its
+        // superlinear amplitude twice; body_g retains the calibrated velocity
+        // law below.
+        let comp_peak = ((h_p + 1.0) * h_v0 * h_v0 / (2.0 * h_k))
+            .max(1e-12)
+            .powf(1.0 / (h_p + 1.0));
+        let h_force_peak = h_k * comp_peak.powf(h_p);
 
         // body knock: dense soundboard mode cloud (see below)
         let mut v = Self {
@@ -2973,16 +2993,27 @@ impl PianoVoice {
             h_active: true,
             h_tau: 1.5e-4 * sr,
             h_cp1: 0.0,
+            h_force_ref: h_force_peak,
             body_a1: [0.0; PIANO_BOARD_MODES],
             body_r2: [0.0; PIANO_BOARD_MODES],
             body_y1: [0.0; PIANO_BOARD_MODES],
             body_y2: [0.0; PIANO_BOARD_MODES],
             body_g: [0.0; PIANO_BOARD_MODES],
-            body_pulse_pos: 0,
-            // hammer-bridge force pulse: ~3 ms on heavy bass hammers, ~1 ms in
-            // the treble (Askenfelt & Jansson 1990 contact times) — the shorter
-            // pulse is what lets the cloud's upper modes speak at all
-            body_pulse_len: (((0.003 - 0.002 * key) * sr) as u32).max(2),
+            body_attack_pos: 0,
+            body_attack_len: (((0.003 - 0.002 * key) * sr) as u32).max(2),
+            // Heavy bass hammers and the long bridge termination radiate more
+            // of the literal force history; the treble bridge is dominated by
+            // the short structural impulse. A compliant soft contact transfers
+            // proportionally more force into the case, while compressed hard
+            // felt sends the sharper share into the string. Held-out C#5 stays
+            // a small-force-detail guard rather than receiving a global click.
+            body_force_mix: {
+                let register = ((0.62 - key) / (0.62 - 39.0 / 87.0)).clamp(0.0, 1.5);
+                let touch = (1.3 - 1.1 * vel).clamp(0.2, 1.0);
+                (register * touch).clamp(0.02, 1.0)
+            },
+            body_pulse_pos: 1,
+            body_pulse_len: 1,
             body_live: (0.9 * sr) as u64,
             thump_env: 1.0,
             thump_decay: t60_gain(0.010, sr),
@@ -3128,6 +3159,8 @@ impl PianoVoice {
             v.lg_g = 2.0 * peak;
             v.ph_gain *= 10f32.powf(trim / 20.0);
         }
+        // Absolute body level keeps its calibrated velocity law; the normalized
+        // force drive above owns contact duration, loading and unloading shape.
         let knock = 0.6 * vel * (1.0 - 0.55 * key);
         let mut jrng = Lcg(seed.wrapping_mul(0x9E37) | 1);
         let mut bf = 88.0f32;
@@ -3152,10 +3185,10 @@ impl PianoVoice {
     }
 
     pub fn render(&mut self, out: &mut [f32]) -> bool {
-        let inv_pulse = 1.0 / self.body_pulse_len as f32;
         let inv_n = 1.0 / self.n_strings as f32;
         let body_on = self.age < self.body_live;
         for o in out.iter_mut() {
+            let mut contact_force = 0.0f32;
             // felt-hammer collision: F = K·compression^p while in contact, integrated
             // per sample (hammer mass 1). Ends when the hammer rebounds clear.
             if self.h_active {
@@ -3169,6 +3202,7 @@ impl PianoVoice {
                 // Stulov hysteresis (see field docs): boost the loading edge,
                 // relax the unloading edge; force stays repulsive (≥ 0)
                 let f = (self.h_k * (cp + self.h_tau * (cp - self.h_cp1))).max(0.0);
+                contact_force = (f / self.h_force_ref.max(1e-12)).min(2.0);
                 self.h_cp1 = cp;
                 self.h_v -= f;
                 self.h_x += self.h_v;
@@ -3267,17 +3301,29 @@ impl PianoVoice {
             self.br_z1 = self.br_b1 * s - self.br_a1 * br_y + self.br_z2;
             self.br_z2 = self.br_b2 * s - self.br_a2 * br_y;
             s = br_y;
-            // hammer pulse into the body modes (case knock) + key thump noise
+            // Parallel bridge/body drive: broad structural impulse plus the
+            // actual normalized Stulov force trajectory (case/bridge knock),
+            // followed by independent key-action noise.
             if body_on {
-                let mut x = 0.0;
+                let attack_force = if self.body_attack_pos < self.body_attack_len {
+                    let ph = self.body_attack_pos as f32 / self.body_attack_len as f32;
+                    self.body_attack_pos += 1;
+                    0.5 * (1.0 - (core::f32::consts::TAU * ph).cos())
+                } else {
+                    0.0
+                };
+                let mut release_force = 0.0;
                 if self.body_pulse_pos < self.body_pulse_len {
-                    let ph = self.body_pulse_pos as f32 * inv_pulse;
-                    x = 0.5 * (1.0 - (core::f32::consts::TAU * ph).cos());
+                    let ph = self.body_pulse_pos as f32 / self.body_pulse_len as f32;
+                    release_force = 0.5 * (1.0 - (core::f32::consts::TAU * ph).cos());
                     self.body_pulse_pos += 1;
                 }
+                let body_force = (1.0 - self.body_force_mix) * attack_force
+                    + self.body_force_mix * contact_force
+                    + release_force;
                 for m in 0..PIANO_BOARD_MODES {
                     let y = self.body_a1[m] * self.body_y1[m] - self.body_r2[m] * self.body_y2[m]
-                        + self.body_g[m] * x;
+                        + self.body_g[m] * body_force;
                     self.body_y2[m] = self.body_y1[m];
                     self.body_y1[m] = y;
                     s += y;
@@ -3351,11 +3397,8 @@ impl PianoVoice {
         }
         self.body_pulse_pos = 0;
         self.body_pulse_len = ((0.006 * self.sr) as u32).max(2);
-        // Damper-landing re-knock is a MECHANICAL event (damper weight + key
-        // return): its absolute level does not scale with how hard the note
-        // was struck. body_g carries the attack's 0.6·vel factor — divide it
-        // out (measured round 3: the old flat ×0.5 left the pp release knock
-        // 11× too quiet relative to ff, hiding the Askenfelt pp prominence).
+        // Damper-landing re-knock is a mechanical event whose absolute level
+        // should not scale with strike velocity; divide out body_g's 0.6·vel.
         let re_knock = 0.5 / self.vel.max(0.15);
         for g in self.body_g.iter_mut() {
             *g *= re_knock;
@@ -6434,6 +6477,29 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Owner attack gate (2026-07-12): the literal nonlinear felt-force path
+    /// is bass/soft-forward, not a global click. It must remain strong for the
+    /// A1 and C4-pp tune anchors, compress at C4-ff, and stay subtle at the
+    /// held-out C#5 register at both supported rates.
+    #[test]
+    fn piano_hammer_force_body_coupling_is_register_and_touch_voiced() {
+        for &sr in &[44_100.0f32, 48_000.0] {
+            let a1 = PianoVoice::start(33, midi_to_hz(33.0), 90.0 / 127.0, sr, 1);
+            let c4_pp = PianoVoice::start(60, midi_to_hz(60.0), 30.0 / 127.0, sr, 2);
+            let c4_ff = PianoVoice::start(60, midi_to_hz(60.0), 122.0 / 127.0, sr, 3);
+            let cs5 = PianoVoice::start(73, midi_to_hz(73.0), 90.0 / 127.0, sr, 4);
+            assert!(a1.h_force_ref.is_finite() && a1.h_force_ref > 0.0);
+            assert!(a1.body_force_mix > 0.70, "A1 force path too weak at {sr} Hz");
+            assert!(c4_pp.body_force_mix > 0.95, "C4 pp force path too weak at {sr} Hz");
+            assert!(
+                (0.20..0.30).contains(&c4_ff.body_force_mix),
+                "C4 ff force compression lost at {sr} Hz: {}",
+                c4_ff.body_force_mix
+            );
+            assert!(cs5.body_force_mix < 0.10, "C#5 force path leaked globally at {sr} Hz");
         }
     }
 
