@@ -74,7 +74,7 @@ for (const kit of ["drums", "drums-rock", "drums-jazz", "drums-808"]) {
 for (const [name, midi] of [["snare", 38], ["clap", 39], ["hat-closed", 42]]) {
   for (const v of [30, 75, 120]) SETS["drums-808"].push({ name: `${name}-v${v}`, notes: single(midi, v, 0.2), drum: true, tail: 2 });
 }
-SETS["drums-808"].push({ name: "repeated-hats", drum: true, tail: 1, notes: Array.from({ length: 16 }, (_, i) => ({ m: 42, v: [52, 76, 60, 92][i % 4], t: i * 0.12, d: 0.08 })) });
+SETS["drums-808"].push({ name: "repeated-hats", drum: true, tail: 1, notes: Array.from({ length: 16 }, (_, i) => ({ m: 42, v: 76, t: i * 0.12, d: 0.08 })) });
 // electrics share the guitar set shape but hold longer (amp sustain is under review)
 SETS["guitar-steel"] = SETS.guitar;
 SETS["guitar-electric"] = SETS.guitar.map((c) => ({ ...c, notes: c.notes.map((n) => ({ ...n, d: n.d + 1 })) }));

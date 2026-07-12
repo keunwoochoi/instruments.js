@@ -5976,7 +5976,13 @@ impl DrumVoice {
                 let cymbal = matches!(gm_note, 49 | 51 | 57);
                 let freqs = [205.3, 304.4, 369.6, 522.7, 540.0, 800.0];
                 a.kind = AnalogDrumKind::Metal;
+                let mut phase_rng = Lcg(seed ^ 0x6d65_746c | 1);
                 for (i, f) in freqs.iter().enumerate() {
+                    // The hardware oscillators free-run; a new trigger does
+                    // not reset six phases to one identical edge. Seeded
+                    // starting phases preserve deterministic renders while
+                    // preventing machine-gun-identical repeated hats.
+                    a.phase[i] = 0.5 * (phase_rng.next() + 1.0);
                     a.dphase[i] = *f / sr;
                 }
                 a.dphase_end = a.dphase;
@@ -7986,6 +7992,25 @@ mod drum_808_tests {
         }
         let cross_rate = ratios[0] / ratios[1].max(1e-9);
         assert!((0.65..1.55).contains(&cross_rate), "hat timbre shifts across rates: 44.1/48 ratio {cross_rate}");
+    }
+
+    #[test]
+    fn repeated_hats_vary_by_seed_without_level_jumps() {
+        let sr = 48_000.0;
+        let render_seed = |seed| {
+            let mut voice = DrumVoice::start_808(42, 0.75, sr, seed);
+            let mut out = vec![0.0f32; 4_864];
+            for block in out.chunks_mut(128) {
+                voice.render(block, sr);
+            }
+            out
+        };
+        let a = render_seed(0x1111_2222);
+        let b = render_seed(0x3333_4444);
+        let difference = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+        assert!(difference > 1e-3, "equal-velocity hats are bit-identical across voice seeds");
+        let level_ratio = rms(&a) / rms(&b).max(1e-9);
+        assert!((0.6..1.67).contains(&level_ratio), "phase variation creates a level jump: {level_ratio}");
     }
 }
 
