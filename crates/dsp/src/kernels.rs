@@ -229,14 +229,14 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::Guitar => 0.151,       // guitar r3 re-bake (radiation chain; was -27.4 LUFS at 0.126)
         Instrument::Bass => 0.63,         // round-2 re-bake (DI tilt body)
         Instrument::EPiano => 1.54,       // was -26.6 LUFS
-        Instrument::Drums => 0.43,        // drums r3 re-bake (kick vel law + snare band)
+        Instrument::Drums => 0.56,        // drums r3 re-bake (kick vel law + snare band)
         Instrument::SynthPad => 0.50,     // was -26.5 LUFS
-        Instrument::Piano => 0.123, // piano r3 re-measure (board dip + radiation revoice; x1.46 per measure-loudness)
-        Instrument::GuitarSteel => 0.111,   // guitar r3 re-bake (acceleration chain ran +9 dB at 0.46)
+        Instrument::Piano => 0.130, // piano r3 re-measure (board dip + radiation revoice; x1.46 per measure-loudness)
+        Instrument::GuitarSteel => 0.213,   // guitar r3 re-bake (acceleration chain ran +9 dB at 0.46)
         Instrument::GuitarElectric => 0.34, // electric r2 re-bake (022 dark voicing)
         Instrument::GuitarDistorted => 0.22, // electric r2 re-bake (drive 45 lead channel)
-        Instrument::DrumsRock => 0.29,      // drums r3 re-bake (rock snare 1.45 anchor)
-        Instrument::DrumsJazz => 0.70,      // drums r3 re-bake (brush GM38 + open kick)
+        Instrument::DrumsRock => 0.38,      // drums r3 re-bake (rock snare 1.45 anchor)
+        Instrument::DrumsJazz => 0.85,      // drums r3 re-bake (brush GM38 + open kick)
     }
 }
 
