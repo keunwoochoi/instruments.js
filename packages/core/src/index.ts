@@ -259,7 +259,12 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
     node.port.onmessage = (ev: MessageEvent) => {
       const msg = ev.data;
       if (msg.type === "ready") resolve();
-      else if (msg.type === "error") reject(new Error(`instruments.js worklet: ${msg.message}`));
+      else if (msg.type === "error") {
+        // before ready: fail init; after ready (a settled promise ignores
+        // reject): still loud — runtime errors must never disappear
+        console.error(`instruments.js worklet: ${msg.message}`);
+        reject(new Error(`instruments.js worklet: ${msg.message}`));
+      }
       else if (msg.type === "stats" && statsCb) statsCb(msg);
     };
     // never-silent guards: clone failures and processor crashes must reject loudly

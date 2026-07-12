@@ -95,6 +95,13 @@ class InstrumentsProcessor extends AudioWorkletProcessor {
   apply(e) {
     const x = this.exports;
     const p = this.engine;
+    if ((e.kind === "reverb" && !x.ij_set_reverb) || (e.kind === "room" && !x.ij_set_room)) {
+      // loud on failure: a missing export means the cached WASM predates this
+      // worklet — say so instead of crashing the processor with a TypeError
+      this.port.postMessage({ type: "error",
+        message: `engine binary is older than the page (no ij_set_${e.kind === "reverb" ? "reverb" : "room"} export) — hard refresh to reload the WASM` });
+      return;
+    }
     if (e.kind === "on") x.ij_note_on(p, e.track, e.midi, e.vel);
     else if (e.kind === "off") x.ij_note_off(p, e.track, e.midi);
     else if (e.kind === "pedal") x.ij_pedal(p, e.track, e.on);
