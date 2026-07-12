@@ -2248,15 +2248,54 @@ pub struct Voice {
     pub releasing: bool,
     /// note-off arrived while the sustain pedal was down; release on pedal-up
     pub pedal_held: bool,
+    /// stereo placement of THIS note (-1..1): pianos/mallets spread by key,
+    /// drums by kit layout, acoustics by a small seeded micro-offset
+    pub pan: f32,
     pub age: u64,
 }
 
 impl Voice {
     pub const fn off() -> Self {
-        Self { kernel: Kernel::Off, track: 0, midi: 0, releasing: false, pedal_held: false, age: 0 }
+        Self {
+            kernel: Kernel::Off,
+            track: 0,
+            midi: 0,
+            releasing: false,
+            pedal_held: false,
+            pan: 0.0,
+            age: 0,
+        }
     }
     pub fn active(&self) -> bool {
         !matches!(self.kernel, Kernel::Off)
+    }
+}
+
+/// Stereo placement per note (audience perspective). Electrics return 0 — the amp
+/// chain is genuinely mono, like the instrument.
+pub fn voice_pan(inst: Instrument, midi: u32, seed: u32) -> f32 {
+    let key = |lo: f32, hi: f32| (((midi as f32) - lo) / (hi - lo)).clamp(0.0, 1.0) - 0.5;
+    match inst {
+        Instrument::Piano => key(21.0, 108.0) * 0.60,
+        Instrument::Marimba | Instrument::Vibraphone => key(45.0, 96.0) * 0.50,
+        Instrument::Glockenspiel | Instrument::MusicBox => key(60.0, 108.0) * 0.35,
+        Instrument::EPiano => key(28.0, 96.0) * 0.30,
+        Instrument::Drums => match midi {
+            35 | 36 => 0.0,       // kick center
+            38 | 40 => 0.05,      // snare just off-center
+            42 | 44 => 0.28,      // hats player-left (audience right)
+            46 => 0.30,
+            49 | 57 => -0.25,     // crash
+            51 | 53 | 59 => 0.40, // ride
+            41 | 43 | 45 => -0.18, // low toms
+            47 | 48 | 50 => 0.12, // high toms
+            _ => ((seed >> 7) as f32 / 33554432.0 - 0.5) * 0.2,
+        },
+        Instrument::Guitar | Instrument::GuitarSteel | Instrument::Bass => {
+            // per-note micro-offset: strings sit at slightly different spots
+            ((seed >> 9) as f32 / 8388608.0 - 0.5) * 0.12
+        }
+        _ => 0.0,
     }
 }
 

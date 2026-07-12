@@ -14,8 +14,8 @@
 pub mod kernels;
 
 use kernels::{
-    amp_defaults, body_defaults, makeup_gain, pickup_defaults, start_voice, Instrument, Kernel,
-    Voice, MAX_BLOCK, MAX_BODY_MODES,
+    amp_defaults, body_defaults, makeup_gain, pickup_defaults, start_voice, voice_pan, Instrument,
+    Kernel, Voice, MAX_BLOCK, MAX_BODY_MODES,
 };
 
 pub const MAX_VOICES: usize = 64;
@@ -53,8 +53,8 @@ pub struct TrackBus {
     body_a1: [f32; MAX_BODY_MODES],
     body_r2: [f32; MAX_BODY_MODES],
     body_g: [f32; MAX_BODY_MODES],
-    body_y1: [f32; MAX_BODY_MODES],
-    body_y2: [f32; MAX_BODY_MODES],
+    body_y1: [[f32; MAX_BODY_MODES]; 2],
+    body_y2: [[f32; MAX_BODY_MODES]; 2],
     // magnetic-pickup resonance (electrics): RBJ resonant lowpass biquad
     pk_on: bool,
     pk_b0: f32,
@@ -80,8 +80,10 @@ fn ln_cosh(x: f32) -> f32 {
 impl TrackBus {
     fn targets(&self) -> (f32, f32) {
         let th = (self.pan.clamp(-1.0, 1.0) + 1.0) * core::f32::consts::FRAC_PI_4;
-        // measured per-family loudness normalization (kernels::makeup_gain)
-        let g = self.gain * makeup_gain(self.instrument);
+        // measured per-family loudness normalization (kernels::makeup_gain);
+        // sqrt(2) compensates the equal-power per-voice spread so a centered voice
+        // on a centered track lands at exactly the pre-stereo level
+        let g = self.gain * makeup_gain(self.instrument) * core::f32::consts::SQRT_2;
         (g * th.cos(), g * th.sin())
     }
 }
@@ -90,7 +92,9 @@ pub struct Engine {
     pub sample_rate: f32,
     voices: Vec<Voice>,
     tracks: [TrackBus; MAX_TRACKS],
-    track_buf: [f32; MAX_BLOCK],
+    track_l: [f32; MAX_BLOCK],
+    track_r: [f32; MAX_BLOCK],
+    voice_buf: [f32; MAX_BLOCK],
     pub out_l: [f32; MAX_BLOCK],
     pub out_r: [f32; MAX_BLOCK],
     seed: u32,
@@ -119,8 +123,8 @@ impl Engine {
                 body_a1: [0.0; MAX_BODY_MODES],
                 body_r2: [0.0; MAX_BODY_MODES],
                 body_g: [0.0; MAX_BODY_MODES],
-                body_y1: [0.0; MAX_BODY_MODES],
-                body_y2: [0.0; MAX_BODY_MODES],
+                body_y1: [[0.0; MAX_BODY_MODES]; 2],
+                body_y2: [[0.0; MAX_BODY_MODES]; 2],
                 pk_on: false,
                 pk_b0: 0.0,
                 pk_b1: 0.0,
@@ -132,7 +136,9 @@ impl Engine {
                 gl: 0.0,
                 gr: 0.0,
             }; MAX_TRACKS],
-            track_buf: [0.0; MAX_BLOCK],
+            track_l: [0.0; MAX_BLOCK],
+            track_r: [0.0; MAX_BLOCK],
+            voice_buf: [0.0; MAX_BLOCK],
             out_l: [0.0; MAX_BLOCK],
             out_r: [0.0; MAX_BLOCK],
             seed: 0x1234_5678,
@@ -163,8 +169,10 @@ impl Engine {
                 t.body_a1[i] = 2.0 * r * w.cos();
                 t.body_r2[i] = r * r;
                 t.body_g[i] = g * (1.0 - r);
-                t.body_y1[i] = 0.0;
-                t.body_y2[i] = 0.0;
+                t.body_y1[0][i] = 0.0;
+                t.body_y1[1][i] = 0.0;
+                t.body_y2[0][i] = 0.0;
+                t.body_y2[1][i] = 0.0;
             }
             // magnetic-pickup resonance (electrics): RBJ resonant lowpass
             let (pf, pq) = pickup_defaults(instrument);
@@ -218,6 +226,7 @@ impl Engine {
             midi: midi as u8,
             releasing: false,
             pedal_held: false,
+            pan: voice_pan(inst, midi, self.seed),
             age: 0,
         };
     }
@@ -318,23 +327,33 @@ impl Engine {
         let sr = self.sample_rate;
 
         for t in 0..MAX_TRACKS {
-            // render every voice on this track into the mono track bus
+            // render every voice on this track into the STEREO track bus:
+            // each voice renders mono, then lands at its own equal-power position
             let mut any = false;
-            self.track_buf[..frames].fill(0.0);
+            self.track_l[..frames].fill(0.0);
+            self.track_r[..frames].fill(0.0);
             for v in self.voices.iter_mut() {
                 if !v.active() || v.track as usize != t {
                     continue;
                 }
                 any = true;
+                self.voice_buf[..frames].fill(0.0);
                 let alive = match &mut v.kernel {
-                    Kernel::Modal(m) => m.render(&mut self.track_buf[..frames]),
-                    Kernel::Pluck(p) => p.render(&mut self.track_buf[..frames]),
-                    Kernel::EPluck(p) => p.render(&mut self.track_buf[..frames]),
-                    Kernel::Drum(d) => d.render(&mut self.track_buf[..frames], sr),
-                    Kernel::Synth(s) => s.render(&mut self.track_buf[..frames]),
-                    Kernel::Piano(pn) => pn.render(&mut self.track_buf[..frames]),
+                    Kernel::Modal(m) => m.render(&mut self.voice_buf[..frames]),
+                    Kernel::Pluck(p) => p.render(&mut self.voice_buf[..frames]),
+                    Kernel::EPluck(p) => p.render(&mut self.voice_buf[..frames]),
+                    Kernel::Drum(d) => d.render(&mut self.voice_buf[..frames], sr),
+                    Kernel::Synth(s) => s.render(&mut self.voice_buf[..frames]),
+                    Kernel::Piano(pn) => pn.render(&mut self.voice_buf[..frames]),
                     Kernel::Off => false,
                 };
+                let th = (v.pan.clamp(-1.0, 1.0) + 1.0) * core::f32::consts::FRAC_PI_4;
+                let (vgl, vgr) = (th.cos(), th.sin());
+                for i in 0..frames {
+                    let s = self.voice_buf[i];
+                    self.track_l[i] += s * vgl;
+                    self.track_r[i] += s * vgr;
+                }
                 v.age += frames as u64;
                 if !alive {
                     v.kernel = Kernel::Off;
@@ -347,67 +366,87 @@ impl Engine {
                 bus.gr = tr;
                 continue;
             }
-            // body resonator bank (acoustics): parallel modes + dry path
+            // body resonator bank (acoustics): parallel modes + dry path, true
+            // stereo (independent state per channel — a body radiates in space)
             if bus.body_n > 0 {
-                for i in 0..frames {
-                    let x = self.track_buf[i];
-                    let mut acc = bus.body_dry * x;
-                    for m in 0..bus.body_n {
-                        let y = bus.body_a1[m] * bus.body_y1[m] - bus.body_r2[m] * bus.body_y2[m]
-                            + bus.body_g[m] * x;
-                        bus.body_y2[m] = bus.body_y1[m];
-                        bus.body_y1[m] = y;
-                        acc += y;
+                for ch in 0..2 {
+                    let buf: &mut [f32] =
+                        if ch == 0 { &mut self.track_l } else { &mut self.track_r };
+                    for i in 0..frames {
+                        let x = buf[i];
+                        let mut acc = bus.body_dry * x;
+                        for m in 0..bus.body_n {
+                            let y = bus.body_a1[m] * bus.body_y1[ch][m]
+                                - bus.body_r2[m] * bus.body_y2[ch][m]
+                                + bus.body_g[m] * x;
+                            bus.body_y2[ch][m] = bus.body_y1[ch][m];
+                            bus.body_y1[ch][m] = y;
+                            acc += y;
+                        }
+                        buf[i] = acc;
                     }
-                    self.track_buf[i] = acc;
-                }
-                for m in 0..bus.body_n {
-                    bus.body_y1[m] = flush_denormal(bus.body_y1[m]);
-                    bus.body_y2[m] = flush_denormal(bus.body_y2[m]);
+                    for m in 0..bus.body_n {
+                        bus.body_y1[ch][m] = flush_denormal(bus.body_y1[ch][m]);
+                        bus.body_y2[ch][m] = flush_denormal(bus.body_y2[ch][m]);
+                    }
                 }
             }
-            // magnetic-pickup resonance (electrics), before the amp
-            if bus.pk_on {
+            // Electrics are genuinely mono instruments (one pickup, one amp):
+            // collapse the spread (their voices pan 0 anyway), run the electrical
+            // chain once, and mirror the result to both channels. The 0.7071
+            // collapse is exact for center voices: (s/√2 + s/√2)·(1/√2) = s.
+            if bus.pk_on || bus.drive > 0.0 {
                 for i in 0..frames {
-                    let x = self.track_buf[i];
-                    let y = bus.pk_b0 * x + bus.pk_z1;
-                    bus.pk_z1 = bus.pk_b1 * x - bus.pk_a1 * y + bus.pk_z2;
-                    bus.pk_z2 = bus.pk_b2 * x - bus.pk_a2 * y;
-                    self.track_buf[i] = y;
+                    let m = (self.track_l[i] + self.track_r[i]) * core::f32::consts::FRAC_1_SQRT_2;
+                    self.track_l[i] = m;
                 }
-                bus.pk_z1 = flush_denormal(bus.pk_z1);
-                bus.pk_z2 = flush_denormal(bus.pk_z2);
-            }
-            // amp stage (electric guitars): ADAA tanh — antialiased waveshaping
-            // without oversampling — then a one-pole tone/cab lowpass
-            if bus.drive > 0.0 {
-                let d = bus.drive;
-                let inv_d = 1.0 / d;
+                // magnetic-pickup resonance, before the amp
+                if bus.pk_on {
+                    for i in 0..frames {
+                        let x = self.track_l[i];
+                        let y = bus.pk_b0 * x + bus.pk_z1;
+                        bus.pk_z1 = bus.pk_b1 * x - bus.pk_a1 * y + bus.pk_z2;
+                        bus.pk_z2 = bus.pk_b2 * x - bus.pk_a2 * y;
+                        self.track_l[i] = y;
+                    }
+                    bus.pk_z1 = flush_denormal(bus.pk_z1);
+                    bus.pk_z2 = flush_denormal(bus.pk_z2);
+                }
+                // amp stage: ADAA tanh + tone/cab lowpass
+                if bus.drive > 0.0 {
+                    let d = bus.drive;
+                    let inv_d = 1.0 / d;
+                    for i in 0..frames {
+                        let x = self.track_l[i] * d;
+                        let dx = x - bus.amp_x1;
+                        let fx = ln_cosh(x);
+                        let y = if dx.abs() > 1e-4 {
+                            (fx - bus.amp_f1) / dx
+                        } else {
+                            (0.5 * (x + bus.amp_x1)).tanh()
+                        };
+                        bus.amp_x1 = x;
+                        bus.amp_f1 = fx;
+                        bus.tone_lp += bus.tone_c * (y - bus.tone_lp);
+                        self.track_l[i] = bus.tone_lp * inv_d.max(0.35);
+                    }
+                    bus.amp_x1 = flush_denormal(bus.amp_x1);
+                    bus.tone_lp = flush_denormal(bus.tone_lp);
+                }
+                // mirror mono chain to both channels at equal power
                 for i in 0..frames {
-                    let x = self.track_buf[i] * d;
-                    let dx = x - bus.amp_x1;
-                    let fx = ln_cosh(x);
-                    let y = if dx.abs() > 1e-4 {
-                        (fx - bus.amp_f1) / dx
-                    } else {
-                        (0.5 * (x + bus.amp_x1)).tanh()
-                    };
-                    bus.amp_x1 = x;
-                    bus.amp_f1 = fx;
-                    bus.tone_lp += bus.tone_c * (y - bus.tone_lp);
-                    self.track_buf[i] = bus.tone_lp * inv_d.max(0.35);
+                    let m = self.track_l[i] * core::f32::consts::FRAC_1_SQRT_2;
+                    self.track_l[i] = m;
+                    self.track_r[i] = m;
                 }
-                bus.amp_x1 = flush_denormal(bus.amp_x1);
-                bus.tone_lp = flush_denormal(bus.tone_lp);
             }
             // ~1 ms gain smoothing against zipper noise
             let c = 1.0 - (-1.0 / (0.001 * sr)).exp();
             for i in 0..frames {
                 bus.gl += c * (tl - bus.gl);
                 bus.gr += c * (tr - bus.gr);
-                let s = self.track_buf[i];
-                self.out_l[i] += s * bus.gl;
-                self.out_r[i] += s * bus.gr;
+                self.out_l[i] += self.track_l[i] * bus.gl;
+                self.out_r[i] += self.track_r[i] * bus.gr;
             }
             bus.gl = flush_denormal(bus.gl);
             bus.gr = flush_denormal(bus.gr);
@@ -863,6 +902,38 @@ mod tests {
         let peak = late.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(peak < 1e-3, "pad still sounding 3.3 s after release: {peak}");
         assert_eq!(e.active_voices(), 0, "released pad voice not reclaimed");
+    }
+
+    #[test]
+    fn stereo_placement_spreads_piano_and_kit() {
+        let mut e = Engine::new(48_000.0);
+        e.set_track(0, Instrument::Piano, 0.8, 0.0);
+        e.set_track(1, Instrument::Drums, 0.8, 0.0);
+        e.note_on(0, 26, 0.9); // low D1 — audience left
+        e.note_on(1, 42, 0.9); // closed hat — audience right
+        let (mut el, mut er) = (0.0f64, 0.0f64);
+        for _ in 0..150 {
+            e.process(QUANTUM_FRAMES);
+            for i in 0..QUANTUM_FRAMES {
+                el += (e.out_l[i] as f64) * (e.out_l[i] as f64);
+                er += (e.out_r[i] as f64) * (e.out_r[i] as f64);
+            }
+        }
+        // both channels carry energy (nothing collapsed to mono-silence)…
+        assert!(el > 1e-6 && er > 1e-6, "dead channel: L={el} R={er}");
+        // …and a lone low piano note creates measurable left asymmetry:
+        let mut e2 = Engine::new(48_000.0);
+        e2.set_track(0, Instrument::Piano, 0.8, 0.0);
+        e2.note_on(0, 26, 0.9);
+        let (mut l2, mut r2) = (0.0f64, 0.0f64);
+        for _ in 0..150 {
+            e2.process(QUANTUM_FRAMES);
+            for i in 0..QUANTUM_FRAMES {
+                l2 += (e2.out_l[i] as f64) * (e2.out_l[i] as f64);
+                r2 += (e2.out_r[i] as f64) * (e2.out_r[i] as f64);
+            }
+        }
+        assert!(l2 > r2 * 1.3, "low piano note should sit audience-left: L={l2} R={r2}");
     }
 
     #[test]
