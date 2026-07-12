@@ -227,14 +227,14 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::Guitar => 0.126,       // round-2 re-bake (body refit + release; was -22.1 LUFS at 0.194)
         Instrument::Bass => 0.63,         // round-2 re-bake (DI tilt body)
         Instrument::EPiano => 1.54,       // was -26.6 LUFS
-        Instrument::Drums => 0.54,        // was -27.4 LUFS
+        Instrument::Drums => 0.43,        // drums r3 re-bake (kick vel law + snare band)
         Instrument::SynthPad => 0.50,     // was -26.5 LUFS
         Instrument::Piano => 0.084, // piano r2 re-bake (decay-geometry rework)
         Instrument::GuitarSteel => 0.48,    // acoustics r2 re-bake (HF floor + 16-mode body)
         Instrument::GuitarElectric => 0.34, // electric r2 re-bake (022 dark voicing)
         Instrument::GuitarDistorted => 0.22, // electric r2 re-bake (drive 45 lead channel)
-        Instrument::DrumsRock => 0.32,      // measured 2026-07-11 (pyloudnorm -22.6 pre-bake)
-        Instrument::DrumsJazz => 0.51,      // measured 2026-07-11 (pyloudnorm -25.5 pre-bake)
+        Instrument::DrumsRock => 0.29,      // drums r3 re-bake (rock snare 1.45 anchor)
+        Instrument::DrumsJazz => 0.70,      // drums r3 re-bake (brush GM38 + open kick)
     }
 }
 
@@ -3408,8 +3408,12 @@ impl DrumVoice {
                 v.sl_r2 = r * r;
                 // √open normalization: longer ring at the same strike amplitude
                 // would inflate the 30 ms attack-window energy (it4 overshoot:
-                // jazz slap band went +10 dB); keep window level, extend ring
-                let a = sa * vel.powf(1.05) / (open / 1.6f32).sqrt();
+                // jazz slap band went +10 dB); keep window level, extend ring.
+                // Compressive contact law on top: head tension nonlinearity
+                // limits the local knock displacement at high drive (ff hits
+                // were pinning the master knee ~+6 dB — an audible squash)
+                let a_raw = sa * vel.powf(1.05) / (open / 1.6f32).sqrt();
+                let a = a_raw / (1.0 + 0.18 * a_raw);
                 let phi = core::f32::consts::PI * Lcg(seed ^ 0x51a9 | 1).next();
                 v.sl_y1 = a * (phi - w).sin();
                 v.sl_y2 = a * (phi - 2.0 * w).sin();
