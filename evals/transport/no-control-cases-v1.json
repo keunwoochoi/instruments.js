@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0.0",
+  "cases": [
+    {
+      "id": "four-track-event-order",
+      "total_frames": 4096,
+      "events": [
+        { "frame": 0, "kind": "track", "track": 0, "instrument": 0, "gain": 0.72, "pan": -0.3 },
+        { "frame": 0, "kind": "track", "track": 1, "instrument": 5, "gain": 0.66, "pan": 0.1 },
+        { "frame": 0, "kind": "track", "track": 2, "instrument": 7, "gain": 0.7, "pan": 0.22 },
+        { "frame": 0, "kind": "track", "track": 3, "instrument": 8, "gain": 0.42, "pan": 0.0 },
+        { "frame": 0, "kind": "room", "track": 2, "send": 0.08 },
+        { "frame": 0, "kind": "reverb", "reverb": 1 },
+        { "frame": 512, "kind": "pedal", "track": 0, "on": 1, "offset": true },
+        { "frame": 512, "kind": "on", "track": 0, "midi": 69, "velocity": 0.78, "offset": true },
+        { "frame": 512, "kind": "on", "track": 1, "midi": 33, "velocity": 0.81, "offset": true },
+        { "frame": 512, "kind": "on", "track": 2, "midi": 36, "velocity": 0.9, "offset": true },
+        { "frame": 512, "kind": "on", "track": 3, "midi": 57, "velocity": 0.58, "offset": true },
+        { "frame": 1536, "kind": "on", "track": 2, "midi": 42, "velocity": 0.57, "offset": true },
+        { "frame": 2560, "kind": "off", "track": 0, "midi": 69, "offset": true },
+        { "frame": 2560, "kind": "off", "track": 1, "midi": 33, "offset": true },
+        { "frame": 2560, "kind": "off", "track": 3, "midi": 57, "offset": true },
+        { "frame": 2560, "kind": "pedal", "track": 0, "on": 0, "offset": true }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0.0",
+  "contract_id": "no-control-transport-v1",
+  "scope": "Default-preserving event transport; no instrument controls or sound changes.",
+  "case_manifest": "evals/transport/no-control-cases-v1.json",
+  "baseline": "evals/transport/no-control-baseline-v1.json",
+  "renderer": "scripts/dev/transport-baseline.mjs",
+  "shipped_wasm": "packages/core/wasm/instruments_dsp.wasm",
+  "metric": {
+    "version": "transport-drift-rms-v1",
+    "statistic": "RMS difference of deterministic signed-mean and RMS block fingerprints, normalized by baseline fingerprint RMS with a 1e-12 denominator floor",
+    "threshold": 0.000001,
+    "fingerprint_blocks": 64
+  },
+  "artifact_policy": {
+    "all_samples_finite": true,
+    "minimum_rms": 0.000001,
+    "maximum_absolute_peak": 4.0,
+    "exact_frame_count": true,
+    "stereo": true
+  },
+  "matrix": {
+    "ingress_modes": ["live", "offline"],
+    "sample_rates": [44100, 48000],
+    "event_offsets": [0, 1, 63, 127],
+    "process_chunk_sizes": [1, 17, 64, 127, 128],
+    "live_delivery_quantum_frames": 128
+  },
+  "equal_frame_order": ["track", "room", "reverb", "pedal-or-note-off", "note-on", "insertion-sequence"],
+  "frozen_paths": [
+    "evals/transport/no-control-cases-v1.json",
+    "evals/transport/no-control-contract-v1.json",
+    "evals/transport/no-control-baseline-v1.json",
+    "scripts/dev/transport-baseline.mjs"
+  ],
+  "regeneration_command": "node scripts/dev/transport-baseline.mjs generate --allow-rebaseline",
+  "verification_command": "node scripts/dev/transport-baseline.mjs verify"
+}
