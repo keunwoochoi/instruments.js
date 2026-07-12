@@ -2124,12 +2124,19 @@ impl ElectricVoice {
         // per-pass brightness: refs lose ~35 dB/s at 1 kHz in the low register
         // while H2..H5 barely decay — a steep loop corner, key-tracked so the
         // per-second HF decay stays register-flat (Valimaki et al. 1996 loop fit)
-        // r3 (028 refit): key law linear 0.56·k → quadratic 0.33·k+0.17·k² —
-        // the sustained centroid ran +40% bright at E3 (488 vs 342 Hz) and
-        // +27% at C5 (903 vs 713 Hz) while B1 matched; measured trade between
+        // r3 (028 refit): key law linear 0.56·k → quadratic 0.33·k+0.17·k²
+        // above E2 — the sustained centroid ran +40% bright at E3 (488 vs
+        // 342 Hz) and +27% at C5 (903 vs 713 Hz); measured trade between
         // slopes 0.45 and 0.38 showed no single slope holds both ends (the
-        // loop-loss law is convex in key).
-        let mut lp_c = (0.51 + 0.33 * key + 0.17 * key * key + 0.06 * vel).clamp(0.30, 0.985);
+        // loop-loss law is convex in key). BELOW E2 the old 0.56 slope stays:
+        // the quadratic accidentally brightened B1 (sustained H10+ ran
+        // +15…+30 dB hot at 0.8 s vs the refs' collapse above ~600 Hz).
+        let kf = if key < 0.0 {
+            0.56 * key
+        } else {
+            0.33 * key + 0.17 * key * key
+        };
+        let mut lp_c = (0.51 + kf + 0.06 * vel).clamp(0.30, 0.985);
         if dist {
             lp_c = (lp_c + 0.08).min(0.985);
         }
@@ -2260,11 +2267,19 @@ impl ElectricVoice {
         // lowpassed-noise texture layer. Round-2 finding: pure noise excitation
         // has σ ≈ 7.7 dB note-to-note H2/H1 variance (measured, 40 seeds) — a
         // tone lottery in exactly the harmonics the dark clean voicing exposes.
-        // Bridge-side electric picking. r3 refit vs the 028 cluster: the refs'
-        // first spectral lobe stays within 3 dB through H6 (a 0.13 pick nulled
-        // it at H7.7 — too narrow); 0.10 widens the lobe to the measured shape
-        // and leaves the H8 notch to the pickup-position comb below.
-        let pick_pos = 0.10;
+        // Bridge-side electric picking. r3 refit vs the 028 cluster: the pick
+        // sits at a fixed physical DISTANCE from the bridge, so its fraction
+        // of the speaking length doubles per octave up the neck (L ∝ 1/f0).
+        // The refs' comb structure demands exactly that: lobe cutoff ~H18-20
+        // at B1, ~H14 at A2, ~H7 at E3, ~H4.5 at C5 — no fixed fraction fits.
+        // Base 0.07 at E2; clamp [0.085, 0.22] — measured: at B1 fractions
+        // below ~0.08 over-brighten the SUSTAIN (the wider lobe feeds
+        // harmonics the loop preserves: 235-281 vs 212 Hz at 0.8 s), while
+        // 0.10 starved the attack's second lobe; the floor holds the low
+        // strings near the H11-12 null. E3 fits at ~0.14, C5 at the 0.22
+        // ceiling (null ~H4.5 — the refs' H5 sits at −23 dB there).
+        // The H8 notch is the pickup comb's, fraction-flat in the refs.
+        let pick_pos = (0.07 * (44.0 * key / 12.0).exp2()).clamp(0.085, 0.22);
         let mut rng = Lcg(seed | 1);
         // texture corner: flesh-soft ≈ 200 Hz → hard plectrum ≈ 1.6 kHz,
         // register-tracked (as in round 1); the deterministic shape underneath
