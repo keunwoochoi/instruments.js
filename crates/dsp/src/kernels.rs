@@ -172,7 +172,7 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::EPiano => 1.47,       // was -26.6 LUFS
         Instrument::Drums => 0.61,        // was -27.4 LUFS
         Instrument::SynthPad => 0.48,     // was -26.5 LUFS
-        Instrument::Piano => 0.067, // piano agent re-measure (v4 knock/level rework)
+        Instrument::Piano => 0.084, // piano agent re-measure 2026-07-11 r2 (decay-geometry rework ran -27.7 LUFS at 0.067)
         Instrument::GuitarSteel => 0.50,    // acoustic agent re-bake
         Instrument::GuitarElectric => 0.73, // electric agent re-measure
         Instrument::GuitarDistorted => 0.21, // electric agent re-measure (high gain)
@@ -1004,6 +1004,9 @@ pub struct PianoVoice {
     body_g: [f32; PIANO_BOARD_MODES],
     body_pulse_pos: u32,
     body_pulse_len: u32,
+    /// board cloud active until this age (longest mode T60 0.55 s → the bank
+    /// is silence long before a 10+ s note dies; skip its 12 modes after)
+    body_live: u64,
     thump_env: f32,
     thump_decay: f32,
     thump_amp: f32,
@@ -1200,6 +1203,7 @@ impl PianoVoice {
             // the treble (Askenfelt & Jansson 1990 contact times) — the shorter
             // pulse is what lets the cloud's upper modes speak at all
             body_pulse_len: (((0.003 - 0.002 * key) * sr) as u32).max(2),
+            body_live: (0.9 * sr) as u64,
             thump_env: 1.0,
             thump_decay: t60_gain(0.010, sr),
             thump_amp: 0.02 * vel,
@@ -1266,6 +1270,7 @@ impl PianoVoice {
     pub fn render(&mut self, out: &mut [f32]) -> bool {
         let inv_pulse = 1.0 / self.body_pulse_len as f32;
         let inv_n = 1.0 / self.n_strings as f32;
+        let body_on = self.age < self.body_live;
         for o in out.iter_mut() {
             // felt-hammer collision: F = K·compression^p while in contact, integrated
             // per sample (hammer mass 1). Ends when the hammer rebounds clear.
@@ -1335,18 +1340,20 @@ impl PianoVoice {
             self.rad_lp2 += self.rad_c * (s - self.rad_lp2);
             s -= self.rad_lp2;
             // hammer pulse into the body modes (case knock) + key thump noise
-            let mut x = 0.0;
-            if self.body_pulse_pos < self.body_pulse_len {
-                let ph = self.body_pulse_pos as f32 * inv_pulse;
-                x = 0.5 * (1.0 - (core::f32::consts::TAU * ph).cos());
-                self.body_pulse_pos += 1;
-            }
-            for m in 0..PIANO_BOARD_MODES {
-                let y = self.body_a1[m] * self.body_y1[m] - self.body_r2[m] * self.body_y2[m]
-                    + self.body_g[m] * x;
-                self.body_y2[m] = self.body_y1[m];
-                self.body_y1[m] = y;
-                s += y;
+            if body_on {
+                let mut x = 0.0;
+                if self.body_pulse_pos < self.body_pulse_len {
+                    let ph = self.body_pulse_pos as f32 * inv_pulse;
+                    x = 0.5 * (1.0 - (core::f32::consts::TAU * ph).cos());
+                    self.body_pulse_pos += 1;
+                }
+                for m in 0..PIANO_BOARD_MODES {
+                    let y = self.body_a1[m] * self.body_y1[m] - self.body_r2[m] * self.body_y2[m]
+                        + self.body_g[m] * x;
+                    self.body_y2[m] = self.body_y1[m];
+                    self.body_y1[m] = y;
+                    s += y;
+                }
             }
             if self.thump_amp > 1e-5 && self.thump_env > 1e-4 {
                 let nw = self.rng.next();
@@ -1406,6 +1413,7 @@ impl PianoVoice {
         for g in self.body_g.iter_mut() {
             *g *= 0.5;
         }
+        self.body_live = self.age + (0.9 * self.sr) as u64;
         self.life = self.age + (1.5 * self.sr) as u64;
     }
 }
