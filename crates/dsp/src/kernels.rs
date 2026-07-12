@@ -884,11 +884,18 @@ struct StringLoop {
     dc_y1: f32,
 }
 
-/// In-loop DC-blocker pole (~3 Hz at 48 k). Shared by `tick` and the delay budget:
+/// In-loop DC-blocker pole (~0.76 Hz at 48 k). Shared by `tick` and the delay budget:
 /// the blocker's phase LEAD at f0 shortens the effective loop delay and must be
 /// compensated or every string plays sharp (worst in the bass, where the old 19 Hz
 /// blocker left A1 audibly sharp — found while fixing its fundamental damping).
-const DC_POLE: f32 = 0.9996;
+/// Round 3 pushed 0.9996 → 0.9999: the lead FALLS with frequency (5.5 samples at
+/// C2's f0 but 0.3 at p4 with the old pole), so the blocker was a hidden
+/// negative-dispersion element dragging bass partials ~12 cents FLAT — the
+/// opposite of stiffness stretch. At 0.9999 the differential lead is ~1 sample,
+/// DC is still blocked (pedestal drains in ~0.2 s; the 2nd-order radiation
+/// highpass owns the output-side pedestal), and bass fundamentals lose even
+/// less energy to the blocker.
+const DC_POLE: f32 = 0.9999;
 
 impl StringLoop {
     /// `detune_cents` shifts this string against the nominal pitch (unison beating).
@@ -1137,9 +1144,28 @@ impl PianoVoice {
         let t60_prompt =
             2.55 + 12.0 * (-(key / 0.105) * (key / 0.105)).exp() - 2.6 * (key - 0.45).max(0.0);
         let lp_c = (0.32 + 0.44 * key + 0.18 * vel).clamp(0.25, 0.95);
-        // stiffness (inharmonicity): audible on wound bass strings, mild in mid
-        let disp_c =
-            if key < 0.35 { 0.20 * (1.0 - key / 0.35) + 0.05 } else { 0.035 + 0.04 * (key - 0.35) };
+        // Stiffness (inharmonicity) — SIGN FIX round 3: stiffness raises phase
+        // velocity with frequency, so upper partials arrive EARLY → stretch
+        // SHARP of n·f0 (f_n = n·f0·√(1+Bn²), Fletcher 1964). A first-order
+        // allpass pair with c > 0 has small delay at DC and large at Nyquist —
+        // it dragged every partial FLAT (measured −3…−14 cents across the
+        // keyboard vs Salamander's +2→+55 cents at p10). Negative c inverts
+        // the group-delay curve. The law lives in DC-delay space (τ0 per
+        // section, c = (1−τ0)/(1+τ0)): a short treble loop amplifies a given
+        // Δτ into far more cents than a long bass loop, so τ0 must FALL with
+        // key even though B rises. Fit to Salamander p10 stretch: C2 +10c,
+        // C4 +23c, C5 +55c; treble ~B≈5·10⁻³ (Fletcher & Rossing ch. 12).
+        // Sized with PHASE delay (the loop resonance condition), not group
+        // delay — the first fit undershot ~2.5× by conflating them.
+        // Piecewise (continuous at C4): the bass branch falls fast (long loops
+        // dilute Δτ), the treble branch slow (B keeps growing — C5 measured at
+        // only 55% of its +55-cent target under the single exponential).
+        let tau0 = if key < 0.448 {
+            (0.7 + 41.2 * (-4.72 * key).exp()).min(22.0)
+        } else {
+            0.35 + 5.32 * (-1.8 * (key - 0.448)).exp()
+        };
+        let disp_c = (1.0 - tau0) / (1.0 + tau0);
 
         let n_strings = if midi < 32 { 2 } else { 3 };
         // Unison mistuning: sets the RATE at which the coupled state rotates
@@ -3445,6 +3471,35 @@ mod tests {
             "C4 fundamental should dive then sing: early {early} dB/s, late {late} dB/s"
         );
         assert!(late < 16.0, "aftersound should sing at the internal rate: late {late} dB/s");
+    }
+
+    /// Stiffness dispersion must stretch partials SHARP of n·f0 (Fletcher
+    /// 1964: f_n = n·f0·√(1+Bn²)); the pre-round-3 allpass sign dragged them
+    /// FLAT. Guard partial 8 of C4 at both deploy sample rates against the
+    /// Salamander-fit window (+14.8 cents measured; ref +14.1).
+    #[test]
+    fn piano_partials_stretch_sharp() {
+        for sr in [44_100.0f32, 48_000.0] {
+            let f0 = midi_to_hz(60.0);
+            let out = render_piano(60, 0.6, sr, 1.4, None);
+            let seg = &out[(0.3 * sr) as usize..(1.3 * sr) as usize];
+            // scan ±40 cents around 8·f0 with a fine projection grid
+            let mut best = (0.0f32, f32::NEG_INFINITY);
+            let mut cents = -40.0f32;
+            while cents <= 40.0 {
+                let f = 8.0 * f0 * (cents / 1200.0).exp2();
+                let e = band_energy(seg, sr, &[f]);
+                if e > best.1 {
+                    best = (cents, e);
+                }
+                cents += 2.0;
+            }
+            assert!(
+                (5.0..30.0).contains(&best.0),
+                "sr {sr}: partial 8 stretch {} cents, want +5…+30 (sharp)",
+                best.0
+            );
+        }
     }
 
     /// The coupling matrix R = I − gJ is only energy-passive for N·g ≤ 2 —
