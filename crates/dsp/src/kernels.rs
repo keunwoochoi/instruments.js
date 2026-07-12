@@ -237,8 +237,8 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::SynthPad => 0.50,     // was -26.5 LUFS
         Instrument::Piano => 0.084, // piano r2 re-bake (decay-geometry rework)
         Instrument::GuitarSteel => 0.48,    // acoustics r2 re-bake (HF floor + 16-mode body)
-        Instrument::GuitarElectric => 0.34, // electric r2 re-bake (022 dark voicing)
-        Instrument::GuitarDistorted => 0.22, // electric r2 re-bake (drive 45 lead channel)
+        Instrument::GuitarElectric => 0.41, // electric r3 re-bake (bright-028 rig, pyloudnorm -22.5 pre-bake)
+        Instrument::GuitarDistorted => 0.21, // electric r3 re-bake (drive-90 lead, tone 5.5k)
         Instrument::DrumsRock => 0.32,      // measured 2026-07-11 (pyloudnorm -22.6 pre-bake)
         Instrument::DrumsJazz => 0.51,      // measured 2026-07-11 (pyloudnorm -25.5 pre-bake)
     }
