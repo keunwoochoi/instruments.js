@@ -148,27 +148,29 @@ pub fn body_defaults(inst: Instrument) -> (f32, &'static [(f32, f32, f32)]) {
                 (2600.0, 0.035, 0.4006), // P=0.6
             ],
         ),
-        // Steel (refs 015/030/021), 16-mode round-2 refit (same method): refs
-        // concentrate energy near 258 and 705 Hz far more than the old plateau;
-        // 90–235 / 300–390 / 480–610 / ~1850 trimmed relative to those anchors;
-        // 2.4k/3.6k presence kept (round-1 attack match).
+        // Steel: r3 refit to SOURCE 015 ONLY (r2 pooled 015+021 — two different
+        // guitars — which smeared the peaks; body-mode frequency JND is ~1%,
+        // Woodhouse et al. 2012). Cross-note triangulation of 015's partial
+        // maxima (D2 h10 742 / F#2 h8 746=max / E2 h9 750) pins a strong body
+        // peak at ~745 Hz that the old row split into 630/705; other peaks at
+        // 258-295, 370-415, ~940, ~1080-1130; dips at 460-590 and ~660.
         Instrument::GuitarSteel => (
             0.28,
             &[
-                (100.0, 0.28, 0.0131),  // P=0.5 A0
-                (190.0, 0.20, 0.0274),  // P=0.55
-                (258.0, 0.22, 0.1216),  // P=1.8 T1' ref peak
-                (295.0, 0.18, 0.1081),  // P=1.4
-                (350.0, 0.15, 0.0641),  // P=0.7
-                (415.0, 0.14, 0.1304),  // P=1.2
-                (505.0, 0.12, 0.1058),  // P=0.8
-                (630.0, 0.12, 0.2639),  // P=1.6
-                (705.0, 0.10, 0.3507),  // P=1.9 ref peak
-                (810.0, 0.09, 0.2121),  // P=1.0
-                (940.0, 0.085, 0.3199), // P=1.3
-                (1180.0, 0.07, 0.2780), // P=0.9
-                (1450.0, 0.065, 0.4151), // P=1.1
-                (1850.0, 0.055, 0.3357), // P=0.7
+                (100.0, 0.28, 0.0209),   // P=0.8 A0 (G2 h1 sits on it at -9 dB)
+                (190.0, 0.20, 0.0274),   // P=0.55
+                (258.0, 0.22, 0.1216),   // P=1.8 T1' ref peak
+                (295.0, 0.18, 0.1081),   // P=1.4
+                (370.0, 0.15, 0.1452),   // P=1.5
+                (415.0, 0.14, 0.1520),   // P=1.4
+                (505.0, 0.12, 0.0793),   // P=0.6 (dip region 460-590)
+                (745.0, 0.10, 0.4285),   // P=2.2 ref peak (was split 630/705)
+                (820.0, 0.09, 0.2572),   // P=1.2
+                (940.0, 0.085, 0.3437),  // P=1.4
+                (1080.0, 0.075, 0.3383), // P=1.2
+                (1180.0, 0.07, 0.3078),  // P=1.0
+                (1350.0, 0.065, 0.3869), // P=1.1
+                (1520.0, 0.06, 0.3561),  // P=0.9
                 (2400.0, 0.05, 0.6798),  // P=1.1
                 (3600.0, 0.045, 1.2712), // P=1.4
             ],
@@ -469,6 +471,12 @@ pub struct PluckVoice {
     /// bridge (force drives the body, displacement does not radiate). 0 = off.
     br_rho: f32,
     br_x1: f32,
+    /// coupling shelf (see shelf_h): per-period LF loss, shared coefficients,
+    /// per-polarization states
+    sh_d: f32,
+    sh_c: f32,
+    sh_y: f32,
+    sh2_y: f32,
     /// radiation high-pass (breathing-sphere monopole, Woodhouse 2012 §2:
     /// R(ω) = (iω/ω_c)/(1 + iω/ω_c), f_c ≈ 250 Hz): a guitar radiates volume
     /// acceleration — the body is a poor radiator below its lowest air/plate
@@ -478,6 +486,9 @@ pub struct PluckVoice {
     rad_p: f32,
     rad_x1: f32,
     rad_y1: f32,
+    /// acceleration differencer (see AcPluck::acc_rho)
+    acc_rho: f32,
+    acc_x1: f32,
     /// tension modulation: hard plucks start sharp and settle (band-limited —
     /// the fractional-delay allpass coefficient follows a smoothed env²).
     tm_dev: f32,
@@ -546,7 +557,48 @@ pub struct AcPluck {
     pub br_rho: f32,
     /// radiation monopole high-pass corner (Hz; 0 = off)
     pub rad_hz: f32,
+    /// second (acceleration) differencer leak (0 = off): radiated pressure
+    /// follows the BODY's volume acceleration = d/dt(Y·F) ≈ dF/dt for the
+    /// smooth part of the admittance (Woodhouse 2012 radiates bridge
+    /// ACCELERATION through the monopole; force alone is 6 dB/oct short —
+    /// the r2 renders' attack centroid sat at 274 Hz vs the refs' 1102)
+    pub acc_rho: f32,
+    /// Valette/Woodhouse string damping constants (2004 II Table 1 + eq. 8):
+    /// eta_f = frequency-independent internal friction, eta_b = bending loss
+    /// factor (dominates HF), eta_a = air-drag coefficient (dominates LF,
+    /// enters as eta_a/omega). eta_f > 0 switches the loop-loss design to the
+    /// physical law (t60(f) = 6.91/(pi f eta(f))), superseding t60_f0 /
+    /// hf_floor_t60; 0 keeps the legacy hand-fit path (bass).
+    pub eta_f: f32,
+    pub eta_b: f32,
+    pub eta_a: f32,
+    /// body-coupling loss scale: peak extra eta near the A0/top-plate modes
+    /// (string-mode damping tracks Re{Y_bridge}, Woodhouse 2004 I Fig. 7)
+    pub couple: f32,
     pub level: f32,
+}
+
+/// Normalized Re{Y_bridge} shape for the coupling loss: A0 Helmholtz hump
+/// (~100 Hz), top-plate cluster (~210 Hz, broadened — it stands in for the
+/// 150–250 Hz group), and a small mid plateau that dies above ~2.6 kHz.
+/// Peak of the A0 term = 1; scaled by AcPluck::couple.
+fn body_coupling_shape(f: f32) -> f32 {
+    let d0 = f / 100.0 - 100.0 / f;
+    let d1 = f / 210.0 - 210.0 / f;
+    // near-physical widths (measured A0 Q≈25, plate cluster Q≈47-59, slightly
+    // broadened for the fret lottery); a first, too-broad cut (Q≈6-8, plateau
+    // 0.22) quadrupled MID-band loss and collapsed the render (it2 regression
+    // 2026-07-12) — guitars conserve mid/HF string energy (heavy bridge, no
+    // violin bridge hill; Woodhouse 2004 II §5), so the inter-peak floor must
+    // stay far below the A0/T1 peaks.
+    let a0 = 1.0 / (1.0 + 200.0 * d0 * d0);
+    let t1 = 0.9 / (1.0 + 300.0 * d1 * d1);
+    let x = f / 350.0;
+    let x4 = x * x * x * x;
+    let hi = f / 2600.0;
+    let hi6 = hi * hi * hi * hi * hi * hi;
+    let plateau = 0.03 * (x4 / (1.0 + x4)) / (1.0 + hi6);
+    a0 + t1 + plateau
 }
 
 /// One-pole loop lowpass y += c(x−y): magnitude at ω (for loss calibration).
@@ -602,6 +654,45 @@ fn allpass_delay(a: f32, w: f32) -> f32 {
     -(th_n - th_d) / w
 }
 
+/// Coupling shelf H = 1 − d·L(z), L = c/(1 − (1−c)z⁻¹) (unity-DC one-pole):
+/// per-period LOW-frequency loop loss. Real strings' lowest partials decay
+/// FASTER than the mid-band — air drag η_A/ω (Valette form; Woodhouse 2004
+/// "Plucked guitar transients" eq. 8) plus energy pumped into the body where
+/// Re{Y_bridge} is large (A0 ≈ 100 Hz, top-plate cluster 150–250 Hz —
+/// Woodhouse 2004 "On the synthesis of guitar plucks" Fig. 7: string-mode
+/// damping tracks Re{Y} below ~1 kHz). A monotone-dark loop filter cannot
+/// express this U-shape; the r2 renders rang +12…+24 dB hot below 300 Hz at
+/// mid-note vs the NSynth refs (pooled envdelta, guitar r3 2026-07-12).
+/// Stability: |H_sh|² = 1 − 2d·Re{L} + d²|L|² ≤ 1 ⇔ d·c ≤ 2(1 − b·cos ω),
+/// which holds for d ≤ 2 since Re{L} > 0 — the shelf never amplifies.
+fn shelf_h(d: f32, c: f32, w: f32) -> (f32, f32) {
+    if d <= 0.0 {
+        return (1.0, 0.0);
+    }
+    let b = 1.0 - c;
+    let (sw, cw) = w.sin_cos();
+    let den = 1.0 + b * b - 2.0 * b * cw;
+    let lre = c * (1.0 - b * cw) / den;
+    let lim = -c * b * sw / den;
+    (1.0 - d * lre, -d * lim)
+}
+
+#[inline]
+fn shelf_mag(d: f32, c: f32, w: f32) -> f32 {
+    let (re, im) = shelf_h(d, c, w);
+    (re * re + im * im).sqrt()
+}
+
+/// Shelf phase delay in samples at ω.
+#[inline]
+fn shelf_delay(d: f32, c: f32, w: f32) -> f32 {
+    if d <= 0.0 {
+        return 0.0;
+    }
+    let (re, im) = shelf_h(d, c, w);
+    -im.atan2(re) / w
+}
+
 /// Max first-order stages in the stiffness-dispersion cascade. 6 keeps the
 /// 8-voice steel render inside the µs budget; the solver still anchors the
 /// stretch exactly at n*, at the cost of a few cents of shape residual
@@ -618,7 +709,15 @@ pub const MAX_DISP: usize = 6;
 /// partial so the quadratic regime covers the audible stretch; numerically
 /// verified ≤ ~6 cents residual over 18 partials at B=3e-4 (design_check.py,
 /// 2026-07-11 round 2). Runs at note-on only.
-fn design_dispersion(b: f32, f0: f32, sr: f32, lp_c: f32, lp_mix: f32) -> (usize, f32) {
+fn design_dispersion(
+    b: f32,
+    f0: f32,
+    sr: f32,
+    lp_c: f32,
+    lp_mix: f32,
+    sh_d: f32,
+    sh_c: f32,
+) -> (usize, f32) {
     if b < 1e-6 {
         return (0, 0.0);
     }
@@ -629,9 +728,11 @@ fn design_dispersion(b: f32, f0: f32, sr: f32, lp_c: f32, lp_mix: f32) -> (usize
     let n_star = ((5500.0 / f0) as usize).clamp(3, 16) as f32;
     let wn = (n_star * w1).min(2.8);
     // geometric phase-delay deficit between partial 1 and n*, minus what the
-    // loop lowpass already contributes
+    // loop lowpass + coupling shelf already contribute
     let d_geom = n0 * (1.0 / (1.0 + b).sqrt() - 1.0 / (1.0 + b * n_star * n_star).sqrt());
-    let d_lp = blend_delay(lp_c, lp_mix, w1) - blend_delay(lp_c, lp_mix, wn);
+    let d_lp = blend_delay(lp_c, lp_mix, w1) - blend_delay(lp_c, lp_mix, wn)
+        + shelf_delay(sh_d, sh_c, w1)
+        - shelf_delay(sh_d, sh_c, wn);
     let target = d_geom - d_lp;
     if target <= 0.05 {
         return (0, 0.0);
@@ -660,6 +761,7 @@ fn design_dispersion(b: f32, f0: f32, sr: f32, lp_c: f32, lp_mix: f32) -> (usize
 #[derive(Clone, Copy, Default)]
 struct LoopInit {
     lp: f64,
+    sh: f64,
     dsx: [f64; MAX_DISP],
     dsy: [f64; MAX_DISP],
     apx: f64,
@@ -692,6 +794,8 @@ fn load_carrier(
     loss: f32,
     disp_a: f32,
     disp_n: usize,
+    sh_d: f32,
+    sh_c: f32,
     ap_c: f32,
     f0: f32,
     stiff_b: f32,
@@ -721,7 +825,15 @@ fn load_carrier(
             let hre = lp_mix + (1.0 - lp_mix) * lp_c * (1.0 - b * cw_) / dd;
             let him = -(1.0 - lp_mix) * lp_c * b * sw / dd;
             bl_mag = (hre * hre + him * him).sqrt();
-            let d_lp = -him.atan2(hre) / w;
+            let mut d_lp = -him.atan2(hre) / w;
+            if sh_d > 0.0 {
+                let bs = 1.0 - sh_c;
+                let ds = 1.0 + bs * bs - 2.0 * bs * cw_;
+                let shre = 1.0 - sh_d * sh_c * (1.0 - bs * cw_) / ds;
+                let shim = sh_d * sh_c * bs * sw / ds;
+                bl_mag *= (shre * shre + shim * shim).sqrt();
+                d_lp += -shim.atan2(shre) / w;
+            }
             let d_disp = if disp_n > 0 {
                 let a = disp_a;
                 let th_n = (-sw).atan2(a + cw_);
@@ -779,7 +891,8 @@ fn load_carrier(
         let b = 1.0 - lp_c as f64;
         let (dre, dim) = (1.0 - b * cwn, b * sw);
         let dd = dre * dre + dim * dim;
-        let hlp = (lp_c as f64 * dre / dd, lp_c as f64 * dim / dd);
+        // true response at z = e^{jω}: 1/D with D = (dre + j·dim) conjugates
+        let hlp = (lp_c as f64 * dre / dd, -(lp_c as f64) * dim / dd);
         let mixf = lp_mix as f64;
         let hbl = (mixf + (1.0 - mixf) * hlp.0, (1.0 - mixf) * hlp.1);
         // H_ap(a) = (a + e^{−jw})/(1 + a·e^{−jw})
@@ -803,6 +916,20 @@ fn load_carrier(
         let (lre, lim) = cmul(gre, gim, hlp.0, hlp.1);
         st.lp += at(lre, lim);
         let (mut cr, mut ci) = cmul(gre, gim, hbl.0, hbl.1);
+        // coupling shelf: internal one-pole L = c/(1 − (1−c)e^{−jω}) fed by the
+        // blend output; its state warms with G·H_bl·L, the signal continues
+        // through H_sh = 1 − d·L
+        if sh_d > 0.0 {
+            let bs = 1.0 - sh_c as f64;
+            let (dsr, dsi) = (1.0 - bs * cwn, bs * sw);
+            let dds = dsr * dsr + dsi * dsi;
+            let l = (sh_c as f64 * dsr / dds, -(sh_c as f64) * dsi / dds);
+            let (lr, li) = cmul(cr, ci, l.0, l.1);
+            st.sh += at(lr, li);
+            let (r, i) = cmul(cr, ci, 1.0 - sh_d as f64 * l.0, -(sh_d as f64) * l.1);
+            cr = r;
+            ci = i;
+        }
         for k in 0..disp_n {
             st.dsx[k] += at(cr, ci);
             let (r, i) = cmul(cr, ci, hd.0, hd.1);
@@ -863,10 +990,16 @@ impl PluckVoice {
             ds2y: [0.0; MAX_DISP],
             br_rho: 0.0,
             br_x1: 0.0,
+            sh_d: 0.0,
+            sh_c: 0.5,
+            sh_y: 0.0,
+            sh2_y: 0.0,
             rad_k: 0.0,
             rad_p: 0.0,
             rad_x1: 0.0,
             rad_y1: 0.0,
+            acc_rho: 0.0,
+            acc_x1: 0.0,
             tm_dev: 0.0,
             tm_env: 0.0,
             tm_c: 0.0,
@@ -942,41 +1075,139 @@ impl PluckVoice {
     pub fn start_acoustic(p: &AcPluck, sr: f32, seed: u32) -> Self {
         let period = sr / p.f0;
         let w0 = core::f32::consts::TAU * p.f0 / sr;
-        // Keep |H_lp(f0)| ≥ target per-period gain so loss ≤ 1 (loop stable at
-        // every frequency including DC). If the requested loop filter is too dark
-        // to sustain the fundamental, brighten it minimally — physically, thin
-        // sustaining trebles are never felt-dark.
-        let g0 = per_period_gain(p.t60_f0, p.f0);
-        // Loss filter: pure one-pole, or (steel) the blend ladder-over-floor —
-        // knee placed via |H_lp(knee)| = ½ (bisected), bypass from the target
-        // HF-floor t60 relative to the fundamental's.
-        let (mut lp_c, lp_mix) = if p.hf_floor_t60 > 0.0 {
-            let wk = core::f32::consts::TAU * p.hf_knee_hz.max(2.0 * p.f0) / sr;
-            let (mut lo, mut hi) = (0.005f32, 0.95f32);
-            for _ in 0..24 {
+        // ------- loop-loss design -------
+        // Law mode (eta_f > 0): the whole t60(f) ladder comes from the physical
+        // damping model — Valette-form string damping (Woodhouse 2004 II eq. 8)
+        //   eta(f) = (eta_f + eta_a/(2πf) + s·eta_b)/(1 + s),  s = stiff_b·n²
+        // plus body-coupling loss couple·body_coupling_shape(f), and
+        //   t60(f) = ln(1000)/(π·f·eta(f)).
+        // The ladder is U-shaped: lowest partials decay FASTER than the
+        // mid-band (air drag + body coupling), highs faster still (bending
+        // loss). Fit: blend filter carries the HF side (knee bisection as
+        // before, floor from the law), the coupling shelf carries the LF side
+        // (depth bisected to hit t60(f0) relative to the least-damped anchor).
+        let t60_law = |f: f32| -> f32 {
+            let n = f / p.f0;
+            let s = p.stiff_b * n * n;
+            let eta_s =
+                (p.eta_f + p.eta_a / (core::f32::consts::TAU * f) + s * p.eta_b) / (1.0 + s);
+            let eta = eta_s + p.couple * body_coupling_shape(f);
+            6.907755 / (core::f32::consts::PI * f * eta.max(1e-6))
+        };
+        let law = p.eta_f > 0.0;
+        let t60_f0 = if law { t60_law(p.f0) } else { p.t60_f0 };
+        let g0 = per_period_gain(t60_f0, p.f0);
+        let g_t = |f: f32| per_period_gain(t60_law(f), p.f0);
+        let (lp_c, lp_mix, sh_d, sh_c, loss);
+        if law {
+            // least-damped anchor (top of the U) in [f0, 1.2 kHz]
+            let (mut f_v, mut g_v) = (p.f0, g0);
+            for &fc in &[300.0f32, 480.0, 700.0, 1000.0, 1200.0] {
+                if fc > p.f0 && fc < 0.4 * sr {
+                    let g = g_t(fc);
+                    if g > g_v {
+                        g_v = g;
+                        f_v = fc;
+                    }
+                }
+            }
+            let w_v = core::f32::consts::TAU * f_v / sr;
+            // Blend fit to LAW targets at two anchors that the metrics can see
+            // (NSynth refs are 16 kHz): the floor from ~4.5 kHz, the knee
+            // (lp_c) bisected so the MID ladder (~1 kHz) matches. A first cut
+            // anchored the plateau at 2.4×knee ≈ 6.8 kHz where the law is very
+            // dark — the first-order blend then smeared that darkness down
+            // into the 0.8–3 kHz band and collapsed the mid decay (it2
+            // regression 2026-07-12: t60(1 kHz) 4.6 s → ~1 s).
+            let f_top = (4500.0f32).min(0.4 * sr).max(2.0 * p.f0);
+            let f_mid = (3.5 * p.f0).clamp(900.0, 2200.0).min(0.6 * f_top);
+            lp_mix = (g_t(f_top) / g_v).clamp(0.0, 0.98);
+            let w_m = core::f32::consts::TAU * f_mid / sr;
+            let target_mid = (g_t(f_mid) / g_v).clamp(lp_mix, 1.0);
+            // |H_bl(w_m)| rises monotonically with lp_c (brighter one-pole)
+            let (mut lo, mut hi) = (0.01f32, 0.995f32);
+            for _ in 0..28 {
                 let mid = 0.5 * (lo + hi);
-                if onepole_mag(mid, wk.min(3.0)) < 0.5 {
+                if blend_mag(mid, lp_mix, w_m) < target_mid {
                     lo = mid;
                 } else {
                     hi = mid;
                 }
             }
-            let g_floor = per_period_gain(p.hf_floor_t60, p.f0);
-            (0.5 * (lo + hi), (g_floor / g0).clamp(0.0, 0.98))
+            lp_c = 0.5 * (lo + hi);
+            // coupling shelf: knee ~320 Hz; depth from the f0-vs-valley ratio
+            if f_v > p.f0 * 1.02 {
+                let wsh = core::f32::consts::TAU * 320.0 / sr;
+                let (mut lo, mut hi) = (0.005f32, 0.95f32);
+                for _ in 0..24 {
+                    let mid = 0.5 * (lo + hi);
+                    if onepole_mag(mid, wsh) < 0.5 {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                sh_c = 0.5 * (lo + hi);
+                let r = (g0 / g_v)
+                    * (blend_mag(lp_c, lp_mix, w_v) / blend_mag(lp_c, lp_mix, w0));
+                if r < 0.999 {
+                    let (mut lo_d, mut hi_d) = (0.0f32, 0.92f32);
+                    for _ in 0..30 {
+                        let mid = 0.5 * (lo_d + hi_d);
+                        let ratio = shelf_mag(mid, sh_c, w0) / shelf_mag(mid, sh_c, w_v);
+                        if ratio > r {
+                            lo_d = mid;
+                        } else {
+                            hi_d = mid;
+                        }
+                    }
+                    sh_d = 0.5 * (lo_d + hi_d);
+                } else {
+                    sh_d = 0.0;
+                }
+            } else {
+                sh_d = 0.0;
+                sh_c = 0.5;
+            }
+            loss = (g_v / (blend_mag(lp_c, lp_mix, w_v) * shelf_mag(sh_d, sh_c, w_v)))
+                .min(0.99995);
         } else {
-            (p.lp_c.clamp(0.05, 0.995), 0.0)
-        };
-        while blend_mag(lp_c, lp_mix, w0) < g0 && lp_c < 0.99 {
-            lp_c += 0.01;
+            // legacy hand-fit path (bass): pure one-pole or ladder-over-floor —
+            // knee via |H_lp(knee)| = ½, bypass from the target HF-floor t60
+            // relative to the fundamental's; brighten minimally if the filter
+            // is too dark to sustain the fundamental (loop stability).
+            let (mut c, m) = if p.hf_floor_t60 > 0.0 {
+                let wk = core::f32::consts::TAU * p.hf_knee_hz.max(2.0 * p.f0) / sr;
+                let (mut lo, mut hi) = (0.005f32, 0.95f32);
+                for _ in 0..24 {
+                    let mid = 0.5 * (lo + hi);
+                    if onepole_mag(mid, wk.min(3.0)) < 0.5 {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                let g_floor = per_period_gain(p.hf_floor_t60, p.f0);
+                (0.5 * (lo + hi), (g_floor / g0).clamp(0.0, 0.98))
+            } else {
+                (p.lp_c.clamp(0.05, 0.995), 0.0)
+            };
+            while blend_mag(c, m, w0) < g0 && c < 0.99 {
+                c += 0.01;
+            }
+            lp_c = c;
+            lp_mix = m;
+            sh_d = 0.0;
+            sh_c = 0.5;
+            loss = (g0 / blend_mag(lp_c, lp_mix, w0)).min(0.99995);
         }
-        let loss = (g0 / blend_mag(lp_c, lp_mix, w0)).min(0.99995);
 
         // Stiffness dispersion cascade (solved per note), then tuning: subtract
         // the exact loop-filter + cascade phase delays at f0 so partial 1 stays
         // on pitch while uppers stretch.
-        let (disp_n, disp_p) = design_dispersion(p.stiff_b, p.f0, sr, lp_c, lp_mix);
+        let (disp_n, disp_p) = design_dispersion(p.stiff_b, p.f0, sr, lp_c, lp_mix, sh_d, sh_c);
         let disp_a = -disp_p;
-        let d_lp = blend_delay(lp_c, lp_mix, w0);
+        let d_lp = blend_delay(lp_c, lp_mix, w0) + shelf_delay(sh_d, sh_c, w0);
         let d_disp = disp_n as f32 * allpass_delay(disp_a, w0);
         let total = (period - d_lp - d_disp).max(3.0);
         // Bias the fraction high when tension-mod wants sharpening headroom.
@@ -990,8 +1221,9 @@ impl PluckVoice {
         let total2 = (sr / f2 - d_lp - d_disp).max(3.0);
         let len2 = ((total2 - 0.5).floor() as usize).clamp(2, PLUCK_BUF - 1);
         let frac2 = (total2 - len2 as f32).clamp(0.1, 1.5);
-        let g2 = per_period_gain(p.t60_f0 * p.pol_t60_ratio.max(0.05), f2);
-        let loss2 = (g2 / blend_mag(lp_c, lp_mix, w0)).min(0.99995);
+        let g2 = per_period_gain(t60_f0 * p.pol_t60_ratio.max(0.05), f2);
+        let loss2 =
+            (g2 / (blend_mag(lp_c, lp_mix, w0) * shelf_mag(sh_d, sh_c, w0))).min(0.99995);
 
         // Tension modulation depth: cents → samples of delay reduction, limited
         // by the allpass fraction headroom (band-limited by a ~6 Hz env² follower).
@@ -1013,6 +1245,12 @@ impl PluckVoice {
         } else {
             p.level
         };
+        // Acceleration differencer: renormalized at 3·f0 like the force tap.
+        if p.acc_rho > 0.0 {
+            let w3 = (3.0 * w0).min(core::f32::consts::FRAC_PI_2);
+            let mag = (1.0 - 2.0 * p.acc_rho * w3.cos() + p.acc_rho * p.acc_rho).sqrt();
+            level /= mag.max(1e-3);
+        }
         // Radiation monopole HP (bilinear s/(s+ω_c)); renormalized at 3·f0 like
         // the differencer so the low-register CUT below f_c is a tilt, not a
         // register-level rebalance.
@@ -1036,7 +1274,7 @@ impl PluckVoice {
             level,
             // the aftersound polarization may outlive the plucked one (ratio>1);
             // cap like the piano does (pool pressure)
-            life: (((p.t60_f0 * p.pol_t60_ratio.max(1.0) * 1.1 + 0.5).min(18.0)) * sr) as u64,
+            life: (((t60_f0 * p.pol_t60_ratio.max(1.0) * 1.1 + 0.5).min(18.0)) * sr) as u64,
             sr,
             len2,
             loss2,
@@ -1045,6 +1283,9 @@ impl PluckVoice {
             disp_a,
             disp_n: disp_n as u8,
             br_rho: p.br_rho,
+            acc_rho: p.acc_rho,
+            sh_d,
+            sh_c,
             rad_k,
             rad_p,
             tm_dev,
@@ -1165,6 +1406,8 @@ impl PluckVoice {
             loss,
             disp_a,
             disp_n,
+            sh_d,
+            sh_c,
             v.ap_c,
             p.f0,
             p.stiff_b,
@@ -1174,6 +1417,7 @@ impl PluckVoice {
             n_syn,
         );
         v.lp = st.lp as f32;
+        v.sh_y = st.sh as f32;
         v.ap_x1 = st.apx as f32;
         v.ap_y1 = st.apy as f32;
         for k in 0..disp_n {
@@ -1190,6 +1434,8 @@ impl PluckVoice {
                 loss2,
                 disp_a,
                 disp_n,
+                sh_d,
+                sh_c,
                 v.ap2_c,
                 f2,
                 p.stiff_b,
@@ -1199,6 +1445,7 @@ impl PluckVoice {
                 n_syn,
             );
             v.lp2 = st2.lp as f32;
+            v.sh2_y = st2.sh as f32;
             v.ap2_x1 = st2.apx as f32;
             v.ap2_y1 = st2.apy as f32;
             for k in 0..disp_n {
@@ -1231,6 +1478,8 @@ impl PluckVoice {
         let disp_n = self.disp_n as usize;
         let (mut lp, mut ap_x1, mut ap_y1) = (self.lp, self.ap_x1, self.ap_y1);
         let (mut lp2, mut ap2_x1, mut ap2_y1) = (self.lp2, self.ap2_x1, self.ap2_y1);
+        let (mut sh_y, mut sh2_y) = (self.sh_y, self.sh2_y);
+        let (sh_d, sh_c) = (self.sh_d, self.sh_c);
         for o in out.iter_mut() {
             let y = self.buf[self.pos];
             // blend loss filter: one-pole ladder over a flat HF bypass floor
@@ -1239,6 +1488,9 @@ impl PluckVoice {
             // stiffness dispersion: M-stage allpass cascade delays lows vs highs
             // (pole at +p ⇒ stretched partials, see design_dispersion)
             let mut s = self.lp_mix.mul_add(y - lp, lp);
+            // coupling shelf: extra per-period loss for the lowest partials
+            sh_y += sh_c * (s - sh_y);
+            s -= sh_d * sh_y;
             for k in 0..disp_n {
                 let d = self.disp_a * (s - dsy[k]) + dsx[k];
                 dsx[k] = s;
@@ -1261,6 +1513,8 @@ impl PluckVoice {
                 let y2 = self.buf2[self.pos2];
                 lp2 += self.lp_c * (y2 - lp2);
                 let mut s2 = self.lp_mix.mul_add(y2 - lp2, lp2);
+                sh2_y += sh_c * (s2 - sh2_y);
+                s2 -= sh_d * sh2_y;
                 for k in 0..disp_n {
                     let d = self.disp_a * (s2 - ds2y[k]) + ds2x[k];
                     ds2x[k] = s2;
@@ -1283,13 +1537,19 @@ impl PluckVoice {
             }
             // bridge force ≈ leaky first difference of displacement (+6 dB/oct):
             // what actually drives the top plate (Fletcher & Rossing ch. 9)
-            let outv = if self.br_rho > 0.0 {
+            let mut outv = if self.br_rho > 0.0 {
                 let f = mix - self.br_rho * self.br_x1;
                 self.br_x1 = mix;
                 f
             } else {
                 mix
             };
+            // acceleration differencer (radiated pressure ~ volume acceleration)
+            if self.acc_rho > 0.0 {
+                let a = outv - self.acc_rho * self.acc_x1;
+                self.acc_x1 = outv;
+                outv = a;
+            }
             let mut sig = outv * self.level;
             // direct contact-click transient (bypasses the string loop)
             if self.tr_env > 1e-7 {
@@ -1312,10 +1572,12 @@ impl PluckVoice {
         self.ds2x = ds2x;
         self.ds2y = ds2y;
         self.lp = flush_denormal(lp);
+        self.sh_y = flush_denormal(sh_y);
         self.ap_x1 = ap_x1;
         self.ap_y1 = flush_denormal(ap_y1);
         if self.pol_mix > 0.0 {
             self.lp2 = flush_denormal(lp2);
+            self.sh2_y = flush_denormal(sh2_y);
             self.ap2_x1 = ap2_x1;
             self.ap2_y1 = flush_denormal(ap2_y1);
         }
@@ -1325,6 +1587,7 @@ impl PluckVoice {
         }
         self.tm_env = flush_denormal(self.tm_env);
         self.br_x1 = flush_denormal(self.br_x1);
+        self.acc_x1 = flush_denormal(self.acc_x1);
         self.rad_y1 = flush_denormal(self.rad_y1);
         self.age += out.len() as u64;
         self.age < self.life
@@ -3675,10 +3938,12 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // refs split by source: 010 ≈ 6–15 s early t60, 014 ≈ 22–27 s;
                 // round-1's 8+4·key sat at the floor of both (render −20 dB vs
                 // 014 at the 3 s mark). Compromise law raised round 2.
+                // superseded by the damping law (eta_f > 0); kept as doc of the
+                // r2 hand fit the law replaces
                 t60_f0: 11.0 + 6.0 * key,
                 lp_c: 0.97 - 0.10 * key + 0.02 * vel,
                 hf_floor_t60: 0.0,
-                hf_knee_hz: 0.0,
+                hf_knee_hz: 2400.0,
                 pick_pos: 0.20,
                 contact: 0.045,
                 snap: 0.5,
@@ -3696,10 +3961,22 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // no tension glide: nylon refs show none, and the glide beat
                 // against the polarization detune measurably hurt C5
                 tm_cents: 0.0,
+                // Woodhouse 2004 II Table 1 (D'Addario Pro Arte): monofilament
+                // trebles eta_f 14-40e-5, wound basses 2-7e-5 (key-interp);
+                // eta_a ~1.2. eta_b fit to the NSynth sources instead of the
+                // table's 2e-2 polymer value: refs keep 2-3.4 kHz ringing
+                // through the mid window (t60(2k) ~5-7 s), implying ~2.5e-3 —
+                // the table value killed HF 50 dB below ref (it2d, 2026-07-12).
+                // couple sized so eta at A0 roughly doubles intrinsic loss.
+                eta_f: 0.0, // BISECT: legacy path
+                eta_b: 2.5e-3,
+                eta_a: 1.2,
+                couple: 4.0e-3,
                 // displacement tap: the NSynth nylon sources are fundamental-
                 // dominant in mid/high register; low-register h2 emphasis comes
                 // from the body's T1 mode, not a global force tilt
                 br_rho: 0.0,
+                acc_rho: 0.0,
                 // radiated sound only: monopole HP (Woodhouse 2012 f_c ~250 Hz)
                 rad_hz: 250.0,
                 // register slope ~12 dB/key (within-source NSynth slope is
@@ -3742,7 +4019,12 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 stiff_b: 1.2e-5,
                 tm_cents: 0.0,
                 br_rho: 0.0,
+                acc_rho: 0.0,
                 rad_hz: 0.0, // DI bass: no acoustic radiation filter
+                eta_f: 0.0,  // legacy hand-fit loss (DI bass, no body)
+                eta_b: 0.0,
+                eta_a: 0.0,
+                couple: 0.0,
                 level: 0.5 * (0.5 + 0.5 * vel),
             };
             Kernel::Pluck(PluckVoice::start_acoustic(&p, sr, seed))
@@ -3801,7 +4083,11 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // (with the HF loss floor, all-in-loop ran +30…+47 dB hot)
                 snap: 0.12,
                 scrape: 0.008,
-                click: 1.35,
+                // r2's 1.35 was compensating a dark output chain; with the
+                // acceleration+radiation tilt the string carries the attack
+                // brightness itself, and the big click rang the body rows
+                // 20-35 dB hot between partials (attack envdelta, it4a)
+                click: 0.5,
                 rel_t60: 0.90,
                 rel_click: 0.5,
                 // two-stage decay, Weinreich roles corrected round 2: the
@@ -3820,7 +4106,20 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // "twang" onset (Tolonen/Välimäki/Karjalainen 2000); NSynth refs
                 // show ≤3 cents, so this stays subtle
                 tm_cents: 4.0,
+                // Woodhouse 2012 Table (Martin 80/20 bronze): eta_f 5-11e-5,
+                // eta_a 1.0-2.5. eta_b fit to ref 015 instead of the table's
+                // wound-string 4e-3: its 2-6 kHz partials ring ~2 s, implying
+                // eta_b ~1.2e-3 (the table's aged-wound value would kill them
+                // in 0.1 s). couple sized so the coupling humps roughly double
+                // the intrinsic loss at A0/T1 (Woodhouse 2004 I Fig. 7).
+                eta_f: 8.0e-5,
+                eta_b: 1.2e-3,
+                eta_a: 1.0,
+                // 3e-3, not the Fig.-7 peak ~8e-3: source 015's G2 (98 Hz, ON
+                // the A0) still rings 6 s — 8e-3 choked it to 2.3 s (it5)
+                couple: 3.0e-3,
                 br_rho: 0.995,
+                acc_rho: 0.995,
                 rad_hz: 250.0,
                 level: 0.5 * (0.55 + 0.45 * vel) * (0.83 * key).exp(),
             };
