@@ -18,7 +18,7 @@ const GROUP = {
   marimba: 0, vibraphone: 1, glockenspiel: 2, musicbox: 3, guitar: 4, bass: 5,
   epiano: 6, drums: 7, synthpad: 8, piano: 9,
   "guitar-steel": 10, "guitar-electric": 11, "guitar-distorted": 12,
-  "drums-rock": 13, "drums-jazz": 14,
+  "drums-rock": 13, "drums-jazz": 14, "drums-808": 15,
 };
 
 /** n = single note {m, v, t, d}; phrases = arrays of them. Times in beats of 0.5 s. */
@@ -59,9 +59,10 @@ const SETS = {
   drums: KIT({ kick: 36, snare: 38, "hat-closed": 42, "hat-open": 46, ride: 51, crash: 49, "tom-mid": 47 }),
   "drums-rock": KIT({ kick: 36, snare: 38, "hat-closed": 42, "hat-open": 46, ride: 51, crash: 49, "tom-mid": 47 }),
   "drums-jazz": KIT({ kick: 36, snare: 38, "hat-closed": 42, "hat-open": 46, ride: 51, crash: 49, "tom-mid": 47 }),
+  "drums-808": KIT({ kick: 36, snare: 38, clap: 39, "hat-closed": 42, "hat-open": 46, cymbal: 49, cowbell: 56, "tom-mid": 47, "conga-mid": 63 }),
 };
 // velocity ladders for drum kicks/snares (the voices under active listening)
-for (const kit of ["drums", "drums-rock", "drums-jazz"]) {
+for (const kit of ["drums", "drums-rock", "drums-jazz", "drums-808"]) {
   for (const v of [30, 75, 120]) SETS[kit].push({ name: `kick-v${v}`, notes: single(36, v, 0.3), drum: true, tail: 4 });
   SETS[kit].push({ name: "groove", drum: true, tail: 2, notes: [
     { m: 36, v: 104, t: 0 }, { m: 42, v: 60, t: 0 }, { m: 42, v: 48, t: 0.3 }, { m: 38, v: 96, t: 0.6 },

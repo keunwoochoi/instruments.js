@@ -1732,7 +1732,7 @@ mod tests {
         let rms = |x: &[f32]| {
             (x.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / x.len() as f64).sqrt()
         };
-        for inst in [Instrument::Drums, Instrument::DrumsRock, Instrument::DrumsJazz] {
+        for inst in [Instrument::Drums, Instrument::DrumsRock, Instrument::DrumsJazz, Instrument::Drums808] {
             let mut e = Engine::new(48_000.0);
             e.set_track(0, inst, 0.8, 0.0);
             e.note_on(0, 46, 0.9);
