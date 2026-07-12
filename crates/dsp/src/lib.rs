@@ -702,19 +702,20 @@ impl Engine {
             // already deferred under pedal are excluded, so a replayed key
             // gets its own release and every sustained tail survives until
             // pedal-up. This is FIFO pairing for overlapping equal pitches.
-            let target = self
-                .voices
-                .iter()
-                .enumerate()
-                .filter(|(_, v)| {
-                    v.active()
-                        && v.track as usize == track
-                        && v.midi as u32 == midi
-                        && !v.releasing
-                        && !v.pedal_held
-                })
-                .max_by_key(|(_, v)| v.age)
-                .map(|(i, _)| i);
+            let mut target = None;
+            let mut oldest_age = 0;
+            for (i, v) in self.voices.iter().enumerate() {
+                if v.active()
+                    && v.track as usize == track
+                    && v.midi as u32 == midi
+                    && !v.releasing
+                    && !v.pedal_held
+                    && (target.is_none() || v.age > oldest_age)
+                {
+                    target = Some(i);
+                    oldest_age = v.age;
+                }
+            }
             if let Some(i) = target {
                 if pedal {
                     self.voices[i].pedal_held = true;
@@ -1650,8 +1651,29 @@ mod tests {
     }
 
     #[test]
+    fn piano_same_frame_note_off_pairing_is_fifo() {
+        let mut e = Engine::new(48_000.0);
+        e.set_track(0, Instrument::Piano, 0.8, 0.0);
+        e.note_on(0, 60, 0.4);
+        e.note_on(0, 60, 0.9);
+        let strikes: Vec<_> = e
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.active() && v.track == 0 && v.midi == 60)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(strikes.len(), 2);
+        assert_eq!(e.voices[strikes[0]].age, e.voices[strikes[1]].age);
+        e.note_off(0, 60);
+        assert!(e.voices[strikes[0]].releasing, "first same-frame strike was not released first");
+        assert!(!e.voices[strikes[1]].releasing, "newest same-frame strike released out of order");
+    }
+
+    #[test]
     fn piano_pedal_replay_preserves_both_tails_until_pedal_up() {
-        for sr in [44_100.0f32, 48_000.0] {
+        let mut pedal_up_peak = [0.0f32; 2];
+        for (rate_i, sr) in [44_100.0f32, 48_000.0].into_iter().enumerate() {
             let mut e = Engine::new(sr);
             e.set_track(0, Instrument::Piano, 0.8, 0.0);
             e.set_pedal(0, true);
@@ -1676,7 +1698,16 @@ mod tests {
             assert_eq!(released, 2, "sr={sr}: pedal-up failed to release both strikes");
             let out = render_seconds(&mut e, 0.5);
             assert!(out.iter().all(|s| s.is_finite()), "sr={sr}: pedal replay NaN");
+            pedal_up_peak[rate_i] = out.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+            assert!(pedal_up_peak[rate_i] <= 1.0, "sr={sr}: pedal-up clipped");
         }
+        let rate_delta_db = 20.0 * (pedal_up_peak[1] / pedal_up_peak[0].max(1e-9)).log10();
+        assert!(
+            rate_delta_db.abs() < 1.5,
+            "pedal-up peak drifts across rates: {} -> {} ({rate_delta_db:.2} dB)",
+            pedal_up_peak[0],
+            pedal_up_peak[1]
+        );
     }
 
     #[test]
