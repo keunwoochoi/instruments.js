@@ -9,9 +9,10 @@ Owner doc for API/packaging decisions. Contracts that must never break:
 - The WASM payload counts in every published bundle-size number (~24 KB gz all-in today:
   18 KB wasm + 4 KB core JS + 2 KB worklet)
 
-Asset loading, honestly: default URLs resolve via `import.meta.url`, which works
-unbundled and under most Vite/Webpack 5 builds; the **supported path everywhere**
-(incl. Next.js) is the explicit `workletUrl`/`wasmUrl` options pointing at
-self-hosted copies. Zero-config across Vite/Next/Webpack is a Q2 GOAL, gated on
-`demos/bundler-matrix/` fixtures running green in CI — it is not yet verified.
-`exports` points at `dist/` (built by `npm run build`).
+Asset loading, honestly: default URLs resolve via `import.meta.url`. **Verified
+zero-config (headless, dev + production build): Vite 6 and Next.js 15** — see
+`demos/bundler-matrix/` for the evidence table. Raw Webpack 5 fixture pending
+(de-facto exercised by the Next prod build). For exotic setups the explicit
+`workletUrl`/`wasmUrl` options point at self-hosted copies (`./worklet` and
+`./wasm` subpath exports serve the files). `exports` points at `dist/`
+(built by `npm run build`).
