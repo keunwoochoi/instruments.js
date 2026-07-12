@@ -2420,7 +2420,11 @@ impl PianoVoice {
             // prominent at pp) — with the linear law the pp top-octave
             // renders were void where Salamander's C8 v1 is nearly pure
             // action noise.
-            thump_amp: 0.02 * vel.max(0.0).sqrt() * (1.0 + 6.0 * key * key * key),
+            // 0.02 → 0.012 (−4.4 dB) per Keunwoo listening 2026-07-12: "the
+            // noise/stomping part is too strong" — level trimmed, the fitted
+            // per-key growth and √vel touch law kept. (The remaining bass
+            // "stomp" is the 20–60 Hz radiation excess, a P2 soundboard item.)
+            thump_amp: 0.012 * vel.max(0.0).sqrt() * (1.0 + 6.0 * key * key * key),
             noise_lp: 0.0,
             noise_lp_c: 0.10,
             bloom: 0.0,

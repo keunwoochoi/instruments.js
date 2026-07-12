@@ -93,6 +93,10 @@ const GROUP_TO_INSTRUMENT: Record<InstrumentGroup, number> = {
   "guitar-steel": INST.guitarSteel,
   "guitar-electric": INST.guitarElectric,
   "guitar-distorted": INST.guitarDistorted,
+  // "acoustic" naming aliases (Keunwoo 2026-07-12) — canonical names above stay
+  "guitar-acoustic": INST.guitar,
+  "guitar-acoustic-nylon": INST.guitar,
+  "guitar-acoustic-steel": INST.guitarSteel,
   strings: INST.synthpad, // (placeholder — bowed string is Q3)
   brass: INST.synthpad, // (placeholder — winds are Q3)
   woodwind: INST.glockenspiel, // (placeholder)
