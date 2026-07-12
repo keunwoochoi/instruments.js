@@ -150,7 +150,7 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::EPiano => 1.47,       // was -26.6 LUFS
         Instrument::Drums => 0.61,        // was -27.4 LUFS
         Instrument::SynthPad => 0.48,     // was -26.5 LUFS
-        Instrument::Piano => 0.11,          // v3 hammer runs hot; measured -13.5 LUFS pre-correction
+        Instrument::Piano => 0.074, // re-measured 2026-07-11 after v4 knock/level rework (was -22.6 LUFS at 0.11)
         Instrument::GuitarSteel => 0.76,    // was -25.2 LUFS
         Instrument::GuitarElectric => 1.5,  // was -31.7 LUFS
         Instrument::GuitarDistorted => 0.57, // was -27.3 LUFS
@@ -588,6 +588,11 @@ impl StringLoop {
 pub struct PianoVoice {
     strings: [StringLoop; 3],
     strike_off: [usize; 3],
+    // radiated mix per string: the aftersound pair couples into the board for
+    // seconds while the prompt polarization dumps fast; equal 1:1:1 weighting
+    // left our post-prompt plateau ~15 dB under the peak where the references
+    // hold ~7 dB (env at 1 s: ref −15 dB vs render −30 dB, C3 f).
+    out_w: [f32; 3],
     n_strings: usize,
     level: f32,
     // felt hammer state (nonlinear collision — Bank/Välimäki lineage).
@@ -646,9 +651,11 @@ impl PianoVoice {
         // with the still-audible prompt string) lands on the refs: the aftersound
         // param must exceed the composite target (~20 s at C3 for a measured ~12 s;
         // real mid-register aftersound runs tens of seconds — Fletcher & Rossing).
-        let bump = (-((key - 0.30) / 0.17) * ((key - 0.30) / 0.17)).exp();
+        // asymmetric bump: decay falls off faster below the low-mid peak than above
+        let bw = if key < 0.30 { 0.145 } else { 0.20 };
+        let bump = (-((key - 0.30) / bw) * ((key - 0.30) / bw)).exp();
         let taper = 1.0 - 0.55 * ((key - 0.7).max(0.0) / 0.3);
-        let t60 = (4.2 + 16.0 * bump) * taper.max(0.2);
+        let t60 = (3.5 + 22.5 * bump) * taper.max(0.2);
         let lp_c = (0.32 + 0.44 * key + 0.18 * vel).clamp(0.25, 0.95);
         // stiffness (inharmonicity): audible on wound bass strings, mild in mid
         let disp_c =
@@ -707,8 +714,14 @@ impl PianoVoice {
         let mut v = Self {
             strings,
             strike_off,
+            out_w: if n_strings == 2 { [0.65, 1.35, 0.0] } else { [0.65, 1.15, 1.15] },
             n_strings,
-            level: 2.4 / (n_strings as f32),
+            // Velocity→loudness curve, pinned at the vel-0.8 makeup calibration
+            // point: the raw collision gives ~12.5 dB across vel 25→127 where the
+            // references are nearly flat; −9.5 dB/vel-unit of compensation keeps
+            // ~5 dB of musical dynamics without pp vanishing (timbre still tracks
+            // velocity through the felt law, which is where piano dynamics live).
+            level: 2.4 / (n_strings as f32) * (-1.09 * (vel - 0.8)).exp(),
             h_x: 0.0,
             h_v: h_v0,
             h_k,
@@ -785,8 +798,8 @@ impl PianoVoice {
                 }
             }
             let mut s = 0.0;
-            for st in self.strings.iter_mut().take(self.n_strings) {
-                s += st.tick();
+            for (i, st) in self.strings.iter_mut().enumerate().take(self.n_strings) {
+                s += st.tick() * self.out_w[i];
             }
             // soundboard radiation buildup (see field docs): strings bloom in,
             // the percussive knock/thump below stay immediate
