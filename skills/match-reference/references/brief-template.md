@@ -41,6 +41,12 @@ standardized auditions via scripts/dev/render-auditions.mjs <family> <outdir>
 ```
 
 Merge checklist (main loop, after every agent):
+0. If shared machinery changed since the agent branched (check its base
+   commit), REBASE its branch onto the current tip first — or diff every
+   shared function against BOTH parents before accepting the auto-merge
+   (the bass merge silently reverted the acoustic round's acc_rho/blank
+   values; only the drift tripwire caught it). Never gate pipeline steps
+   on `grep -c` exit codes (it exits 1 on a count of zero).
 1. `git merge <worktree-branch>`; sweep for conflict markers in ALL files
    (`grep -rn "^<<<<<<<" crates packages scripts` — git's conflict list lies
    when a commit races), never trust the printed list alone.
@@ -49,7 +55,8 @@ Merge checklist (main loop, after every agent):
 3. Rebuild wasm FROM MERGED SOURCE (never keep either side's binary).
 4. cargo test both rates; full pyloudnorm sweep flat ±0.5; render-demo gates;
    e2e-check; test-midi.
-5. `scripts/dev/drift-check.sh <last-accepted-auditions>` — investigate any
-   family that moved that the merge shouldn't have touched.
+5. `scripts/dev/drift-check.sh <last-accepted-auditions>` BEFORE pushing —
+   investigate any family that moved that the merge shouldn't have touched,
+   and confirm the merged family DID move (0.0 drift = stale wasm).
 6. Decision-log entry; push; refresh standardized auditions + A/B page for the
    owner.
