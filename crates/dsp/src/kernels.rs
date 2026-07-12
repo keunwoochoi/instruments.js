@@ -5176,7 +5176,14 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // metric optimum (8-16) rides the clip ceiling again; 3.0 is
                 // the best clean-crest point (solo ff onset peak ~0.5).
                 click: 3.0,
-                rel_t60: 0.90,
+                // measured on 015 post-note-off envelopes (body round,
+                // 2026-07-12): E2 ff 33.6 dB/s (t60 1.8), D2 mf 31.7, E2 mf
+                // 37.8, G2 ff 51.3 (1.17), F#2 pp 70.1 (0.86) — slower ring
+                // low/hard, quicker high/soft. r3's flat 0.9 halved the ff
+                // ring ("notes stop dead"). 021 refs are hard-gated at ~3.2 s
+                // and carry no release information (corpus artifact).
+                rel_t60: (1.7 * (82.41 / f0).powf(1.2) * (0.7 + 0.3 * vel))
+                    .clamp(0.4, 2.0),
                 rel_click: 0.5,
                 // two-stage decay, Weinreich roles corrected round 2: the
                 // strongly-coupled (plucked) polarization decays FAST; the
