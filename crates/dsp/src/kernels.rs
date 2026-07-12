@@ -88,29 +88,40 @@ pub const MAX_BODY_MODES: usize = 8;
 /// reason bare EKS guitars sound thin (listening note 2026-07-11).
 pub fn body_defaults(inst: Instrument) -> (f32, &'static [(f32, f32, f32)]) {
     match inst {
-        // acoustic guitars: A0 Helmholtz air mode, T1 top plate, mid-mode ladder
+        // Acoustic guitars: modes FIT to the NSynth reference clusters'
+        // early-spectrum envelopes (2026-07-11 loop). The resonator peak gain is
+        // |H|peak ≈ g/(2·sin(2πf/sr)), so g = P·2·sin(2πf/48k) for a desired
+        // peak P relative to the dry path — the previous rows implied P≈55
+        // (+35 dB) at ~100 Hz and drowned both guitars in lows.
+        // Nylon (refs 010/014): A0 ~100 Hz, broad T1 region 165–210 Hz (the ref
+        // cluster's strongest formant — E2's h2 rides it), gentle mid ladder,
+        // nothing above ~1.1 kHz (nylon HF dies in the string, not the body).
         Instrument::Guitar => (
-            0.55,
+            0.45,
             &[
-                (98.0, 0.28, 1.5),
-                (196.0, 0.20, 1.9),
-                (292.0, 0.14, 1.1),
-                (428.0, 0.10, 0.85),
-                (555.0, 0.08, 0.6),
-                (712.0, 0.06, 0.45),
-                (1050.0, 0.045, 0.3),
+                (100.0, 0.30, 0.042),  // P=1.6 A0 Helmholtz
+                (170.0, 0.22, 0.116),  // P=2.6 T1 lower skirt
+                (208.0, 0.20, 0.131),  // P=2.4 T1
+                (300.0, 0.14, 0.078),  // P=1.0 T2/back
+                (425.0, 0.12, 0.145),  // P=1.3
+                (560.0, 0.10, 0.139),  // P=0.95
+                (720.0, 0.09, 0.198),  // P=1.05
+                (1100.0, 0.06, 0.187), // P=0.65
             ],
         ),
+        // Steel (refs 015/030/021): weak below ~170 Hz, broad 230–1800 plateau
+        // with peaks near 400/900/1500, slow rolloff to 5 kHz (dreadnought-ish).
         Instrument::GuitarSteel => (
-            0.55,
+            0.35,
             &[
-                (102.0, 0.26, 1.4),
-                (208.0, 0.18, 1.8),
-                (315.0, 0.13, 1.0),
-                (460.0, 0.09, 0.8),
-                (610.0, 0.075, 0.6),
-                (890.0, 0.055, 0.45),
-                (1280.0, 0.04, 0.3),
+                (105.0, 0.30, 0.019), // P=0.7 A0
+                (235.0, 0.22, 0.080), // P=1.3 T1
+                (400.0, 0.16, 0.230), // P=2.2
+                (620.0, 0.12, 0.195), // P=1.2
+                (900.0, 0.10, 0.470), // P=2.0
+                (1400.0, 0.08, 0.658), // P=1.8
+                (2200.0, 0.06, 0.686), // P=1.2
+                (3600.0, 0.045, 0.908), // P=1.0
             ],
         ),
         // piano: soundboard low-mode ladder (broad, subtle — per-voice knock stays)
@@ -401,8 +412,9 @@ pub struct AcPluck {
     pub lp_c: f32,
     /// pluck point as a fraction of string length (comb is inherent in the shape)
     pub pick_pos: f32,
-    /// corner-rounding passes of the displacement triangle (pick/finger compliance)
-    pub smooth: u32,
+    /// contact-patch width as a fraction of string length (finger flesh ≫ pick
+    /// tip); band-limits the WHOLE initial condition to ~len/width harmonics
+    pub contact: f32,
     /// localized release-snap bump (velocity component of the initial condition)
     pub snap: f32,
     /// pick/finger contact noise mixed into the initial shape
@@ -643,23 +655,12 @@ impl PluckVoice {
                 (len - i) as f32 / (len - pk) as f32
             };
         }
-        // compliance: circular [1 2 1]/4 smoothing passes round the corner
-        for _ in 0..p.smooth {
-            let first = tmp[0];
-            let last = tmp[len - 1];
-            let mut prev = last;
-            for i in 0..len {
-                let next = if i + 1 < len { tmp[i + 1] } else { first };
-                let cur = tmp[i];
-                tmp[i] = 0.25 * prev + 0.5 * cur + 0.25 * next;
-                prev = cur;
-            }
-        }
-        // release snap: narrow raised-cosine bump at the pick point, sharper and
-        // stronger with velocity (the corner the pick leaves as it lets go)
+        // release snap: narrow raised-cosine bump at the pick point (the corner
+        // the pick leaves as it lets go); NSynth refs show attack brightness
+        // grows with velocity but far less than linearly
         if p.snap > 0.0 {
             let wdt = ((len as f32 * 0.008) as usize + 2).min(len / 4);
-            let amp = p.snap * p.vel;
+            let amp = p.snap * (0.35 + 0.65 * p.vel);
             for j in 0..(2 * wdt) {
                 let i = (pk + len - wdt + j) % len;
                 let ph = j as f32 / (2 * wdt) as f32;
@@ -671,7 +672,28 @@ impl PluckVoice {
             let wdt = (len / 8).max(4);
             for j in 0..wdt {
                 let i = (pk + len - wdt / 2 + j) % len;
-                tmp[i] += p.scrape * p.vel * rng.next() * 0.5;
+                tmp[i] += p.scrape * (0.35 + 0.65 * p.vel) * rng.next() * 0.5;
+            }
+        }
+        // compliance: the contact patch (fingertip flesh ≫ pick tip) rounds the
+        // WHOLE initial condition. Two circular moving-average passes of width
+        // contact·len ≈ triangular kernel: first spectral null at n = len/width,
+        // so the excitation bandwidth is a physical fraction of f0 — the fixed
+        // [1,2,1] smoothing this replaces barely filtered long strings.
+        let cw = ((p.contact * (1.2 - 0.2 * p.vel) * len as f32) as usize).clamp(1, len / 4);
+        if cw > 1 {
+            let mut acc = [0.0f32; PLUCK_BUF];
+            for _ in 0..2 {
+                let mut sum = 0.0;
+                for j in 0..cw {
+                    sum += tmp[j];
+                }
+                let inv = 1.0 / cw as f32;
+                for (i, a) in acc.iter_mut().enumerate().take(len) {
+                    *a = sum * inv;
+                    sum += tmp[(i + cw) % len] - tmp[i];
+                }
+                tmp[..len].copy_from_slice(&acc[..len]);
             }
         }
         // DC removal, then load both polarizations (pol2 gets the same shape —
@@ -1513,10 +1535,10 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 vel,
                 t60_f0: 8.0 + 4.0 * key,
                 lp_c: 0.97 - 0.10 * key + 0.02 * vel,
-                pick_pos: 0.28,
-                smooth: 2 + ((1.0 - vel) * 2.0) as u32,
-                snap: 0.25,
-                scrape: 0.05,
+                pick_pos: 0.20,
+                contact: 0.045,
+                snap: 0.5,
+                scrape: 0.06,
                 pol_mix: 0.0,
                 pol_detune_cents: 0.0,
                 pol_t60_ratio: 1.0,
@@ -1571,9 +1593,11 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 f0,
                 vel,
                 t60_f0: (12.0 - 13.0 * key).clamp(2.0, 12.0),
-                lp_c: 0.55 + 0.30 * key + 0.03 * vel,
+                // sustain brightness is velocity-independent in the refs —
+                // velocity lives in the excitation, not the loop
+                lp_c: 0.57 + 0.28 * key,
                 pick_pos: 0.14,
-                smooth: 1,
+                contact: 0.010,
                 snap: 2.5,
                 scrape: 0.35,
                 pol_mix: 0.0,
