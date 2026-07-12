@@ -714,7 +714,7 @@ impl PianoVoice {
         let mut v = Self {
             strings,
             strike_off,
-            out_w: if n_strings == 2 { [0.65, 1.35, 0.0] } else { [0.65, 1.15, 1.15] },
+            out_w: if n_strings == 2 { [0.5, 1.5, 0.0] } else { [0.5, 1.25, 1.25] },
             n_strings,
             // Velocity→loudness curve, pinned at the vel-0.8 makeup calibration
             // point: the raw collision gives ~12.5 dB across vel 25→127 where the
