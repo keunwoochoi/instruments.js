@@ -290,8 +290,8 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::SynthPad => 0.50,     // was -26.5 LUFS
         Instrument::Piano => 0.066, // P1 per-key calibration re-bake (per-key LUFS trims raised the mid; was -14.9 LUFS at 0.130, x0.51 per measure-loudness)
         Instrument::GuitarSteel => 0.362,   // re-bake after onset-impulse fix (the impulse carried 4.6 LU of K-weighted loudness)
-        Instrument::GuitarElectric => 0.41, // electric r3 re-bake (bright-028 rig, pyloudnorm -22.5 pre-bake)
-        Instrument::GuitarDistorted => 0.21, // electric r3 re-bake (drive-90 lead, tone 5.5k)
+        Instrument::GuitarElectric => 0.41, // amp-round re-bake: pyloudnorm flat at -20.8 (x1.01, kept; gain-ride tail energy is gating-neutral)
+        Instrument::GuitarDistorted => 0.132, // amp-round re-bake: gain-ride + post-drive cab EQ carried +4 LU (was -16.8 at 0.21, x0.63 per pyloudnorm)
         Instrument::DrumsRock => 0.35,      // kick round re-bake (beater-transient kick, x0.93)
         Instrument::DrumsJazz => 0.60,      // kick round re-bake (open membrane-modal kick ran +3 LU, x0.71)
     }
@@ -2851,6 +2851,12 @@ pub struct ElectricVoice {
     rel_hp_c: f32,
     rel_lp: f32,
     rel_lp2: f32,
+    /// distorted-channel voice (drive-90 bus): scales the release injection
+    /// down — r3's burst calibration was vs the CLEAN 028 refs; through the
+    /// amp round's gain-ride (at cap by note-off) + tanh limiter + presence
+    /// EQ the same injection re-saturated the limiter and read +4.7 dB ABOVE
+    /// the note's own attack (measured 2026-07-12; a pop on every note-off).
+    dist: bool,
     vel: f32,
     level: f32,
     life: u64,
@@ -2918,6 +2924,7 @@ impl ElectricVoice {
             rel_hp_c: 0.0,
             rel_lp: 0.0,
             rel_lp2: 0.0,
+            dist: false,
             vel,
             level: 0.5 * (0.35 + 0.65 * vel),
             life: ((t60 * 1.5) * sr) as u64,
@@ -3076,6 +3083,7 @@ impl ElectricVoice {
             rel_hp_c: 1.0 - (-core::f32::consts::TAU * 1400.0 / sr).exp(),
             rel_lp: 0.0,
             rel_lp2: 0.0,
+            dist,
             vel,
             // Velocity moves loudness far less than timbre on an electric (NSynth
             // layer spread ≈ 5 LU, most of it spectral): keep the level curve
@@ -3293,12 +3301,20 @@ impl ElectricVoice {
             let force = (1.0 - 0.55 * self.vel) * wound;
             // scrape stays velocity-flat: the refs' 700–1400 lobe is
             // proportionally LARGER at ff (−9 re burst) than at mp (−20)
-            self.rel_amp = 0.20 * wound;
+            // dist: the r3 thump is an H1-PURE injection (raised cosine) — on
+            // the drive-90 bus the limiter re-saturates on it and the whole
+            // burst lands on the post-drive 105 Hz cab bump (+9 dB), reading
+            // +3.6…+4.7 dB ABOVE the note's own attack (measured: a −9 dB
+            // injection cut only moved the output −1 dB — a limiter eats
+            // amplitude changes, only spectrum survives). A high-gain note-off
+            // is a SCRAPE, not a boom: drop the thump, keep a reduced scrape.
+            let dist_rel = if self.dist { 0.35 } else { 1.0 };
+            self.rel_amp = 0.20 * wound * dist_rel;
             // thump = pure-fundamental injection (raised cosine minus its
             // mean is a clean H1 with zero DC): the refs put ~99% of the
             // burst below 300 Hz; a triangle re-pluck leaked −8 dB of
             // harmonics into 300–700 Hz where the refs keep −15…−18.
-            let thump = 0.17 * force;
+            let thump = if self.dist { 0.0 } else { 0.17 * force };
             let len = self.len;
             let w = core::f32::consts::TAU / len as f32;
             for (i, b) in self.buf.iter_mut().enumerate().take(len) {
