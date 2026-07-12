@@ -1392,7 +1392,10 @@ impl ElectricVoice {
         let key = ((midi as f32) - 40.0) / 44.0; // 0 = E2 … 1 = C6
         // dist: heavy strings + amp compression read as longer sustain; the pick
         // signal into a high-gain chain is bright (bridge pickup, tone full up)
-        let t60 = if dist { 6.0 } else { 4.6 };
+        // fast (vertical) polarization: strongly bridge-coupled, dies at the
+        // refs' measured early rate; sustain grows up the neck (NSynth electrics
+        // t60_early ≈ 3.4 s at E1 → 4.8 s at C5, round-1 measurement)
+        let t60 = (if dist { 4.5 } else { 3.4 }) + 1.4 * key.max(0.0);
         // per-pass brightness: refs lose ~35 dB/s at 1 kHz in the low register
         // while H2..H5 barely decay — a steep loop corner, key-tracked so the
         // per-second HF decay stays register-flat (Valimaki et al. 1996 loop fit)
@@ -1411,7 +1414,7 @@ impl ElectricVoice {
         // of the main amplitude — gives the fast-early/slow-late two-stage decay
         // measured in every NSynth electric ref (t60 0.1–0.4 s ≈ 3.5 s but
         // 0.8–1.8 s ≈ 6–20 s).
-        let t60_slow = if dist { 12.0 } else { 9.0 };
+        let t60_slow = if dist { 18.0 } else { 15.0 };
         let f2 = f0 * 1.000289; // +0.5 cents
         let total2 = (sr / f2 - lp_delay).max(3.0);
         let len2 = ((total2 - 0.5).floor() as usize).clamp(2, PLUCK_BUF - 1);
@@ -1458,8 +1461,10 @@ impl ElectricVoice {
             // Depth k is the amp's stiffness: high-gain supplies sag deeper.
             sag_env: 0.0,
             sag_a: 1.0 - (-1.0 / (0.025 * sr)).exp(),
-            sag_r: 1.0 - (-1.0 / (0.300 * sr)).exp(),
-            sag_k: if dist { 6.0 } else { 4.0 },
+            sag_r: 1.0 - (-1.0 / (0.900 * sr)).exp(),
+            // depth: low notes draw more supply current (more stored string energy),
+            // so sag scales down the neck — deep on E1, mild at C5
+            sag_k: (if dist { 9.0 } else { 6.0 }) * (1.0 - 0.55 * key.clamp(0.0, 1.0)),
             vf_on: true,
             vf_b0: 0.0,
             vf_b1: 0.0,
@@ -1539,7 +1544,7 @@ impl ElectricVoice {
         }
         // pick displaces mostly one plane; ~0.3 leaks into the slow polarization
         for i in 0..v.len2 {
-            v.buf2[i] = 0.3 * v.buf[i % len];
+            v.buf2[i] = 0.35 * v.buf[i % len];
         }
         v
     }
