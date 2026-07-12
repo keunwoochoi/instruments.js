@@ -64,7 +64,8 @@ impl Instrument {
 pub fn amp_defaults(inst: Instrument) -> (f32, f32) {
     match inst {
         Instrument::GuitarElectric => (1.6, 1800.0),
-        Instrument::GuitarDistorted => (6.5, 3800.0),
+        // high gain: compression holds the note while the string decays >20 dB
+        Instrument::GuitarDistorted => (11.0, 4200.0),
         _ => (0.0, 0.0),
     }
 }
@@ -77,7 +78,9 @@ pub fn pickup_defaults(inst: Instrument) -> (f32, f32) {
         // a heavily loaded pickup + rolled tone pot pulls the RLC resonance down
         // and damps its Q (Zollner, Physics of the Electric Guitar, ch. 5).
         Instrument::GuitarElectric => (1500.0, 1.2),
-        Instrument::GuitarDistorted => (3400.0, 3.2),
+        // distorted: vocal mid hump BEFORE the drive (TS-style pre-emphasis; the
+        // in-voice differentiator already tightens the lows pre-drive)
+        Instrument::GuitarDistorted => (1600.0, 2.8),
         _ => (0.0, 0.0),
     }
 }
@@ -155,9 +158,9 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::SynthPad => 0.48,     // was -26.5 LUFS
         Instrument::Piano => 0.11,          // v3 hammer runs hot; measured -13.5 LUFS pre-correction
         Instrument::GuitarSteel => 0.76,    // was -25.2 LUFS
-        Instrument::GuitarElectric => 0.95, // re-measured 2026-07-11 after electric
-        // string/level rework: was -22.2 LUFS at makeup 1.5 (marimba -26.2)
-        Instrument::GuitarDistorted => 0.55, // was -25.9 LUFS at makeup 0.57
+        Instrument::GuitarElectric => 0.73, // re-measured 2026-07-11 after the
+        // electric string/pickup rework: -23.9 LUFS at makeup 0.95 (marimba -26.2)
+        Instrument::GuitarDistorted => 0.21, // -17.9 LUFS at makeup 0.55 (high gain)
     }
 }
 
@@ -454,13 +457,18 @@ impl PluckVoice {
     ///   E1 to C5). The loop lowpass applies once per round trip (f0 times/sec),
     ///   so its per-pass attenuation must shrink as f0 rises or trebles die —
     ///   key-track lp_c toward 1.0 up the neck (Jaffe & Smith 1983 loss scaling).
-    pub fn start_electric(midi: u32, f0: f32, vel: f32, sr: f32, seed: u32) -> Self {
+    pub fn start_electric(midi: u32, f0: f32, vel: f32, sr: f32, dist: bool, seed: u32) -> Self {
         let key = ((midi as f32) - 40.0) / 44.0; // 0 = E2 … 1 = C6
-        let t60 = 4.6;
+        // dist: heavy strings + amp compression read as longer sustain; the pick
+        // signal into a high-gain chain is bright (bridge pickup, tone full up)
+        let t60 = if dist { 6.0 } else { 4.6 };
         // per-pass brightness: refs lose ~35 dB/s at 1 kHz in the low register
         // while H2..H5 barely decay — a steep loop corner, key-tracked so the
         // per-second HF decay stays register-flat (Valimaki et al. 1996 loop fit)
-        let lp_c = (0.42 + 0.62 * key + 0.06 * vel).clamp(0.30, 0.985);
+        let mut lp_c = (0.42 + 0.62 * key + 0.06 * vel).clamp(0.30, 0.985);
+        if dist {
+            lp_c = (lp_c + 0.08).min(0.985);
+        }
         let lp_delay = (1.0 - lp_c) / lp_c;
         let period = sr / f0;
         let total = (period - lp_delay).max(3.0);
@@ -472,7 +480,7 @@ impl PluckVoice {
         // of the main amplitude — gives the fast-early/slow-late two-stage decay
         // measured in every NSynth electric ref (t60 0.1–0.4 s ≈ 3.5 s but
         // 0.8–1.8 s ≈ 6–20 s).
-        let t60_slow = 9.0;
+        let t60_slow = if dist { 12.0 } else { 9.0 };
         let f2 = f0 * 1.000289; // +0.5 cents
         let total2 = (sr / f2 - lp_delay).max(3.0);
         let len2 = ((total2 - 0.5).floor() as usize).clamp(2, PLUCK_BUF - 1);
@@ -523,7 +531,10 @@ impl PluckVoice {
         let mut rng = Lcg(seed | 1);
         // corner is flatter in velocity than energy is (NSynth layers: the knee
         // moves ~1 octave from pp to ff, not 3) and tracks register upward
-        let fc = ((120.0 + 300.0 * vel) * (1.0 + 1.0 * key)).clamp(80.0, 0.35 * sr);
+        let mut fc = ((120.0 + 300.0 * vel) * (1.0 + 1.0 * key)).clamp(80.0, 0.35 * sr);
+        if dist {
+            fc = (fc * 2.5).min(0.35 * sr);
+        }
         let exc_c = 1.0 - (-core::f32::consts::TAU * fc / sr).exp();
         let mut lp1 = 0.0f32;
         let mut lp = 0.0f32;
@@ -1371,7 +1382,8 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
         Instrument::GuitarElectric | Instrument::GuitarDistorted => {
             // solid-body voicing lives in start_electric; the amp/pickup character
             // comes from the track bus stages (pickup_defaults / amp_defaults)
-            Kernel::Pluck(PluckVoice::start_electric(midi, f0, vel, sr, seed))
+            let dist = inst == Instrument::GuitarDistorted;
+            Kernel::Pluck(PluckVoice::start_electric(midi, f0, vel, sr, dist, seed))
         }
     }
 }
@@ -1382,7 +1394,7 @@ mod diag {
     #[test]
     fn diag_electric_kernel_decay() {
         let sr = 48000.0;
-        let mut v = PluckVoice::start_electric(41, midi_to_hz(41.0), 1.0, sr, 12345);
+        let mut v = PluckVoice::start_electric(41, midi_to_hz(41.0), 1.0, sr, false, 12345);
         let mut out = vec![0.0f32; (4.0 * sr) as usize];
         for chunk in out.chunks_mut(128) {
             v.render(chunk);

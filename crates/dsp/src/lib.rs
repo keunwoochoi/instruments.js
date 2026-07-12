@@ -740,7 +740,11 @@ mod tests {
         let out = render_seconds(&mut e, 1.0);
         let peak = out.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(out.iter().all(|s| s.is_finite()), "NaN through the amp");
-        assert!(peak > 0.05 && peak <= 1.0, "distorted chord peak={peak}");
+        // 0.035 floor: since the 2026-07-11 LUFS recalibration the distorted bus
+        // sits at marimba loudness (-26 LUFS); a sustained saturated signal at
+        // that loudness peaks near 0.05 at gain 0.8 — the old 0.05 floor encoded
+        // the earlier, 8-LU-hot calibration.
+        assert!(peak > 0.035 && peak <= 1.0, "distorted chord peak={peak}");
         let late = &out[(0.9 * 48_000.0) as usize..];
         let sustain = late.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(sustain > 0.02, "distorted guitar should sing: {sustain}");
