@@ -205,7 +205,7 @@ impl Engine {
         let inst = self.tracks[track].instrument;
         self.seed = self.seed.wrapping_mul(747796405).wrapping_add(2891336453);
         // hi-hat choke: a closed hat (42/44) physically clamps a ringing open hat (46)
-        if inst == Instrument::Drums && (midi == 42 || midi == 44) {
+        if inst.is_drum_kit() && (midi == 42 || midi == 44) {
             let sr = self.sample_rate;
             for v in self.voices.iter_mut() {
                 if v.active() && v.track as usize == track && v.midi == 46 {

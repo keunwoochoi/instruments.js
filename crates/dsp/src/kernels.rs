@@ -36,6 +36,10 @@ pub enum Instrument {
     GuitarElectric = 11,
     /// Electric guitar, distorted — same string, hot ADAA amp stage on the track bus.
     GuitarDistorted = 12,
+    /// Rock kit: bigger looser snare, hard beater click, washy crash, loud ride ping.
+    DrumsRock = 13,
+    /// Jazz kit: dark ride-forward, small dry kick, high-tuned shell-toned snare.
+    DrumsJazz = 14,
 }
 
 impl Instrument {
@@ -53,9 +57,26 @@ impl Instrument {
             10 => Self::GuitarSteel,
             11 => Self::GuitarElectric,
             12 => Self::GuitarDistorted,
+            13 => Self::DrumsRock,
+            14 => Self::DrumsJazz,
             _ => Self::Marimba,
         }
     }
+
+    /// All GM drum-kit families (pop/rock/jazz share note semantics: one-shot
+    /// percussion, hat-choke note interaction, kit stereo layout).
+    pub fn is_drum_kit(self) -> bool {
+        matches!(self, Self::Drums | Self::DrumsRock | Self::DrumsJazz)
+    }
+}
+
+/// Kit voicing style: one GM note map, three parametrizations of the same
+/// kick/snare/cymbal machinery (see `DrumVoice::start`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KitStyle {
+    Pop,
+    Rock,
+    Jazz,
 }
 
 /// Default amp-stage settings per instrument: (drive pre-gain, tone lowpass Hz).
@@ -171,6 +192,8 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::GuitarSteel => 0.50,    // acoustic agent re-bake
         Instrument::GuitarElectric => 0.73, // electric agent re-measure
         Instrument::GuitarDistorted => 0.21, // electric agent re-measure (high gain)
+        Instrument::DrumsRock => 0.61,      // kit round-2 re-measure (pyloudnorm, vs Drums)
+        Instrument::DrumsJazz => 0.61,      // kit round-2 re-measure (pyloudnorm, vs Drums)
     }
 }
 
@@ -2193,7 +2216,8 @@ impl DrumVoice {
         self.life = self.life.min(self.age + (0.12 * sr) as u64);
     }
 
-    pub fn start(gm_note: u32, vel: f32, sr: f32, seed: u32) -> Self {
+    pub fn start(gm_note: u32, vel: f32, sr: f32, seed: u32, kit: KitStyle) -> Self {
+        let _ = kit; // kit-specific voicing lands with the round-2 voicing passes
         let mut v = Self {
             kind: DrumKind::Noise,
             phase: 0.0,
@@ -2393,7 +2417,7 @@ pub fn voice_pan(inst: Instrument, midi: u32, seed: u32) -> f32 {
         Instrument::Marimba | Instrument::Vibraphone => key(45.0, 96.0) * 0.50,
         Instrument::Glockenspiel | Instrument::MusicBox => key(60.0, 108.0) * 0.35,
         Instrument::EPiano => key(28.0, 96.0) * 0.30,
-        Instrument::Drums => match midi {
+        Instrument::Drums | Instrument::DrumsRock | Instrument::DrumsJazz => match midi {
             35 | 36 => 0.0,       // kick center
             38 | 40 => 0.05,      // snare just off-center
             42 | 44 => 0.28,      // hats player-left (audience right)
@@ -2569,7 +2593,9 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 seed,
             ))
         }
-        Instrument::Drums => Kernel::Drum(DrumVoice::start(midi, vel, sr, seed)),
+        Instrument::Drums => Kernel::Drum(DrumVoice::start(midi, vel, sr, seed, KitStyle::Pop)),
+        Instrument::DrumsRock => Kernel::Drum(DrumVoice::start(midi, vel, sr, seed, KitStyle::Rock)),
+        Instrument::DrumsJazz => Kernel::Drum(DrumVoice::start(midi, vel, sr, seed, KitStyle::Jazz)),
         Instrument::SynthPad => Kernel::Synth(SynthVoice::start(f0, vel, sr)),
         Instrument::Piano => Kernel::Piano(PianoVoice::start(midi, f0, vel, sr, seed)),
         Instrument::GuitarSteel => {
@@ -2707,7 +2733,11 @@ mod cymbal_tests {
 
     /// Render a drum GM note to a mono buffer until the voice ends (cap 8 s).
     fn render_drum(gm: u32, vel: f32, sr: f32) -> Vec<f32> {
-        let mut v = DrumVoice::start(gm, vel, sr, 0x1234_5678);
+        render_drum_kit(gm, vel, sr, KitStyle::Pop)
+    }
+
+    fn render_drum_kit(gm: u32, vel: f32, sr: f32, kit: KitStyle) -> Vec<f32> {
+        let mut v = DrumVoice::start(gm, vel, sr, 0x1234_5678, kit);
         let mut out = Vec::new();
         let mut block = [0.0f32; 128];
         for _ in 0..(8.0 * sr / 128.0) as usize {
