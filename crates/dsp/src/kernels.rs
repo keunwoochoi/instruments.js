@@ -972,10 +972,8 @@ const PIANO_BOARD_MODES: usize = 12;
 pub struct PianoVoice {
     strings: [StringLoop; 3],
     strike_off: [usize; 3],
-    // radiated mix per string: the aftersound pair couples into the board for
-    // seconds while the prompt polarization dumps fast; equal 1:1:1 weighting
-    // left our post-prompt plateau ~15 dB under the peak where the references
-    // hold ~7 dB (env at 1 s: ref −15 dB vs render −30 dB, C3 f).
+    // radiated mix per string: prompt-dominant at onset, aftersound plateau
+    // ~7 dB below peak once the prompt dumps (see start() Weinreich note)
     out_w: [f32; 3],
     n_strings: usize,
     level: f32,
@@ -1053,23 +1051,29 @@ impl PianoVoice {
         // with the still-audible prompt string) lands on the refs: the aftersound
         // param must exceed the composite target (~20 s at C3 for a measured ~12 s;
         // real mid-register aftersound runs tens of seconds — Fletcher & Rossing).
-        // asymmetric bump: decay falls off faster below the low-mid peak than above
-        let bw = if key < 0.30 { 0.145 } else { 0.20 };
+        // Fit 2026-07-11 r2 to the measured envelope grid (RMS dB at fixed
+        // times, G1/C2/C3/C5 refs): late-phase t60 G1≈18, C2≈19, C3≈32, C5≈6.3.
+        // Round 1's narrow bass-side bump priced G1 at 7.9 s where the ref
+        // rings ~18 s once the prompt is gone.
+        let bw = if key < 0.30 { 0.28 } else { 0.20 };
         let bump = (-((key - 0.30) / bw) * ((key - 0.30) / bw)).exp();
         let taper = 1.0 - 0.55 * ((key - 0.7).max(0.0) / 0.3);
-        let t60 = (3.5 + 22.5 * bump) * taper.max(0.2);
+        let t60 = (3.5 + 26.5 * bump) * taper.max(0.2);
         let lp_c = (0.32 + 0.44 * key + 0.18 * vel).clamp(0.25, 0.95);
         // stiffness (inharmonicity): audible on wound bass strings, mild in mid
         let disp_c =
             if key < 0.35 { 0.20 * (1.0 - key / 0.35) + 0.05 } else { 0.035 + 0.04 * (key - 0.35) };
 
-        // Two-stage decay: string 0 is the SUSTAIN mode (darker loop, full t60);
-        // the others are the ATTACK stage (brighter, faster, detuned — Weinreich
-        // 1977 coupled-string prompt sound vs aftersound). All are struck by the
-        // SAME hammer. Refs show prompt t60 ≈ half the aftersound t60 across the
-        // keyboard (C2 3.2→7.0, C3 6.7→12.0, C5 3.5→5.9), slightly faster when
-        // struck harder (bridge coupling grows with amplitude).
-        let t_attack = (0.45 * t60).min(6.0) * (1.05 - 0.15 * vel);
+        // Two-stage decay: string 0 is the PROMPT sound (bright, velocity-voiced,
+        // faster decay); the others are the AFTERSOUND pair (full t60,
+        // near-transparent loop) — Weinreich 1977. Envelope-grid fit of the
+        // prompt:aftersound t60 ratio: mid slopes give prompt t60 G1≈5.5,
+        // C2≈4, C3≈10, C5≈3.4 → r ≈ 0.27/0.20/0.33/0.4+ — roughly a third
+        // everywhere, dipping at the bass break (key≈0.17) and rising toward
+        // the treble where prompt and aftersound converge.
+        let dk = (key - 0.17) / 0.06;
+        let r_prompt = 0.32 - 0.12 * (-dk * dk).exp() + 0.25 * ((key - 0.35).max(0.0) / 0.65);
+        let t_attack = (r_prompt * t60).min(11.0) * (1.05 - 0.15 * vel);
         let n_strings = if midi < 32 { 2 } else { 3 };
         let detune_spread = if midi < 32 { 0.35 } else { 1.5 - 0.7 * key };
         // Weinreich 1977 roles: the PROMPT sound is one bright, velocity-voiced,
@@ -1080,10 +1084,15 @@ impl PianoVoice {
         // real loop losses are ~flat through the low kHz (Välimäki et al. 1996),
         // and aftersound brightness is not strike-dependent — the prompt string
         // carries the velocity timbre.
+        // Aftersound loop at 0.93: near-transparent, so partials 2–6 inherit
+        // the fundamental's long t60. The refs carry the late plateau on the
+        // MID partials (C3's strongest tail peak is p2, G1's are p1/p4/p2) —
+        // at 0.82 the pair's upper partials died and the "plateau" sagged at
+        // 10 dB/s (measured C3 env −22.9 dB at 2.6 s vs ref −11.9).
         let cfg: [(f32, f32, f32); 3] = [
             (0.0, t_attack, lp_c * 1.40), // (detune cents, t60 s, lp_c) prompt
-            (detune_spread, t60, 0.82),   // aftersound +
-            (-0.8 * detune_spread, t60 * 0.92, 0.82), // aftersound −
+            (detune_spread, t60, 0.93),   // aftersound +
+            (-0.8 * detune_spread, t60 * 0.92, 0.93), // aftersound −
         ];
         let rng = Lcg(seed | 1);
         let mut strings = [StringLoop::new(f0, 0.0, sr, t60, lp_c, disp_c); 3];
@@ -1116,7 +1125,31 @@ impl PianoVoice {
         let mut v = Self {
             strings,
             strike_off,
-            out_w: if n_strings == 2 { [0.5, 1.5, 0.0] } else { [0.5, 1.25, 1.25] },
+            // Weinreich fig. 4 balance: the hammer strike is vertical, so the
+            // PROMPT polarization owns the onset; the aftersound plateau is
+            // what remains once it dumps — refs hold that plateau ~7 dB under
+            // the peak at 1 s (1.6/3.6 = −7.0 dB). Round 1 had this inverted
+            // (pair carried 83% of onset), which made the composite early
+            // decay read the pair's slow t60 at every key.
+            // Aftersound plateau level, envelope-grid fit: the pair sits
+            // −16 dB below the prompt at the bass break, −12 dB mid, −9 dB
+            // treble (round 1 had the pair 5 dB ABOVE the prompt — the whole
+            // note read as the pair's slow t60). The pair is deliberately
+            // UNEQUAL (60/40): bridge coupling makes the unison normal modes
+            // asymmetric, and equal weights (100% beat modulation) parked a
+            // beat null in the 0.8–1.8 s window (C3 t60_late read 4.8 vs 12).
+            out_w: {
+                let a_db = -13.0
+                    + 4.0 * ((key - 0.17).max(0.0) / 0.14).min(1.0)
+                    + 3.0 * ((key - 0.45).max(0.0) / 0.35).min(1.0);
+                if n_strings == 2 {
+                    let a = 1.8 * 10f32.powf(a_db / 20.0);
+                    [1.8, a, 0.0]
+                } else {
+                    let a = 2.0 * 10f32.powf(a_db / 20.0);
+                    [2.0, 0.6 * a, 0.4 * a]
+                }
+            },
             n_strings,
             // Velocity→loudness curve, pinned at the vel-0.8 makeup calibration
             // point: the raw collision gives ~12.5 dB across vel 25→127 where the
