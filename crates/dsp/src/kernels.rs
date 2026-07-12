@@ -281,19 +281,40 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
     match inst {
         Instrument::Marimba => 2.1,       // reference
         Instrument::Vibraphone => 4.9,    // was -30.5 LUFS
-        Instrument::Glockenspiel => 30.0, // was -39.6 LUFS (tiny raw kernel level)
+        Instrument::Glockenspiel => 27.6, // room-stage re-bake 2026-07-12 (was 30.0)
         Instrument::MusicBox => 14.8,     // was -35.6 LUFS
-        Instrument::Guitar => 0.151,       // guitar r3 re-bake (radiation chain; was -27.4 LUFS at 0.126)
-        Instrument::Bass => 0.63,         // round-2 re-bake (DI tilt body)
-        Instrument::EPiano => 1.54,       // was -26.6 LUFS
-        Instrument::Drums => 0.59,        // kick round re-bake (pop kick unchanged; family drifted -21.3)
-        Instrument::SynthPad => 0.50,     // was -26.5 LUFS
+        Instrument::Guitar => 0.133,       // room-stage re-bake 2026-07-12 (was 0.151, x0.88)
+        Instrument::Bass => 0.60,         // room-stage re-bake 2026-07-12 (was 0.63)
+        Instrument::EPiano => 1.48,       // room-stage re-bake 2026-07-12 (was 1.54)
+        Instrument::Drums => 0.56,        // room-stage re-bake 2026-07-12 (was 0.59)
+        Instrument::SynthPad => 0.47,     // room-stage re-bake 2026-07-12 (was 0.50)
         Instrument::Piano => 0.066, // P1 per-key calibration re-bake (per-key LUFS trims raised the mid; was -14.9 LUFS at 0.130, x0.51 per measure-loudness)
-        Instrument::GuitarSteel => 0.362,   // re-bake after onset-impulse fix (the impulse carried 4.6 LU of K-weighted loudness)
-        Instrument::GuitarElectric => 0.41, // amp-round re-bake: pyloudnorm flat at -20.8 (x1.01, kept; gain-ride tail energy is gating-neutral)
-        Instrument::GuitarDistorted => 0.132, // amp-round re-bake: gain-ride + post-drive cab EQ carried +4 LU (was -16.8 at 0.21, x0.63 per pyloudnorm)
-        Instrument::DrumsRock => 0.35,      // kick round re-bake (beater-transient kick, x0.93)
-        Instrument::DrumsJazz => 0.60,      // kick round re-bake (open membrane-modal kick ran +3 LU, x0.71)
+        Instrument::GuitarSteel => 0.340,   // room-stage re-bake 2026-07-12 (was 0.362; onset-impulse history in log)
+        Instrument::GuitarElectric => 0.385, // room-stage re-bake 2026-07-12 (was 0.41)
+        Instrument::GuitarDistorted => 0.127, // room-stage re-bake 2026-07-12 (was 0.132; amp-round history in log)
+        Instrument::DrumsRock => 0.33,      // room-stage re-bake 2026-07-12 (was 0.35)
+        Instrument::DrumsJazz => 0.52,      // room-stage re-bake 2026-07-12 (was 0.60, x0.86 - roomiest send)
+    }
+}
+
+/// Default room send per family (engine's shared early-reflection/room stage,
+/// audit 2026-07-12 "amplifier + resonance"). Subtle by design — the room glues,
+/// it must never read as "reverb on". Drums highest (a kit IS its room),
+/// electrics lowest (the cab/amp chain already carries their space).
+pub fn room_send(inst: Instrument) -> f32 {
+    match inst {
+        Instrument::Drums | Instrument::DrumsRock => 0.16,
+        Instrument::DrumsJazz => 0.18, // brushes/jazz kits are recorded roomier
+        Instrument::Piano => 0.09,
+        Instrument::Guitar | Instrument::GuitarSteel => 0.11,
+        Instrument::GuitarElectric => 0.05,
+        Instrument::GuitarDistorted => 0.04,
+        Instrument::Bass => 0.035,
+        Instrument::EPiano => 0.06,
+        Instrument::Marimba | Instrument::Vibraphone => 0.10,
+        Instrument::Glockenspiel => 0.09,
+        Instrument::MusicBox => 0.08,
+        Instrument::SynthPad => 0.05,
     }
 }
 

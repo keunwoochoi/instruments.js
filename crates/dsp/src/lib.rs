@@ -85,6 +85,8 @@ pub struct TrackBus {
     pk_a2: f32,
     pk_z1: f32,
     pk_z2: f32,
+    // room send (kernels::room_send default; ij_set_room overrides)
+    room_send: f32,
     // smoothed equal-power gains (one-pole per block, no zipper noise)
     gl: f32,
     gr: f32,
@@ -115,6 +117,99 @@ impl TrackBus {
     }
 }
 
+/// Shared room stage (audit 2026-07-12): ONE per engine — every track sends a
+/// little into the same small studio room, which is what glues an arrangement
+/// into a record instead of N anechoic close mics. 11 ms pre-delay → 6 sparse
+/// early reflections (alternating L/R signs for decorrelation) + a 4-line FDN
+/// tail (orthogonal butterfly feedback, per-line HF damping, RT60 ≈ 0.38 s).
+/// Allocation happens once in `new`; the audio path is allocation-free.
+struct Room {
+    pre: Vec<f32>,
+    pre_pos: usize,
+    early: Vec<f32>,
+    early_pos: usize,
+    taps: [(usize, f32); 6],
+    fdn: [Vec<f32>; 4],
+    fdn_pos: [usize; 4],
+    fdn_g: [f32; 4],
+    damp: [f32; 4],
+    damp_c: f32,
+}
+
+impl Room {
+    fn new(sr: f32) -> Self {
+        let ms = |m: f32| ((m * 1e-3 * sr) as usize) | 1; // odd lengths: no common factors
+        let taps_ms = [13.1, 19.7, 26.3, 34.9, 43.7, 52.9];
+        let gains = [0.62, -0.50, 0.42, -0.33, 0.26, -0.20];
+        let mut taps = [(0usize, 0f32); 6];
+        for i in 0..6 {
+            taps[i] = (ms(taps_ms[i]), gains[i]);
+        }
+        let dl = [41.7, 53.3, 63.1, 74.3].map(ms);
+        const RT60: f32 = 0.38;
+        let mut fdn_g = [0.0f32; 4];
+        for i in 0..4 {
+            fdn_g[i] = 10f32.powf(-3.0 * dl[i] as f32 / (RT60 * sr));
+        }
+        Self {
+            pre: vec![0.0; ms(11.0)],
+            pre_pos: 0,
+            early: vec![0.0; ms(53.0) + 1],
+            early_pos: 0,
+            taps,
+            fdn: dl.map(|n| vec![0.0; n]),
+            fdn_pos: [0; 4],
+            fdn_g,
+            damp: [0.0; 4],
+            // HF dies faster than LF in a real room: one-pole at ~4.5 kHz in
+            // each feedback path
+            damp_c: 1.0 - (-core::f32::consts::TAU * 4500.0 / sr).exp(),
+        }
+    }
+
+    /// Adds the wet signal for `input` (mono send bus) into out_l/out_r.
+    fn process(&mut self, input: &[f32], out_l: &mut [f32], out_r: &mut [f32], frames: usize) {
+        let el = self.early.len();
+        for i in 0..frames {
+            // pre-delay
+            let x = self.pre[self.pre_pos];
+            self.pre[self.pre_pos] = input[i];
+            self.pre_pos = (self.pre_pos + 1) % self.pre.len();
+            // early reflections from a shared tapped line
+            self.early[self.early_pos] = x;
+            let (mut e_l, mut e_r) = (0.0f32, 0.0f32);
+            for (k, (d, g)) in self.taps.iter().enumerate() {
+                let s = self.early[(self.early_pos + el - d) % el] * g;
+                if k & 1 == 0 {
+                    e_l += s;
+                } else {
+                    e_r += s;
+                }
+            }
+            self.early_pos = (self.early_pos + 1) % el;
+            // FDN tail: read heads, orthogonal butterfly, damped feedback
+            let mut r = [0.0f32; 4];
+            for k in 0..4 {
+                r[k] = self.fdn[k][self.fdn_pos[k]];
+            }
+            let (a, b) = (r[0] + r[1], r[0] - r[1]);
+            let (c, d) = (r[2] + r[3], r[2] - r[3]);
+            let mixed = [0.5 * (a + c), 0.5 * (b + d), 0.5 * (a - c), 0.5 * (b - d)];
+            for k in 0..4 {
+                self.damp[k] += self.damp_c * (mixed[k] - self.damp[k]);
+                let w = flush_denormal((self.damp[k] * self.fdn_g[k]) + 0.25 * x);
+                self.fdn[k][self.fdn_pos[k]] = w;
+                self.fdn_pos[k] = (self.fdn_pos[k] + 1) % self.fdn[k].len();
+            }
+            out_l[i] += e_l + 0.7 * (r[0] - r[2]);
+            out_r[i] += e_r + 0.7 * (r[1] - r[3]);
+        }
+        for k in 0..4 {
+            self.damp[k] = flush_denormal(self.damp[k]);
+        }
+    }
+}
+
 pub struct Engine {
     pub sample_rate: f32,
     voices: Vec<Voice>,
@@ -123,6 +218,8 @@ pub struct Engine {
     track_r: [f32; MAX_BLOCK],
     voice_buf: [f32; MAX_BLOCK],
     symp: Vec<SympBank>,
+    room: Room,
+    room_in: [f32; MAX_BLOCK],
     pub out_l: [f32; MAX_BLOCK],
     pub out_r: [f32; MAX_BLOCK],
     seed: u32,
@@ -175,6 +272,7 @@ impl Engine {
                 pk_a2: 0.0,
                 pk_z1: 0.0,
                 pk_z2: 0.0,
+                room_send: kernels::room_send(Instrument::Marimba),
                 gl: 0.0,
                 gr: 0.0,
             }; MAX_TRACKS],
@@ -182,6 +280,8 @@ impl Engine {
             track_r: [0.0; MAX_BLOCK],
             voice_buf: [0.0; MAX_BLOCK],
             symp,
+            room: Room::new(sample_rate),
+            room_in: [0.0; MAX_BLOCK],
             out_l: [0.0; MAX_BLOCK],
             out_r: [0.0; MAX_BLOCK],
             seed: 0x1234_5678,
@@ -194,6 +294,7 @@ impl Engine {
             t.instrument = instrument;
             t.gain = gain.clamp(0.0, 2.0);
             t.pan = pan.clamp(-1.0, 1.0);
+            t.room_send = kernels::room_send(instrument);
             let (drive, tone_hz) = amp_defaults(instrument);
             t.drive = drive;
             t.tone_c = if tone_hz > 0.0 {
@@ -381,6 +482,12 @@ impl Engine {
     }
 
     /// Sustain pedal (CC64). Pedal-up releases every note whose note-off was deferred.
+    pub fn set_room(&mut self, track: usize, send: f32) {
+        if track < MAX_TRACKS {
+            self.tracks[track].room_send = send.clamp(0.0, 1.0);
+        }
+    }
+
     pub fn set_pedal(&mut self, track: usize, on: bool) {
         if track >= MAX_TRACKS {
             return;
@@ -436,6 +543,7 @@ impl Engine {
         let frames = frames.min(MAX_BLOCK);
         self.out_l[..frames].fill(0.0);
         self.out_r[..frames].fill(0.0);
+        self.room_in[..frames].fill(0.0);
         let sr = self.sample_rate;
 
         for t in 0..MAX_TRACKS {
@@ -610,15 +718,23 @@ impl Engine {
             }
             // ~1 ms gain smoothing against zipper noise
             let c = 1.0 - (-1.0 / (0.001 * sr)).exp();
+            let send = bus.room_send;
             for i in 0..frames {
                 bus.gl += c * (tl - bus.gl);
                 bus.gr += c * (tr - bus.gr);
-                self.out_l[i] += self.track_l[i] * bus.gl;
-                self.out_r[i] += self.track_r[i] * bus.gr;
+                let l = self.track_l[i] * bus.gl;
+                let r = self.track_r[i] * bus.gr;
+                self.out_l[i] += l;
+                self.out_r[i] += r;
+                self.room_in[i] += (l + r) * 0.5 * send;
             }
             bus.gl = flush_denormal(bus.gl);
             bus.gr = flush_denormal(bus.gr);
         }
+
+        // shared room stage: wet added on top of the dry buses (see Room)
+        self.room
+            .process(&self.room_in, &mut self.out_l, &mut self.out_r, frames);
 
         // master safety: transparent below ~-12 dBFS, soft-limits above
         for i in 0..frames {
@@ -677,6 +793,15 @@ pub mod ffi {
     pub extern "C" fn ij_set_track(p: *mut Engine, track: u32, inst: u32, gain: f32, pan: f32) {
         if let Some(e) = engine(p) {
             e.set_track(track as usize, Instrument::from_u32(inst), gain, pan);
+        }
+    }
+
+    /// Override the track's room send (default = kernels::room_send for the
+    /// family; set after ij_set_track, which resets it). send is clamped 0..1.
+    #[no_mangle]
+    pub extern "C" fn ij_set_room(p: *mut Engine, track: u32, send: f32) {
+        if let Some(e) = engine(p) {
+            e.set_room(track as usize, send);
         }
     }
 
@@ -1358,4 +1483,68 @@ mod tests {
         assert!(out.iter().all(|s| s.is_finite()));
         assert!(peak > 0.05 && peak <= 1.0, "arrangement peak={peak}");
     }
+    #[test]
+    fn room_tail_exists_and_decays() {
+        for sr in [48000.0f32, 44100.0] {
+            let mut e = Engine::new(sr);
+            e.set_track(0, Instrument::Drums, 0.8, 0.0);
+            e.note_on(0, 38, 1.0); // snare: broadband, excites the room
+            let win = (0.1 * sr) as usize;
+            let mut rms = |e: &mut Engine, upto: usize| {
+                let mut acc = 0.0f64;
+                let mut n = 0usize;
+                let mut done = 0usize;
+                while done < upto {
+                    let f = 128.min(upto - done);
+                    e.process(f);
+                    for i in 0..f {
+                        acc += (e.out_l[i] as f64).powi(2) + (e.out_r[i] as f64).powi(2);
+                        n += 2;
+                        assert!(e.out_l[i].is_finite() && e.out_r[i].is_finite());
+                    }
+                    done += f;
+                }
+                (acc / n as f64).sqrt()
+            };
+            let hit = rms(&mut e, win); // 0-0.1 s: the hit itself
+            let mid = rms(&mut e, 3 * win); // 0.1-0.4 s: room tail territory
+            let late = rms(&mut e, 6 * win); // 0.4-1.0 s: tail must be dying
+            assert!(hit > 1e-3, "snare inaudible at {sr}");
+            // a tail exists (not anechoic): mid keeps meaningful energy
+            assert!(mid > hit * 1e-3, "no room tail at {sr}: mid {mid} vs hit {hit}");
+            // and it DECAYS (RT60 0.38 s: 0.4-1.0 s window well below 0.1-0.4 s)
+            assert!(late < mid * 0.5, "room tail not decaying at {sr}: {late} vs {mid}");
+        }
+    }
+
+    #[test]
+    fn room_send_zero_restores_dry_engine() {
+        let mut wet = Engine::new(48000.0);
+        let mut dry = Engine::new(48000.0);
+        for e in [&mut wet, &mut dry] {
+            e.set_track(0, Instrument::Marimba, 0.8, 0.0);
+        }
+        dry.set_room(0, 0.0);
+        wet.note_on(0, 60, 0.8);
+        dry.note_on(0, 60, 0.8);
+        wet.process(128);
+        dry.process(128);
+        // pre-delay (11 ms) means the first block is identical wet vs dry…
+        for i in 0..128 {
+            assert_eq!(wet.out_l[i], dry.out_l[i]);
+        }
+        // …after the pre-delay the wet engine must differ (the room is real)
+        let mut differs = false;
+        for _ in 0..12 {
+            wet.process(128);
+            dry.process(128);
+            for i in 0..128 {
+                if wet.out_l[i] != dry.out_l[i] {
+                    differs = true;
+                }
+            }
+        }
+        assert!(differs, "room stage is inaudible even with default sends");
+    }
+
 }
