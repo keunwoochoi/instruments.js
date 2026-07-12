@@ -589,6 +589,11 @@ pub struct AcPluck {
     pub click: f32,
     pub click_slow: f32,
     pub click_hz: f32,
+    /// contact ramp-in (s): a pick releases in ~1.5 ms, fingertip flesh takes
+    /// ~8-15 ms (Penttinen & Välimäki 2001 pluck contact) — sets how fast the
+    /// snap/scrape transient reaches full level (nylon ff refs measure onset
+    /// crest −24 dB; a 1.5 ms ramp read as a click)
+    pub click_ramp: f32,
     /// second-polarization output level (0 = single string)
     pub pol_mix: f32,
     pub pol_detune_cents: f32,
@@ -660,6 +665,7 @@ impl Default for AcPluck {
             click: 0.0,
             click_slow: 0.0,
             click_hz: 2800.0,
+            click_ramp: 0.0015,
             pol_mix: 0.0,
             pol_detune_cents: 0.0,
             pol_t60_ratio: 1.0,
@@ -1473,7 +1479,7 @@ impl PluckVoice {
                 (1.0 - r) * 2.0 * w.sin().max(0.1)
             },
             ri_env: 0.0,
-            ri_c: 1.0 - (-1.0 / (0.0015 * sr)).exp(),
+            ri_c: 1.0 - (-1.0 / (p.click_ramp.max(1e-4) * sr)).exp(),
             tr_rng: Lcg(seed.rotate_left(13) | 1),
             // body-pump: one bipolar cycle at thump_hz (see AcPluck::thump);
             // amp on the pre-differencer level scale like the click
@@ -5174,6 +5180,8 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // the old render's — tirando is mostly flesh)
                 click_slow: 0.8,
                 click_hz: 2000.0,
+                // fingertip flesh: slow contact (soft strokes slower still)
+                click_ramp: 0.012 - 0.006 * vel,
                 // nylon refs' post-off slopes (68-171 dB/s) are contaminated
                 // by the NSynth release fade/gate (014 mids are hard-gated;
                 // steel 015's 31-51 dB/s proves slower decays survive the
@@ -5328,6 +5336,7 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // energy at low velocity, spread over a longer stroke
                 click_slow: 1.0,
                 click_hz: 2800.0,
+                click_ramp: 0.0015,
                 // measured on 015 post-note-off envelopes (body round,
                 // 2026-07-12): E2 ff 33.6 dB/s (t60 1.8), D2 mf 31.7, E2 mf
                 // 37.8, G2 ff 51.3 (1.17), F#2 pp 70.1 (0.86) — slower ring
