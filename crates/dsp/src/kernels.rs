@@ -184,15 +184,25 @@ pub fn body_defaults(inst: Instrument) -> (f32, &'static [(f32, f32, f32)]) {
         // deltas (bodydelta.py, 2026-07-11): renders ran +14…+20 dB hot at the
         // low fundamentals / T1 region and −5…−8 dB in the 300–380 / 610–770 /
         // 980–1250 valleys. Dry cut 0.45→0.22, T1 trimmed, denser mid ladder.
+        // Body round 2026-07-12: low-mode t60s raised to measured guitar Qs
+        // (A0 Q≈25, plate/back cluster Q≈40 — Woodhouse 2012; previous rows
+        // sat at half that). Peak |H| is set by g alone (independent of r),
+        // so the fitted spectral peaks stay put; the modes ring longer between
+        // and after notes — the body speaking (Keunwoo listening verdict).
         Instrument::Guitar => (
             0.22,
             &[
-                (100.0, 0.30, 0.0236),  // P=0.9 A0 Helmholtz
-                (190.0, 0.25, 0.0696),  // P=1.4 T1
-                (285.0, 0.16, 0.1194),  // P=1.6 T2/back
-                (340.0, 0.14, 0.1602),  // P=1.8
-                (425.0, 0.12, 0.2113),  // P=1.9
-                (520.0, 0.11, 0.2041),  // P=1.5
+                // A0/T1: g scaled with t60 (lib.rs applies g·(1−r)) so the
+                // SKIRT and transient knock keep their fitted level and the
+                // peak rises with Q — an underdamped resonator has a taller
+                // peak, same skirt. Mid modes below keep peak-fit g instead
+                // (their r3 anchors were on-peak partial maxima).
+                (100.0, 0.55, 0.0433),  // P=1.65 A0 Helmholtz, Q 25
+                (190.0, 0.46, 0.0975),  // P=2.0 T1, Q 40
+                (285.0, 0.31, 0.1194),  // P=1.6 T2/back
+                (340.0, 0.26, 0.1602),  // P=1.8
+                (425.0, 0.21, 0.2113),  // P=1.9
+                (520.0, 0.17, 0.2041),  // P=1.5
                 (640.0, 0.10, 0.3012),  // P=1.8
                 (730.0, 0.09, 0.4198),  // P=2.2
                 (850.0, 0.08, 0.3553),  // P=1.6
@@ -214,13 +224,17 @@ pub fn body_defaults(inst: Instrument) -> (f32, &'static [(f32, f32, f32)]) {
         Instrument::GuitarSteel => (
             0.28,
             &[
-                (100.0, 0.28, 0.0209),   // P=0.8 A0 (G2 h1 sits on it at -9 dB)
-                (190.0, 0.20, 0.0274),   // P=0.55
-                (258.0, 0.22, 0.1216),   // P=1.8 T1' ref peak
-                (295.0, 0.18, 0.1081),   // P=1.4
-                (370.0, 0.15, 0.1452),   // P=1.5
-                (415.0, 0.14, 0.1520),   // P=1.4
-                (505.0, 0.12, 0.0793),   // P=0.6 (dip region 460-590)
+                // low-mode t60s at measured Qs; A0/T1 g scaled with t60 to
+                // preserve skirt+knock (see nylon note) — the sustained
+                // h1-h2 balance at ff (render -7 dB vs ref +5..+7) says the
+                // old A0 peak was low even at its on-peak anchor (G2 h1)
+                (100.0, 0.55, 0.0600),   // P=2.3 A0, Q 25 (it9: G2 h1 on-peak still 9 dB shy)
+                (190.0, 0.46, 0.0411),   // P=0.83, Q 40
+                (258.0, 0.34, 0.1216),   // P=1.8 T1' ref peak
+                (295.0, 0.30, 0.1081),   // P=1.4
+                (370.0, 0.24, 0.1452),   // P=1.5
+                (415.0, 0.21, 0.1520),   // P=1.4
+                (505.0, 0.17, 0.0793),   // P=0.6 (dip region 460-590)
                 (745.0, 0.10, 0.4285),   // P=2.2 ref peak (was split 630/705)
                 (820.0, 0.09, 0.2572),   // P=1.2
                 (940.0, 0.085, 0.3437),  // P=1.4
@@ -283,13 +297,13 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::Vibraphone => 4.9,    // was -30.5 LUFS
         Instrument::Glockenspiel => 27.6, // room-stage re-bake 2026-07-12 (was 30.0)
         Instrument::MusicBox => 14.8,     // was -35.6 LUFS
-        Instrument::Guitar => 0.133,       // room-stage re-bake 2026-07-12 (was 0.151, x0.88)
+        Instrument::Guitar => 0.159,       // body-round 0.181 x room 0.88 (verify by sweep)
         Instrument::Bass => 0.60,         // room-stage re-bake 2026-07-12 (was 0.63)
         Instrument::EPiano => 1.48,       // room-stage re-bake 2026-07-12 (was 1.54)
         Instrument::Drums => 0.56,        // room-stage re-bake 2026-07-12 (was 0.59)
         Instrument::SynthPad => 0.47,     // room-stage re-bake 2026-07-12 (was 0.50)
         Instrument::Piano => 0.066, // P1 per-key calibration re-bake (per-key LUFS trims raised the mid; was -14.9 LUFS at 0.130, x0.51 per measure-loudness)
-        Instrument::GuitarSteel => 0.340,   // room-stage re-bake 2026-07-12 (was 0.362; onset-impulse history in log)
+        Instrument::GuitarSteel => 0.364,   // body-round 0.387 x room 0.94 (verify by sweep)
         Instrument::GuitarElectric => 0.385, // room-stage re-bake 2026-07-12 (was 0.41)
         Instrument::GuitarDistorted => 0.127, // room-stage re-bake 2026-07-12 (was 0.132; amp-round history in log)
         Instrument::DrumsRock => 0.33,      // room-stage re-bake 2026-07-12 (was 0.35)
@@ -580,12 +594,31 @@ pub struct PluckVoice {
     /// Differenced noise alone tilts +6 dB/oct to Nyquist — a hi-hat-like tick
     /// the 16 kHz refs can't penalize (real pick scrape lives ~1-6 kHz), so the
     /// difference is followed by a one-pole LP (tr_lc) at ~4.2 kHz.
+    /// Pick round 2026-07-12: rebuilt as a 2-pole contact resonator (center
+    /// click_hz, Q≈1.5 — smooth sample-to-sample, no Nyquist alternation; the
+    /// one-pole chain still jumped ±0.8× peak between adjacent samples) with
+    /// TWO envelopes: tr_env = snap (release corner, ~8 ms, ∝ vel²) and
+    /// tr2_env = scrape (pick sliding, 55→25 ms as velocity rises, ~∝ vel —
+    /// refs keep the scrape/body energy ratio flat across velocity while the
+    /// CREST collapses at pp: soft strokes slide, hard strokes snap through).
+    /// ri_env: ~1.5 ms contact ramp-in kills the t=0 cliff.
     tr_env: f32,
     tr_dec: f32,
-    tr_hp: f32,
-    tr_lp: f32,
-    tr_lc: f32,
+    tr2_env: f32,
+    tr2_dec: f32,
+    bp_y1: f32,
+    bp_y2: f32,
+    bp_a1: f32,
+    bp_r2: f32,
+    bp_g: f32,
+    ri_env: f32,
+    ri_c: f32,
     tr_rng: Lcg,
+    /// body-pump transient (see AcPluck::thump): one windowed bipolar cycle,
+    /// active while th_ph < 1
+    th_amp: f32,
+    th_dph: f32,
+    th_ph: f32,
     /// release voicing: post-note-off t60 and pluck-off click level
     rel_t60: f32,
     rel_click: f32,
@@ -620,8 +653,19 @@ pub struct AcPluck {
     pub scrape: f32,
     /// direct (non-looped) contact-click transient level (0 = none): most pick
     /// noise radiates immediately instead of persisting as string modes — with
-    /// the HF loss floor, keeping it all in-loop ran +30…+47 dB hot mid-note
+    /// the HF loss floor, keeping it all in-loop ran +30…+47 dB hot mid-note.
+    /// Pick round: `click` is the SNAP component (release corner, ∝ vel²);
+    /// `click_slow` the SCRAPE component (slide friction, ~∝ vel, longer and
+    /// softer at low velocity); `click_hz` centers the shared 2-pole contact
+    /// resonator (pick on wound steel ~2.8 kHz; fingertip/nail lower).
     pub click: f32,
+    pub click_slow: f32,
+    pub click_hz: f32,
+    /// contact ramp-in (s): a pick releases in ~1.5 ms, fingertip flesh takes
+    /// ~8-15 ms (Penttinen & Välimäki 2001 pluck contact) — sets how fast the
+    /// snap/scrape transient reaches full level (nylon ff refs measure onset
+    /// crest −24 dB; a 1.5 ms ramp read as a click)
+    pub click_ramp: f32,
     /// second-polarization output level (0 = single string)
     pub pol_mix: f32,
     pub pol_detune_cents: f32,
@@ -661,7 +705,58 @@ pub struct AcPluck {
     /// body-coupling loss scale: peak extra eta near the A0/top-plate modes
     /// (string-mode damping tracks Re{Y_bridge}, Woodhouse 2004 I Fig. 7)
     pub couple: f32,
+    /// body-pump transient ("woof"): the pluck release is a STEP of bridge
+    /// force whose sub-f0 content the radiation differencers remove by
+    /// design — but on a real guitar that step pumps the Helmholtz/top pair
+    /// and radiates a low thump (commuted body response to the force step;
+    /// Christensen & Vistisen 1980 two-oscillator model). Injected as one
+    /// windowed bipolar cycle at `thump_hz` AFTER the radiation chain so the
+    /// track body bank rings from it. Level ∝ vel² (refs' attack A0 band
+    /// collapses from −10 dB deficit at ff to +7 excess at pp, 2026-07-12).
+    pub thump: f32,
+    pub thump_hz: f32,
     pub level: f32,
+}
+
+impl Default for AcPluck {
+    /// Neutral parameter set: every feature off, unity level. Lets preset
+    /// arms opt into new fields with `..Default::default()` instead of
+    /// enumerating them (keeps parallel-agent merges small).
+    fn default() -> Self {
+        AcPluck {
+            f0: 110.0,
+            vel: 0.7,
+            t60_f0: 4.0,
+            lp_c: 0.7,
+            hf_floor_t60: 0.0,
+            hf_knee_hz: 0.0,
+            pick_pos: 0.2,
+            contact: 0.02,
+            snap: 0.3,
+            scrape: 0.0,
+            click: 0.0,
+            click_slow: 0.0,
+            click_hz: 2800.0,
+            click_ramp: 0.0015,
+            pol_mix: 0.0,
+            pol_detune_cents: 0.0,
+            pol_t60_ratio: 1.0,
+            stiff_b: 0.0,
+            tm_cents: 0.0,
+            rel_t60: 0.1,
+            rel_click: 0.0,
+            br_rho: 0.0,
+            rad_hz: 0.0,
+            acc_rho: 0.0,
+            eta_f: 0.0,
+            eta_b: 0.0,
+            eta_a: 0.0,
+            couple: 0.0,
+            thump: 0.0,
+            thump_hz: 110.0,
+            level: 0.5,
+        }
+    }
 }
 
 /// Normalized Re{Y_bridge} shape for the coupling loss: A0 Helmholtz hump
@@ -1127,10 +1222,19 @@ impl PluckVoice {
             frac2: 0.0,
             tr_env: 0.0,
             tr_dec: 0.0,
-            tr_hp: 0.0,
-            tr_lp: 0.0,
-            tr_lc: 0.0,
+            tr2_env: 0.0,
+            tr2_dec: 0.0,
+            bp_y1: 0.0,
+            bp_y2: 0.0,
+            bp_a1: 0.0,
+            bp_r2: 0.0,
+            bp_g: 0.0,
+            ri_env: 0.0,
+            ri_c: 1.0,
             tr_rng: Lcg(1),
+            th_amp: 0.0,
+            th_dph: 0.0,
+            th_ph: 1.0,
             rel_t60: 0.0,
             rel_click: 0.0,
             tr_lvl: 0.0,
@@ -1423,16 +1527,37 @@ impl PluckVoice {
             tm_c: 1.0 - (-core::f32::consts::TAU * 6.0 / sr).exp(),
             frac1,
             frac2,
-            // contact click: ~35 ms HP-shaped noise burst, velocity-scaled like
-            // the snap; scaled by the pre-acceleration level (see level_tr)
-            // quadratic velocity law: refs' attack/body crest collapses from
-            // ~0 dB at ff to −22 dB at pp — soft plucks have almost no scrape
-            tr_env: p.click * (0.1 + 0.9 * p.vel * p.vel) * level_tr,
-            tr_dec: t60_gain(0.035, sr),
-            // scrape band LP at 4.2 kHz; ×1.3 output comp keeps the in-band
-            // (≤6 kHz) scrape level the refs were fit against (see tr_lc docs)
-            tr_lc: 1.0 - (-core::f32::consts::TAU * 4200.0 / sr).exp(),
+            // pick transients (see struct docs): snap ∝ vel² (crest law from
+            // the refs: ~0 dB at ff, −22 dB at pp), scrape keeps its energy
+            // at low velocity but spreads it over a longer, softer slide
+            tr_env: p.click * (0.05 + 0.95 * p.vel * p.vel) * level_tr,
+            tr_dec: t60_gain(0.008, sr),
+            tr2_env: p.click_slow * (0.25 + 0.75 * p.vel) * level_tr,
+            tr2_dec: t60_gain(0.055 - 0.030 * p.vel, sr),
+            // 2-pole contact resonator at click_hz, BW ≈ 0.65·f (Q ≈ 1.5),
+            // peak-normalized to 1 so click levels keep their fitted scale
+            bp_a1: {
+                let w = core::f32::consts::TAU * p.click_hz / sr;
+                let r = (-core::f32::consts::PI * 0.65 * p.click_hz / sr).exp();
+                2.0 * r * w.cos()
+            },
+            bp_r2: {
+                let r = (-core::f32::consts::PI * 0.65 * p.click_hz / sr).exp();
+                r * r
+            },
+            bp_g: {
+                let w = core::f32::consts::TAU * p.click_hz / sr;
+                let r = (-core::f32::consts::PI * 0.65 * p.click_hz / sr).exp();
+                (1.0 - r) * 2.0 * w.sin().max(0.1)
+            },
+            ri_env: 0.0,
+            ri_c: 1.0 - (-1.0 / (p.click_ramp.max(1e-4) * sr)).exp(),
             tr_rng: Lcg(seed.rotate_left(13) | 1),
+            // body-pump: one bipolar cycle at thump_hz (see AcPluck::thump);
+            // amp on the pre-differencer level scale like the click
+            th_amp: p.thump * p.vel * p.vel * level_tr,
+            th_dph: p.thump_hz / sr,
+            th_ph: 0.0,
             rel_t60: p.rel_t60,
             rel_click: p.rel_click,
             tr_lvl: level_tr,
@@ -1595,15 +1720,33 @@ impl PluckVoice {
             }
         }
         // Prime the output differencers (and radiation HP) with the true t=0
-        // signal — the FINAL carrier buffers — so sample 0 is differenced like
-        // every other sample instead of passing as a raw impulse (which the
-        // level renorm then amplifies ~1/|H(3f0)| per tap).
+        // HISTORY — the periodic extension of the final carrier (a
+        // recirculating wave's previous samples are buf[len−1], buf[len−2],
+        // …, modulo one 0.5% loss pass). Body round 2026-07-12: the earlier
+        // value-only priming (br_x1 = m0, acc_x1 = leak·m0) pretended the
+        // pre-onset history was CONSTANT, so the first differencer's output
+        // stepped from leak-only to slope+leak between samples 0→1; the
+        // second differencer turned that slope discontinuity into a
+        // one-sample impulse amplified ~×950 by the renorms — a
+        // velocity-independent onset tick on EVERY steel note (peak 0.93 at
+        // pp E2, masked in render-note.mjs by track-gain smoothing at t=0).
+        // Priming value + slope makes sample 0 differenced like every other.
+        // (History = backward linear extrapolation of the first two carrier
+        // samples: the buffer wrap is NOT time-adjacent — the fractional
+        // delay lives in the tuning allpass — so periodic indexing would
+        // manufacture its own step. The carrier is band-limited ⇒ locally
+        // linear at 48 kHz; extrapolation keeps value AND slope consistent.)
         if p.br_rho > 0.0 {
             let m0 = v.buf[0] + p.pol_mix * v.buf2[0];
-            v.br_x1 = m0;
-            v.acc_x1 = m0 * (1.0 - p.br_rho);
+            let mf = v.buf[1.min(len - 1)] + p.pol_mix * v.buf2[1.min(len2 - 1)];
+            let hist = |k: f32| -> f32 { (1.0 + k) * m0 - k * mf };
+            let (m1, m2, m3) = (hist(1.0), hist(2.0), hist(3.0));
+            let f1 = m1 - p.br_rho * m2;
+            let f2 = m2 - p.br_rho * m3;
+            v.br_x1 = m1;
+            v.acc_x1 = f1;
             if v.rad_k > 0.0 {
-                v.rad_x1 = m0 * (1.0 - p.br_rho) * (1.0 - p.acc_rho) * v.level;
+                v.rad_x1 = (f1 - p.acc_rho * f2) * v.level;
             }
         }
         v
@@ -1704,15 +1847,17 @@ impl PluckVoice {
                 outv = a;
             }
             let mut sig = outv * self.level;
-            // direct contact-click transient (bypasses the string loop):
-            // differenced noise band-limited to the pick-scrape band (tr_lc)
-            if self.tr_env > 1e-7 {
+            // pick transients (bypass the string loop): snap + scrape share
+            // the 2-pole contact resonator; ~1.5 ms ramp-in, no t=0 cliff
+            if self.tr_env > 1e-7 || self.tr2_env > 1e-7 {
                 let n = self.tr_rng.next();
-                let d = 0.5 * (n - self.tr_hp);
-                self.tr_hp = n;
-                self.tr_lp += self.tr_lc * (d - self.tr_lp);
-                sig += self.tr_env * 1.3 * self.tr_lp;
+                let y = self.bp_a1 * self.bp_y1 - self.bp_r2 * self.bp_y2 + self.bp_g * n;
+                self.bp_y2 = self.bp_y1;
+                self.bp_y1 = y;
+                self.ri_env += self.ri_c * (1.0 - self.ri_env);
+                sig += (self.tr_env + self.tr2_env) * self.ri_env * y;
                 self.tr_env *= self.tr_dec;
+                self.tr2_env *= self.tr2_dec;
             }
             // radiation monopole high-pass (see rad_k docs)
             if self.rad_k > 0.0 {
@@ -1720,6 +1865,16 @@ impl PluckVoice {
                 self.rad_x1 = sig;
                 self.rad_y1 = y;
                 sig = y;
+            }
+            // body-pump transient: injected AFTER the radiation HP (the HP
+            // models the string→plate path; the pump IS the plate's own
+            // low-frequency volume flow) — one raised-cosine-windowed sine
+            // cycle, zero-mean, band-centered at thump_hz. The track body
+            // bank (A0/T1) rings from it.
+            if self.th_amp != 0.0 && self.th_ph < 1.0 {
+                let ph = core::f32::consts::TAU * self.th_ph;
+                sig += self.th_amp * ph.sin() * 0.5 * (1.0 - ph.cos());
+                self.th_ph += self.th_dph;
             }
             *o += sig;
         }
@@ -1742,7 +1897,9 @@ impl PluckVoice {
             self.ds2y[k] = flush_denormal(self.ds2y[k]);
         }
         self.tm_env = flush_denormal(self.tm_env);
-        self.tr_lp = flush_denormal(self.tr_lp);
+        self.bp_y1 = flush_denormal(self.bp_y1);
+        self.bp_y2 = flush_denormal(self.bp_y2);
+        self.tr2_env = flush_denormal(self.tr2_env);
         self.br_x1 = flush_denormal(self.br_x1);
         self.acc_x1 = flush_denormal(self.acc_x1);
         self.rad_y1 = flush_denormal(self.rad_y1);
@@ -5124,7 +5281,20 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // subtle - metrics prefer it slightly over 0 and single-note
                 // peaks are unchanged (0.042)
                 click: 5.0,
-                rel_t60: 0.10,
+                // fingertip/nail contact: lower band than a pick, and only a
+                // light slide component (ref mf scrape/body sits 13 dB below
+                // the old render's — tirando is mostly flesh)
+                click_slow: 0.8,
+                click_hz: 2000.0,
+                // fingertip flesh: slow contact (soft strokes slower still)
+                click_ramp: 0.012 - 0.006 * vel,
+                // nylon refs' post-off slopes (68-171 dB/s) are contaminated
+                // by the NSynth release fade/gate (014 mids are hard-gated;
+                // steel 015's 31-51 dB/s proves slower decays survive the
+                // pipeline, so nylon's true damp is ≥ ~70 dB/s). A 0.55-0.75 s
+                // law overshot (tail logmel 1.29→1.45, it2); 0.30 s keeps an
+                // audible finger-damp ring without ringing past the refs.
+                rel_t60: 0.30 - 0.06 * vel,
                 rel_click: 0.25,
                 pol_mix: 0.35,
                 pol_detune_cents: 2.2,
@@ -5154,6 +5324,8 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 acc_rho: 0.0,
                 // radiated sound only: monopole HP (Woodhouse 2012 f_c ~250 Hz)
                 rad_hz: 250.0,
+                thump: 0.0,
+                thump_hz: 110.0,
                 // register slope ~12 dB/key (within-source NSynth slope is
                 // ~9 dB/key; cross-source fits inflate it); mild velocity curve
                 level: 0.5 * (0.55 + 0.45 * vel) * (1.4 * key.min(0.9)).exp(),
@@ -5201,6 +5373,7 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 eta_a: 0.0,
                 couple: 0.0,
                 level: 0.5 * (0.5 + 0.5 * vel),
+                ..Default::default()
             };
             Kernel::Pluck(PluckVoice::start_acoustic(&p, sr, seed))
         }
@@ -5264,7 +5437,20 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // metric optimum (8-16) rides the clip ceiling again; 3.0 is
                 // the best clean-crest point (solo ff onset peak ~0.5).
                 click: 3.0,
-                rel_t60: 0.90,
+                // scrape: refs' 1-6.5 kHz attack-band/body ratio stays ~flat
+                // from pp to ff (+1..2 dB) — the slide friction keeps its
+                // energy at low velocity, spread over a longer stroke
+                click_slow: 1.0,
+                click_hz: 2800.0,
+                click_ramp: 0.0015,
+                // measured on 015 post-note-off envelopes (body round,
+                // 2026-07-12): E2 ff 33.6 dB/s (t60 1.8), D2 mf 31.7, E2 mf
+                // 37.8, G2 ff 51.3 (1.17), F#2 pp 70.1 (0.86) — slower ring
+                // low/hard, quicker high/soft. r3's flat 0.9 halved the ff
+                // ring ("notes stop dead"). 021 refs are hard-gated at ~3.2 s
+                // and carry no release information (corpus artifact).
+                rel_t60: (1.7 * (82.41 / f0).powf(1.2) * (0.7 + 0.3 * vel))
+                    .clamp(0.4, 2.0),
                 rel_click: 0.5,
                 // two-stage decay, Weinreich roles corrected round 2: the
                 // strongly-coupled (plucked) polarization decays FAST; the
@@ -5297,6 +5483,11 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 br_rho: 0.995,
                 acc_rho: 0.995,
                 rad_hz: 250.0,
+                // body-pump (see AcPluck::thump): sized to the ff attack A0
+                // deficit (−10.8 dB vs ref 015, body round 2026-07-12); vel²
+                // law keeps pp clean (refs' pp attack A0 is already matched)
+                thump: 0.085,
+                thump_hz: 105.0,
                 level: 0.5 * (0.55 + 0.45 * vel) * (0.83 * key).exp(),
             };
             Kernel::Pluck(PluckVoice::start_acoustic(&p, sr, seed))
