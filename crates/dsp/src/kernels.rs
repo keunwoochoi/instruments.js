@@ -1844,13 +1844,22 @@ impl CymbalVoice {
 
     /// Hi-hat choke / hand mute: collapse every band's tail fast (pedal closing
     /// clamps the plates), kill the strike bed, end the voice shortly after.
+    /// The clamp damps the RESONATORS too, not just the noise feed: each band
+    /// is re-poled to a ~45 ms t60 at its own frequency (recover cos ω from
+    /// a1/2r), otherwise the tonal skeleton (ring t60 up to ~3 s) rings on
+    /// until the life cutoff and the choke ends in an audible hard cut.
     fn choke(&mut self, sr: f32) {
         let d = t60_gain(0.045, sr);
+        let r_new = d;
         for i in 0..self.n_bands {
             self.wash_dec[i] = d;
+            let r_old = self.r2[i].max(1e-12).sqrt();
+            let cos_w = (self.a1[i] / (2.0 * r_old)).clamp(-1.0, 1.0);
+            self.a1[i] = 2.0 * r_new * cos_w;
+            self.r2[i] = r_new * r_new;
         }
         self.burst_env = 0.0;
-        self.life = self.age + (0.12 * sr) as u64;
+        self.life = self.age + (0.15 * sr) as u64;
     }
 
     fn push_band(&mut self, b: CymBand, sr: f32) {
@@ -3102,6 +3111,47 @@ mod cymbal_tests {
         let early = rms(&out[0..(0.035 * 48000.0) as usize]);
         let late = rms(&out[(0.060 * 48000.0) as usize..(0.120 * 48000.0) as usize]);
         assert!(late > early, "crash should still be blooming at 60–120 ms: {early} vs {late}");
+    }
+
+    /// Kernel-level choke: DrumVoice::choke on a ringing open hat collapses
+    /// the tail fast and terminates the voice within ~0.25 s — on every kit.
+    #[test]
+    fn drum_choke_collapses_open_hat_tail() {
+        let sr = 48_000.0f32;
+        for kit in [KitStyle::Pop, KitStyle::Rock, KitStyle::Jazz] {
+            let mut v = DrumVoice::start(46, 0.9, sr, 0x777, kit);
+            let mut block = [0.0f32; 128];
+            for _ in 0..(0.4 * sr / 128.0) as usize {
+                block.fill(0.0);
+                v.render(&mut block, sr);
+            }
+            block.fill(0.0);
+            v.render(&mut block, sr);
+            let pre = rms(&block);
+            assert!(pre > 1e-4, "{kit:?}: open hat should still ring at 0.4 s");
+            v.choke(sr);
+            let mut blocks_alive = 0usize;
+            let mut post = 0.0f32;
+            loop {
+                block.fill(0.0);
+                let alive = v.render(&mut block, sr);
+                blocks_alive += 1;
+                if blocks_alive == (0.10 * sr / 128.0) as usize {
+                    post = rms(&block); // 100 ms after the choke
+                }
+                if !alive {
+                    break;
+                }
+                assert!(
+                    (blocks_alive as f32) < 0.25 * sr / 128.0,
+                    "{kit:?}: choked voice failed to terminate within 0.25 s"
+                );
+            }
+            assert!(
+                post < pre * 0.05,
+                "{kit:?}: choked tail too loud 100 ms in: pre {pre} post {post}"
+            );
+        }
     }
 
     /// The ride must actually RING: audible (> −50 dB rel peak) past 2.5 s.
