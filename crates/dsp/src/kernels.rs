@@ -3022,6 +3022,57 @@ impl CymbalVoice {
         v
     }
 
+    /// China (GM 52): upturned-edge plate — strongly nonlinear contact floods
+    /// energy across the spectrum almost instantly (bloom taus ~⅓ of a
+    /// crash's), the mode field is denser/noisier (wider bands: ring 30/f vs
+    /// 44/f), the low skeleton is a dissonant cluster, and the trash decays
+    /// fast (~60% of crash). Rossing, Science of Percussion Instruments
+    /// ch. 20 (china/swish); no license-clean reference exists (same search
+    /// posture as splash, r2) — voiced from the crash under these physics.
+    fn china(vel: f32, sr: f32, seed: u32) -> Self {
+        let mut v = Self::new(seed);
+        v.burst_dec = t60_gain(0.030, sr);
+        v.amp = 1.1 * (0.25 + 0.75 * vel);
+        v.life = (2.6 * sr) as u64;
+        let mut jit = Lcg(seed ^ 0xc41a | 1);
+        let imp = 0.08;
+        // dissonant low cluster (near-tritone spacing, beating)
+        for (f, ring, burst) in [(438.0, 1.4, 0.15f32), (593.0, 1.2, 0.13), (617.0, 1.1, 0.10)] {
+            v.push_band(
+                CymBand {
+                    freq: f,
+                    ring_t60: ring,
+                    burst: burst * imp * vel.powf(0.8),
+                    chick: 0.0,
+                    wash: 0.0,
+                    decay_t60: ring,
+                    bloom_frac: 0.0,
+                    bloom_tau: 0.0,
+                },
+                sr,
+            );
+        }
+        let n_wash = CYM_BANDS - v.n_bands;
+        for k in 0..n_wash {
+            let t = k as f32 / (n_wash - 1) as f32;
+            let f = 500.0 * (16500.0f32 / 500.0).powf(t) * (1.0 + 0.08 * jit.next());
+            let ring = 30.0 / f; // wider bands = trashier texture
+            let decay = (1.7 * (2000.0 / f).powf(0.35)).clamp(0.8, 2.0);
+            let depth = 0.9 * (0.75 + 0.25 * vel);
+            let (bloom_frac, bloom_tau) = if f < 2500.0 { (depth, 0.016) } else { (depth, 0.009) };
+            let lnr = (f / 3000.0).ln();
+            let burst = (0.14 + 0.9 * (-lnr * lnr / 1.4).exp()) * vel.powf(0.7) * imp;
+            let wash = 0.66 * if f < 900.0 { (f / 900.0).powf(1.2) } else { 1.0 };
+            let chick = 0.3 * (f / 6000.0).powf(0.8).min(2.0) * vel.powf(1.2);
+            v.push_band(
+                CymBand { freq: f, ring_t60: ring, burst, chick, wash, decay_t60: decay, bloom_frac, bloom_tau },
+                sr,
+            );
+        }
+        v.cap_strike(1.6);
+        v
+    }
+
     /// Splash (GM 55): an 8–10" thin crash. No license-clean reference exists
     /// (see references ledger), so this is the crash model under plate scaling
     /// physics: modal frequencies scale ~h/d² (Rossing, Science of Percussion
@@ -3514,6 +3565,12 @@ impl DrumVoice {
                 // ride BELL: cup ping cluster, light wash
                 v.kind = DrumKind::Cymbal;
                 v.cym = CymbalVoice::bell(vel, sr, seed);
+                v.life = v.cym.life;
+            }
+            52 => {
+                // china: trashy fast-flood accent
+                v.kind = DrumKind::Cymbal;
+                v.cym = CymbalVoice::china(vel, sr, seed);
                 v.life = v.cym.life;
             }
             55 => {
@@ -4437,7 +4494,7 @@ mod cymbal_tests {
     #[test]
     fn cymbals_finite_bounded_and_terminate_at_both_rates() {
         for &sr in &[44100.0f32, 48000.0] {
-            for &gm in &[42u32, 44, 46, 49, 51, 53, 55, 57, 59] {
+            for &gm in &[42u32, 44, 46, 49, 51, 52, 53, 55, 57, 59] {
                 let out = render_drum(gm, 1.0, sr);
                 for (i, &s) in out.iter().enumerate() {
                     assert!(s.is_finite(), "GM {gm} sr {sr}: non-finite at {i}");
@@ -4449,7 +4506,7 @@ mod cymbal_tests {
 
     #[test]
     fn cymbal_velocity_is_monotonic() {
-        for &gm in &[42u32, 46, 49, 51, 53, 55] {
+        for &gm in &[42u32, 46, 49, 51, 52, 53, 55] {
             let soft = rms(&render_drum(gm, 0.3, 48000.0));
             let hard = rms(&render_drum(gm, 1.0, 48000.0));
             assert!(
