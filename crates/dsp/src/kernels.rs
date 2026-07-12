@@ -496,13 +496,29 @@ impl StringLoop {
         let total = (sr / f - lp_delay - disp_delay + dc_lead).max(3.0);
         let len = ((total - 0.5).floor() as usize).clamp(2, PLUCK_BUF - 1);
         let frac = (total - len as f32).clamp(0.1, 1.5);
+        // Loss is applied once per ROUND TRIP (each slot is rewritten every `len`
+        // samples), so the per-pass gain must be exp(-6.9077·period/(t60·sr)) — a
+        // per-SAMPLE t60_gain here silently inflates t60 by ×len (measured: a 49 Hz
+        // fundamental rang ~flat for 3 s once the old DC blocker stopped damping it).
+        // Divide out the loop filters' own magnitude at f0 so the t60 parameter
+        // states the FUNDAMENTAL's decay; upper partials still die faster through
+        // the lowpass (Jaffe–Smith 1983 loss factor; Välimäki et al. 1996 SDL loop).
+        let period = sr / f;
+        let target = (-6.907_755 * period / (t60 * sr)).exp();
+        let a = 1.0 - lp_c;
+        let lp_mag = lp_c / (1.0 + a * a - 2.0 * a * w.cos()).sqrt();
+        let dc_mag = (2.0 - 2.0 * w.cos()).sqrt()
+            / (1.0 + DC_POLE * DC_POLE - 2.0 * DC_POLE * w.cos()).sqrt();
+        // cap: loop gain never reaches 1 at any frequency (|lp|,|dc| ≤ 1 elsewhere,
+        // but treble strings can ask for more f0 gain than the lowpass leaves)
+        let loss = (target / (lp_mag * dc_mag).max(1e-3)).min(0.999_95);
         Self {
             buf: [0.0; PLUCK_BUF],
             len,
             pos: 0,
             lp: 0.0,
             lp_c,
-            loss: t60_gain(t60, sr),
+            loss,
             ap_c: (1.0 - frac) / (1.0 + frac),
             ap_x1: 0.0,
             ap_y1: 0.0,
@@ -595,6 +611,7 @@ pub struct PianoVoice {
     thump_amp: f32,
     rng: Lcg,
     sr: f32,
+    key: f32,
     life: u64,
     age: u64,
 }
@@ -602,17 +619,26 @@ pub struct PianoVoice {
 impl PianoVoice {
     pub fn start(midi: u32, f0: f32, vel: f32, sr: f32, seed: u32) -> Self {
         let key = ((midi as f32) - 21.0) / 87.0; // 0 = A0 … 1 = C8
-        // register scaling: long singing bass → short bright top
-        let t60 = (11.0 * (1.0 - key).powf(1.7) + 0.9).min(11.0);
+        // register scaling of the aftersound t60: real decay times PEAK in the
+        // low-mid register, not in the deep bass (NSynth acoustic refs, t60 of the
+        // 0.8–1.8 s window: G1≈7 s, E♭2≈11 s, C3≈12 s, C5≈6 s; same shape in
+        // Fletcher & Rossing fig. for piano decay vs key). Gaussian bump over key,
+        // tapered above key≈0.7 where real strings shorten rapidly.
+        let bump = (-((key - 0.30) / 0.25) * ((key - 0.30) / 0.25)).exp();
+        let taper = 1.0 - 0.55 * ((key - 0.7).max(0.0) / 0.3);
+        let t60 = (4.0 + 8.5 * bump) * taper.max(0.2);
         let lp_c = (0.32 + 0.44 * key + 0.18 * vel).clamp(0.25, 0.95);
         // stiffness (inharmonicity): audible on wound bass strings, mild in mid
         let disp_c =
             if key < 0.35 { 0.20 * (1.0 - key / 0.35) + 0.05 } else { 0.035 + 0.04 * (key - 0.35) };
 
         // Two-stage decay: string 0 is the SUSTAIN mode (darker loop, full t60);
-        // the others are the ATTACK bloom (brighter, short, detuned — Weinreich
-        // coupling/polarization). All are struck by the SAME hammer.
-        let t_attack = ((0.35 + 1.0 * (1.0 - key)) * (0.4 + 0.6 * vel)).min(0.45 * t60);
+        // the others are the ATTACK stage (brighter, faster, detuned — Weinreich
+        // 1977 coupled-string prompt sound vs aftersound). All are struck by the
+        // SAME hammer. Refs show prompt t60 ≈ half the aftersound t60 across the
+        // keyboard (C2 3.2→7.0, C3 6.7→12.0, C5 3.5→5.9), slightly faster when
+        // struck harder (bridge coupling grows with amplitude).
+        let t_attack = 0.45 * t60 * (1.05 - 0.15 * vel);
         let n_strings = if midi < 32 { 2 } else { 3 };
         let detune_spread = if midi < 32 { 0.35 } else { 1.5 - 0.7 * key };
         let cfg: [(f32, f32, f32); 3] = [
@@ -671,6 +697,7 @@ impl PianoVoice {
             thump_amp: 0.05 * vel,
             rng,
             sr,
+            key,
             life: ((t60 * 1.4 + 0.1) * sr) as u64,
             age: 0,
         };
@@ -746,12 +773,19 @@ impl PianoVoice {
         self.age < self.life
     }
 
-    /// Damper falls: fast but not instant (real dampers take ~0.1 s to kill a string).
+    /// Damper falls: fast but not instant. Felt dampers grip thin treble strings
+    /// almost immediately but take ~0.3 s to stop a heavy wound bass string, and
+    /// the NSynth references keep decaying ~1 s past note-off (damper + soundboard
+    /// ring + room). A hard stop at +0.25 s left the whole reference tail third
+    /// compared against digital silence (measured −240 dB vs the ref's −27…−60 dB).
     pub fn damp(&mut self) {
+        let key = self.key;
+        let t_damp = 0.32 - 0.20 * key; // s: bass 0.32 → treble 0.12
         for st in self.strings.iter_mut().take(self.n_strings) {
-            st.loss = t60_gain(0.12, self.sr);
+            // per-pass (round-trip) loss, same bookkeeping as StringLoop::new
+            st.loss = (-6.907_755 * st.len as f32 / (t_damp * self.sr)).exp();
         }
-        self.life = self.age + (0.25 * self.sr) as u64;
+        self.life = self.age + (1.2 * self.sr) as u64;
     }
 }
 
