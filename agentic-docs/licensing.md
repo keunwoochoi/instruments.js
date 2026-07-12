@@ -48,7 +48,7 @@ Every ported file: `| path | origin file | origin license | date | PR | notes |`
 
 | path | origin | license | date | PR | notes |
 |---|---|---|---|---|---|
-| _(none yet)_ | | | | | |
+| `crates/dsp/src/wdf.rs` (WDF primitives section) | chowdsp_wdf `include/chowdsp_wdf/wdft/{wdft_base,wdft_one_ports,wdft_adaptors,wdft_sources}.h` (Chowdhury-DSP) | BSD-3-Clause | 2026-07-13 | (worktree, feat/first-sound) | Rust port of the templated `wdft` one-ports (Resistor, Capacitor, ResistiveVoltageSource) + adaptors (WDFSeries→`Series`, WDFParallel→`Parallel`, PolarityInverter) + `WDFMembers`→`Wdf` + `BaseWDF`→`Port` trait. Allocation-free monomorphized (no Box/dyn); wave-scattering equations faithful to the origin. LICENSE header verified at github.com/Chowdhury-DSP/chowdsp_wdf (BSD-3-Clause, Copyright 2022 Chowdhury-DSP). Legacy-flaws fixed at port: per-instance fs (no global SR), f64 documented exception (triode Newton conditioning), denormal-flushed recursive state. The 12AX7 Koren root + Fender TMB tone stack (Yeh–Smith bilinear) in the same file are clean-room reimplementations from published papers, NOT ported code. |
 
 ## Incident log
 

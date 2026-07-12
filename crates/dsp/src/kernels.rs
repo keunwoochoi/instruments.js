@@ -95,6 +95,22 @@ pub fn amp_defaults(inst: Instrument) -> (f32, f32) {
     }
 }
 
+/// WDF circuit-sim amp voicing per instrument (design doc
+/// 2026-07-13-wdf-amp-circuit-sim.md). `None` = no WDF voicing (behavioral only).
+/// `Some(true)` = lead channel (high-gain 12AX7), `Some(false)` = clean.
+/// This is only the *availability* table; the behavioral chain stays DEFAULT —
+/// a per-track `wdf_on` flag (default matching `WDF_AMP_DEFAULT`) selects it, and
+/// the listening gate flips the default. Kept here so the switch is kernels-side.
+pub const WDF_AMP_DEFAULT: bool = false;
+
+pub fn amp_wdf_voicing(inst: Instrument) -> Option<bool> {
+    match inst {
+        Instrument::GuitarElectric => Some(false), // clean channel
+        Instrument::GuitarDistorted => Some(true),  // lead channel
+        _ => None,
+    }
+}
+
 /// Amp gain-ride per instrument: (threshold, exponent p = 1 − 1/R, max gain,
 /// recovery seconds). 0.0 threshold = bypass. The "amplifier factor" (owner
 /// verdict 2026-07-12: notes must remain longer): a tube amp's supply rail sags
