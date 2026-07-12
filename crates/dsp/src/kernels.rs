@@ -133,15 +133,25 @@ pub fn body_defaults(inst: Instrument) -> (f32, &'static [(f32, f32, f32)]) {
         // deltas (bodydelta.py, 2026-07-11): renders ran +14…+20 dB hot at the
         // low fundamentals / T1 region and −5…−8 dB in the 300–380 / 610–770 /
         // 980–1250 valleys. Dry cut 0.45→0.22, T1 trimmed, denser mid ladder.
+        // Body round 2026-07-12: low-mode t60s raised to measured guitar Qs
+        // (A0 Q≈25, plate/back cluster Q≈40 — Woodhouse 2012; previous rows
+        // sat at half that). Peak |H| is set by g alone (independent of r),
+        // so the fitted spectral peaks stay put; the modes ring longer between
+        // and after notes — the body speaking (Keunwoo listening verdict).
         Instrument::Guitar => (
             0.22,
             &[
-                (100.0, 0.30, 0.0236),  // P=0.9 A0 Helmholtz
-                (190.0, 0.25, 0.0696),  // P=1.4 T1
-                (285.0, 0.16, 0.1194),  // P=1.6 T2/back
-                (340.0, 0.14, 0.1602),  // P=1.8
-                (425.0, 0.12, 0.2113),  // P=1.9
-                (520.0, 0.11, 0.2041),  // P=1.5
+                // A0/T1: g scaled with t60 (lib.rs applies g·(1−r)) so the
+                // SKIRT and transient knock keep their fitted level and the
+                // peak rises with Q — an underdamped resonator has a taller
+                // peak, same skirt. Mid modes below keep peak-fit g instead
+                // (their r3 anchors were on-peak partial maxima).
+                (100.0, 0.55, 0.0433),  // P=1.65 A0 Helmholtz, Q 25
+                (190.0, 0.46, 0.0975),  // P=2.0 T1, Q 40
+                (285.0, 0.31, 0.1194),  // P=1.6 T2/back
+                (340.0, 0.26, 0.1602),  // P=1.8
+                (425.0, 0.21, 0.2113),  // P=1.9
+                (520.0, 0.17, 0.2041),  // P=1.5
                 (640.0, 0.10, 0.3012),  // P=1.8
                 (730.0, 0.09, 0.4198),  // P=2.2
                 (850.0, 0.08, 0.3553),  // P=1.6
@@ -163,13 +173,17 @@ pub fn body_defaults(inst: Instrument) -> (f32, &'static [(f32, f32, f32)]) {
         Instrument::GuitarSteel => (
             0.28,
             &[
-                (100.0, 0.28, 0.0209),   // P=0.8 A0 (G2 h1 sits on it at -9 dB)
-                (190.0, 0.20, 0.0274),   // P=0.55
-                (258.0, 0.22, 0.1216),   // P=1.8 T1' ref peak
-                (295.0, 0.18, 0.1081),   // P=1.4
-                (370.0, 0.15, 0.1452),   // P=1.5
-                (415.0, 0.14, 0.1520),   // P=1.4
-                (505.0, 0.12, 0.0793),   // P=0.6 (dip region 460-590)
+                // low-mode t60s at measured Qs; A0/T1 g scaled with t60 to
+                // preserve skirt+knock (see nylon note) — the sustained
+                // h1-h2 balance at ff (render -7 dB vs ref +5..+7) says the
+                // old A0 peak was low even at its on-peak anchor (G2 h1)
+                (100.0, 0.55, 0.0411),   // P=1.6 A0, Q 25
+                (190.0, 0.46, 0.0411),   // P=0.83, Q 40
+                (258.0, 0.34, 0.1216),   // P=1.8 T1' ref peak
+                (295.0, 0.30, 0.1081),   // P=1.4
+                (370.0, 0.24, 0.1452),   // P=1.5
+                (415.0, 0.21, 0.1520),   // P=1.4
+                (505.0, 0.17, 0.0793),   // P=0.6 (dip region 460-590)
                 (745.0, 0.10, 0.4285),   // P=2.2 ref peak (was split 630/705)
                 (820.0, 0.09, 0.2572),   // P=1.2
                 (940.0, 0.085, 0.3437),  // P=1.4
