@@ -69,6 +69,7 @@
     <button id="midi-file-btn">🎼 Play a MIDI file…</button>
     <input type="file" id="midi-file" accept=".mid,.midi,audio/midi" style="display:none" />
     <button id="webmidi">🎹 Enable MIDI keyboard</button>
+    <button id="stress" title="max out polyphony and watch for dropped quanta">🔥 Stress test</button>
     <span id="midi-info" style="font-size:0.8rem;opacity:0.65"></span>
   </div>
 
@@ -280,6 +281,24 @@
       finally { $("play-song").disabled = false; }
     });
     $("stop").addEventListener("click", () => engine?.stop());
+
+    // ---------- stress test: saturate the voice pool, watch droppedQuanta ----------
+    $("stress").addEventListener("click", async () => {
+      if (!engine) return;
+      status("stress: 64 voices across 8 tracks for 10 s — watching for dropped quanta…");
+      const fams = ["piano", "guitar-steel", "guitar-electric", "guitar-distorted", "bass", "marimba", "synthpad", "drums"];
+      const t = fams.map((f) => track(f));
+      const stop = Date.now() + 10_000;
+      (function burst() {
+        if (Date.now() > stop) { engine.stop(); status("stress done — check for ⚠ above (none = glitch-free)"); return; }
+        t.forEach((tr, i) => {
+          const midi = tr.instrument === "drums" ? [36, 38, 42, 51][Math.floor(Math.random() * 4)] : 36 + Math.floor(Math.random() * 48);
+          tr.noteOn(midi, 60 + Math.floor(Math.random() * 60));
+          if (tr.instrument !== "drums" && Math.random() < 0.5) setTimeout(() => tr.noteOff(midi), 300);
+        });
+        setTimeout(burst, 90);
+      })();
+    });
 
     // ---------- MIDI file playback (file picker + drag-drop) ----------
     async function playMidiBytes(buf, label) {

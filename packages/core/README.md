@@ -6,8 +6,8 @@ Owner doc for API/packaging decisions. Contracts that must never break:
 - SSR-safe imports (nothing touches `window`/`AudioContext` at import time)
 - `sideEffects: false`, correct `exports` map, tree-shakeable ESM, first-class types
 - One shared worklet/WASM engine for all tracks (multi-track = PRINCIPLES #4)
-- The WASM payload counts in every published bundle-size number (~24 KB gz all-in today:
-  18 KB wasm + 4 KB core JS + 2 KB worklet)
+- The WASM payload counts in every published bundle-size number (~31 KB gz all-in today:
+  24 KB wasm + 4.5 KB core JS + 2 KB worklet — 13 instruments included)
 
 Asset loading, honestly: default URLs resolve via `import.meta.url`. **Verified
 zero-config (headless, dev + production build): Vite 6, Next.js 15, and raw
