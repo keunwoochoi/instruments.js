@@ -162,13 +162,13 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::Vibraphone => 4.9,    // was -30.5 LUFS
         Instrument::Glockenspiel => 28.0, // was -39.6 LUFS (tiny raw kernel level)
         Instrument::MusicBox => 14.8,     // was -35.6 LUFS
-        Instrument::Guitar => 0.20,       // re-baked 2026-07-11 (acoustic rework ran -13.3 LUFS at 0.85)
-        Instrument::Bass => 0.70,         // was -25.3 LUFS
+        Instrument::Guitar => 0.194,       // re-baked 2026-07-11 (acoustic rework ran -13.3 LUFS at 0.85)
+        Instrument::Bass => 0.66,         // was -25.3 LUFS
         Instrument::EPiano => 1.47,       // was -26.6 LUFS
         Instrument::Drums => 0.61,        // was -27.4 LUFS
         Instrument::SynthPad => 0.48,     // was -26.5 LUFS
-        Instrument::Piano => 0.074, // piano agent re-measure (v4 knock/level rework)
-        Instrument::GuitarSteel => 0.52,    // acoustic agent re-bake
+        Instrument::Piano => 0.067, // piano agent re-measure (v4 knock/level rework)
+        Instrument::GuitarSteel => 0.50,    // acoustic agent re-bake
         Instrument::GuitarElectric => 0.73, // electric agent re-measure
         Instrument::GuitarDistorted => 0.21, // electric agent re-measure (high gain)
     }
@@ -2371,11 +2371,29 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
             Kernel::Pluck(PluckVoice::start_acoustic(&p, sr, seed))
         }
         Instrument::Bass => {
-            // warm fingered upright/electric hybrid: dark loop, pluck near the neck
-            // (user listening note 2026-07-11: bridge-picked bright bass read as
-            // "loud and weird" — rounder is right for the default)
-            let t60 = 5.0 - 2.0 * (((midi as f32) - 28.0) / 32.0).clamp(0.0, 1.0);
-            Kernel::Pluck(PluckVoice::start(f0, vel, sr, t60, 0.26, 0.31, seed))
+            // warm fingered upright/electric hybrid, migrated off the legacy
+            // per-sample-loss constructor (the flat-envelope bug all three pluck
+            // agents flagged) onto the per-period-calibrated acoustic engine.
+            // Wide finger-flesh contact + neck position = round; no glide.
+            let key = (((midi as f32) - 28.0) / 32.0).clamp(0.0, 1.0);
+            let p = AcPluck {
+                f0,
+                vel,
+                t60_f0: 6.5 - 2.5 * key,
+                lp_c: 0.50 + 0.10 * vel,
+                pick_pos: 0.30,
+                contact: 0.10,
+                snap: 0.35,
+                scrape: 0.03,
+                pol_mix: 0.25,
+                pol_detune_cents: 1.2,
+                pol_t60_ratio: 0.5,
+                disp_c: 0.0,
+                tm_cents: 0.0,
+                br_rho: 0.0,
+                level: 0.5 * (0.5 + 0.5 * vel),
+            };
+            Kernel::Pluck(PluckVoice::start_acoustic(&p, sr, seed))
         }
         Instrument::EPiano => {
             // tine + tone-bar partial through a velocity-driven pickup nonlinearity.
