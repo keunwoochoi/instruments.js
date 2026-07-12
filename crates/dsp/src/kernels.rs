@@ -6381,7 +6381,18 @@ mod tests {
     }
 
     fn render_piano(midi: u32, vel: f32, sr: f32, secs: f32, damp_at: Option<f32>) -> Vec<f32> {
-        let mut v = PianoVoice::start(midi, midi_to_hz(midi as f32), vel, sr, 777);
+        render_piano_seed(midi, vel, sr, secs, damp_at, 777)
+    }
+
+    fn render_piano_seed(
+        midi: u32,
+        vel: f32,
+        sr: f32,
+        secs: f32,
+        damp_at: Option<f32>,
+        seed: u32,
+    ) -> Vec<f32> {
+        let mut v = PianoVoice::start(midi, midi_to_hz(midi as f32), vel, sr, seed);
         let total = (secs * sr) as usize;
         let mut out = vec![0.0f32; total];
         let damp_i = damp_at.map(|t| (t * sr) as usize);
@@ -6396,6 +6407,43 @@ mod tests {
             i += chunk.len();
         }
         out
+    }
+
+    fn onset_crest_db(x: &[f32], sr: f32) -> f32 {
+        let peak = x.iter().fold(0.0f32, |a, &s| a.max(s.abs())).max(1e-12);
+        let onset = x.iter().position(|s| s.abs() > 0.02 * peak).unwrap_or(0);
+        let seg = &x[onset..];
+        let attack_n = ((0.003 * sr) as usize).max(1).min(seg.len());
+        let body_lo = ((0.010 * sr) as usize).min(seg.len());
+        let body_hi = ((seg.len() as f32 * 0.6) as usize)
+            .max((0.020 * sr) as usize)
+            .min(seg.len());
+        let attack = seg[..attack_n].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        let body = seg[body_lo..body_hi]
+            .iter()
+            .fold(0.0f32, |a, &s| a.max(s.abs()));
+        20.0 * ((attack + 1e-9) / (body + 1e-9)).log10()
+    }
+
+    fn coarse_attack_centroid(x: &[f32], sr: f32) -> f32 {
+        let n = ((0.050 * sr) as usize).min(x.len());
+        let seg = &x[..n];
+        let mut f = 40.0f32;
+        let (mut num, mut den) = (0.0f32, 0.0f32);
+        while f < 6000.0 {
+            let w = core::f32::consts::TAU * f / sr;
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            for (i, &s) in seg.iter().enumerate() {
+                let ph = w * i as f32;
+                re += s * ph.cos();
+                im += s * ph.sin();
+            }
+            let e = re * re + im * im;
+            num += f * e;
+            den += e;
+            f *= 1.12;
+        }
+        num / den.max(1e-12)
     }
 
     /// Goertzel-style band energy: sum of |projection| onto sin/cos at freqs.
@@ -6525,6 +6573,78 @@ mod tests {
             );
             assert!(cs5.body_force_mix == 0.0, "C#5 force path leaked globally at {sr} Hz");
             assert!(a1.onset_c < c4_pp.onset_c, "bass radiation must build slower at {sr} Hz");
+        }
+    }
+
+    /// Output-level parity for the exact attack mechanism under review. The
+    /// constructor coefficients are insufficient evidence: render the tune and
+    /// held-out anchors at both browser rates, then compare crest and centroid.
+    #[test]
+    fn piano_hammer_attack_is_rate_stable_in_rendered_audio() {
+        let cases = [(33, 90.0 / 127.0), (60, 30.0 / 127.0), (60, 122.0 / 127.0), (73, 90.0 / 127.0)];
+        let mut at_44 = [(0.0f32, 0.0f32); 4];
+        for (k, &(midi, vel)) in cases.iter().enumerate() {
+            let x = render_piano(midi, vel, 44_100.0, 1.0, None);
+            at_44[k] = (onset_crest_db(&x, 44_100.0), coarse_attack_centroid(&x, 44_100.0));
+        }
+        for (k, &(midi, vel)) in cases.iter().enumerate() {
+            let x = render_piano(midi, vel, 48_000.0, 1.0, None);
+            let crest = onset_crest_db(&x, 48_000.0);
+            let centroid = coarse_attack_centroid(&x, 48_000.0);
+            let (crest_44, centroid_44) = at_44[k];
+            assert!(
+                (crest - crest_44).abs() < 1.5,
+                "midi {midi}: onset crest rate drift {crest_44:.2}→{crest:.2} dB"
+            );
+            assert!(
+                ((centroid / centroid_44) - 1.0).abs() < 0.08,
+                "midi {midi}: attack centroid rate drift {centroid_44:.1}→{centroid:.1} Hz"
+            );
+            if midi == 33 {
+                assert!(crest < -22.0, "A1 first-3-ms crest guard lost: {crest:.1} dB");
+            }
+        }
+    }
+
+    /// Reachable-domain torture for the new fractional-power normalization and
+    /// recursive body drive: every key, velocity extreme, seed, and browser
+    /// rate must remain finite/bounded; representative damped voices terminate.
+    #[test]
+    fn piano_hammer_force_reachable_domain_is_finite_and_bounded() {
+        for &sr in &[44_100.0f32, 48_000.0] {
+            for midi in 21..=108 {
+                for &vel in &[1.0 / 127.0, 0.5, 1.0] {
+                    for &seed in &[1u32, 0xdead_beefu32] {
+                        let x = render_piano_seed(midi, vel, sr, 0.06, None, seed);
+                        assert!(x.iter().all(|s| s.is_finite()), "midi {midi} vel {vel} sr {sr}: NaN");
+                        let peak = x.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+                        // PianoVoice is a raw pre-track/pre-bus kernel. The calibrated
+                        // top-register ff response reaches about 14 before track gain
+                        // and the engine limiter; 16 is a catastrophic-runaway guard,
+                        // not a public output ceiling.
+                        assert!(
+                            peak <= 16.0,
+                            "midi {midi} vel {vel} sr {sr}: raw kernel runaway {peak}"
+                        );
+                    }
+                }
+            }
+            for &(midi, vel) in &[(21, 1.0 / 127.0), (60, 0.5), (108, 1.0)] {
+                let mut v = PianoVoice::start(midi, midi_to_hz(midi as f32), vel, sr, 99);
+                let mut block = [0.0f32; 128];
+                v.render(&mut block);
+                v.damp();
+                let mut alive = true;
+                for _ in 0..((2.0 * sr / 128.0) as usize + 2) {
+                    block.fill(0.0);
+                    alive = v.render(&mut block);
+                    assert!(block.iter().all(|s| s.is_finite()));
+                    if !alive {
+                        break;
+                    }
+                }
+                assert!(!alive, "midi {midi} vel {vel} sr {sr}: damped voice did not terminate");
+            }
         }
     }
 

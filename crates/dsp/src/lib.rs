@@ -635,12 +635,17 @@ impl Engine {
                 }
             }
         }
-        // voice choice: retrigger same (track,pitch) > free slot > oldest (steal)
+        // Voice choice: sustained piano strikes must overlap. Reusing the
+        // same (track,pitch) voice chops the previous string/board tail during
+        // trills and pedal replay. Other families retain legacy retrigger
+        // semantics; piano takes a free slot, then the normal oldest steal.
         let mut slot = None;
-        for (i, v) in self.voices.iter().enumerate() {
-            if v.active() && v.track as usize == track && v.midi as u32 == midi && !v.releasing {
-                slot = Some(i);
-                break;
+        if inst != Instrument::Piano {
+            for (i, v) in self.voices.iter().enumerate() {
+                if v.active() && v.track as usize == track && v.midi as u32 == midi && !v.releasing {
+                    slot = Some(i);
+                    break;
+                }
             }
         }
         if slot.is_none() {
@@ -692,6 +697,36 @@ impl Engine {
         }
         let pedal = self.tracks[track].pedal;
         let sr = self.sample_rate;
+        if inst == Instrument::Piano {
+            // Pair note-off with the oldest still-key-held strike. Voices
+            // already deferred under pedal are excluded, so a replayed key
+            // gets its own release and every sustained tail survives until
+            // pedal-up. This is FIFO pairing for overlapping equal pitches.
+            let target = self
+                .voices
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| {
+                    v.active()
+                        && v.track as usize == track
+                        && v.midi as u32 == midi
+                        && !v.releasing
+                        && !v.pedal_held
+                })
+                .max_by_key(|(_, v)| v.age)
+                .map(|(i, _)| i);
+            if let Some(i) = target {
+                if pedal {
+                    self.voices[i].pedal_held = true;
+                } else {
+                    self.voices[i].releasing = true;
+                    if let Kernel::Piano(p) = &mut self.voices[i].kernel {
+                        p.damp();
+                    }
+                }
+            }
+            return;
+        }
         for v in self.voices.iter_mut() {
             if v.active() && v.track as usize == track && v.midi as u32 == midi && !v.releasing {
                 if pedal {
@@ -1578,6 +1613,115 @@ mod tests {
         let late = &out[(0.3 * 48_000.0) as usize..];
         let peak = late.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(peak < 0.01, "string still ringing after pedal-up: {peak}");
+    }
+
+    #[test]
+    fn piano_same_pitch_strikes_overlap_and_release_fifo() {
+        for sr in [44_100.0f32, 48_000.0] {
+            let mut e = Engine::new(sr);
+            e.set_track(0, Instrument::Piano, 0.8, 0.0);
+            e.note_on(0, 60, 0.7);
+            let _ = render_seconds(&mut e, 0.04);
+            e.note_on(0, 60, 0.8);
+            let same = || {
+                e.voices
+                    .iter()
+                    .filter(|v| v.active() && v.track == 0 && v.midi == 60)
+                    .count()
+            };
+            assert_eq!(same(), 2, "sr={sr}: repeated piano strike chopped its predecessor");
+            e.note_off(0, 60);
+            let releasing = e
+                .voices
+                .iter()
+                .filter(|v| v.active() && v.track == 0 && v.midi == 60 && v.releasing)
+                .count();
+            assert_eq!(releasing, 1, "sr={sr}: first note-off must release one oldest strike");
+            e.note_off(0, 60);
+            let releasing = e
+                .voices
+                .iter()
+                .filter(|v| v.active() && v.track == 0 && v.midi == 60 && v.releasing)
+                .count();
+            assert_eq!(releasing, 2, "sr={sr}: second note-off must release the replay");
+            let out = render_seconds(&mut e, 0.4);
+            assert!(out.iter().all(|s| s.is_finite()), "sr={sr}: repeated-note release NaN");
+        }
+    }
+
+    #[test]
+    fn piano_pedal_replay_preserves_both_tails_until_pedal_up() {
+        for sr in [44_100.0f32, 48_000.0] {
+            let mut e = Engine::new(sr);
+            e.set_track(0, Instrument::Piano, 0.8, 0.0);
+            e.set_pedal(0, true);
+            for vel in [0.65, 0.85] {
+                e.note_on(0, 60, vel);
+                let _ = render_seconds(&mut e, 0.05);
+                e.note_off(0, 60);
+            }
+            let held: Vec<_> = e
+                .voices
+                .iter()
+                .filter(|v| v.active() && v.track == 0 && v.midi == 60)
+                .collect();
+            assert_eq!(held.len(), 2, "sr={sr}: pedal replay failed to overlap");
+            assert!(held.iter().all(|v| v.pedal_held && !v.releasing));
+            e.set_pedal(0, false);
+            let released = e
+                .voices
+                .iter()
+                .filter(|v| v.active() && v.track == 0 && v.midi == 60 && v.releasing)
+                .count();
+            assert_eq!(released, 2, "sr={sr}: pedal-up failed to release both strikes");
+            let out = render_seconds(&mut e, 0.5);
+            assert!(out.iter().all(|s| s.is_finite()), "sr={sr}: pedal replay NaN");
+        }
+    }
+
+    #[test]
+    fn piano_repeated_strikes_degrade_by_bounded_voice_stealing() {
+        let mut e = Engine::new(48_000.0);
+        e.set_track(0, Instrument::Piano, 0.25, 0.0);
+        for i in 0..(MAX_VOICES + 24) {
+            e.note_on(0, 60, 0.2 + 0.002 * i as f32);
+        }
+        assert_eq!(e.active_voices(), MAX_VOICES);
+        let out = render_seconds(&mut e, 0.1);
+        assert!(out.iter().all(|s| s.is_finite()));
+        let peak = out.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(peak <= 1.0, "forced-steal repeat phrase clipped: {peak}");
+    }
+
+    #[test]
+    fn piano_engine_reachable_note_matrix_is_finite_and_bounded() {
+        for sr in [44_100.0f32, 48_000.0] {
+            for midi in 21..=108 {
+                for vel in [1.0 / 127.0, 0.5, 1.0] {
+                    let mut e = Engine::new(sr);
+                    e.set_track(0, Instrument::Piano, 0.8, 0.0);
+                    e.note_on(0, midi, vel);
+                    let frames = (0.04 * sr) as usize;
+                    let mut done = 0;
+                    while done < frames {
+                        let n = QUANTUM_FRAMES.min(frames - done);
+                        e.process(n);
+                        for i in 0..n {
+                            let (l, r) = (e.out_l[i], e.out_r[i]);
+                            assert!(
+                                l.is_finite() && r.is_finite(),
+                                "midi {midi} vel {vel} sr {sr}: engine NaN"
+                            );
+                            assert!(
+                                l.abs() <= 1.0 && r.abs() <= 1.0,
+                                "midi {midi} vel {vel} sr {sr}: engine output out of bounds ({l}, {r})"
+                            );
+                        }
+                        done += n;
+                    }
+                }
+            }
+        }
     }
 
     #[test]
