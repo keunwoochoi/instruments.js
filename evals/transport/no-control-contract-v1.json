@@ -15,7 +15,7 @@
   "artifact_policy": {
     "all_samples_finite": true,
     "minimum_rms": 0.000001,
-    "maximum_absolute_peak": 4.0,
+    "maximum_absolute_peak": 1.05,
     "exact_frame_count": true,
     "stereo": true
   },
@@ -33,6 +33,7 @@
     "evals/transport/no-control-baseline-v1.json",
     "scripts/dev/transport-baseline.mjs"
   ],
+  "candidate_policy": "Every candidate cell must retain the exact interleaved Float32 PCM digest; the frozen numerical drift threshold additionally diagnoses repeatability and rejects committed gain/timing mutations.",
   "regeneration_command": "node scripts/dev/transport-baseline.mjs generate --allow-rebaseline",
   "verification_command": "node scripts/dev/transport-baseline.mjs verify"
 }

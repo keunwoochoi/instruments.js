@@ -250,6 +250,7 @@ function compareCandidate(cells, baseline, contract) {
     const distance = drift(candidate.fingerprint, decodeFingerprint(reference.fingerprint_f32le_base64));
     maximumDrift = Math.max(maximumDrift, distance);
     if (candidate.pcm_sha256 === expected.pcm_sha256) exactCells++;
+    else failures.push(`${id}: exact interleaved Float32 PCM digest changed`);
     if (distance > contract.metric.threshold) failures.push(`${id}: drift ${distance} > ${contract.metric.threshold}`);
   }
   if (failures.length) throw new Error(`transport-preservation candidate failed:\n${failures.slice(0, 20).join("\n")}${failures.length > 20 ? `\n... ${failures.length - 20} more` : ""}`);
@@ -268,22 +269,33 @@ async function proveMutationGate(wasm, baseline, contract, cases) {
   const identicalSummary = summarize(rendered.left, rendered.right, contract.metric.fingerprint_blocks, contract.artifact_policy);
   const referenceFingerprint = decodeFingerprint(reference.fingerprint_f32le_base64);
   const identical = drift(identicalSummary.fingerprint, referenceFingerprint);
+  const identicalPcmSha256 = sha256(pcmBytes(rendered.left, rendered.right));
+  const shiftedLeft = new Float32Array(rendered.left.length);
+  const shiftedRight = new Float32Array(rendered.right.length);
+  shiftedLeft.set(rendered.left.subarray(0, -1), 1);
+  shiftedRight.set(rendered.right.subarray(0, -1), 1);
+  const timingSummary = summarize(shiftedLeft, shiftedRight, contract.metric.fingerprint_blocks, contract.artifact_policy);
+  const timingMutationDrift = drift(timingSummary.fingerprint, referenceFingerprint);
+  const timingMutationPcmSha256 = sha256(pcmBytes(shiftedLeft, shiftedRight));
   for (let i = 0; i < rendered.left.length; i++) {
     rendered.left[i] *= 1.001;
     rendered.right[i] *= 1.001;
   }
   const mutatedSummary = summarize(rendered.left, rendered.right, contract.metric.fingerprint_blocks, contract.artifact_policy);
-  const mutationDrift = drift(mutatedSummary.fingerprint, referenceFingerprint);
+  const gainMutationDrift = drift(mutatedSummary.fingerprint, referenceFingerprint);
   if (identical > contract.metric.threshold) throw new Error(`identical fingerprint crossed threshold: ${identical}`);
-  if (mutationDrift <= contract.metric.threshold) throw new Error(`synthetic gain mutation did not cross threshold: ${mutationDrift}`);
-  return { reference: key, identicalDrift: identical, mutationDrift };
+  if (identicalPcmSha256 !== reference.pcm_sha256) throw new Error("identical render changed its exact PCM digest");
+  if (timingMutationDrift <= contract.metric.threshold) throw new Error(`one-frame timing mutation did not cross threshold: ${timingMutationDrift}`);
+  if (timingMutationPcmSha256 === reference.pcm_sha256) throw new Error("one-frame timing mutation retained the exact PCM digest");
+  if (gainMutationDrift <= contract.metric.threshold) throw new Error(`synthetic gain mutation did not cross threshold: ${gainMutationDrift}`);
+  return { reference: key, identicalDrift: identical, timingMutationDrift, gainMutationDrift, exactDigestRejectsTimingMutation: true };
 }
 
 async function identities(contract, casesBytes, wasmBytes) {
   const rendererBytes = await readFile(rootUrl(contract.renderer));
   const contractBytes = await readFile(CONTRACT_PATH);
   return {
-    contract_sha256: sha256(contractBytes),
+    corpus_contract_sha256: sha256(contractBytes),
     case_manifest_sha256: sha256(casesBytes),
     eval_code_sha256: sha256(rendererBytes),
     shipped_wasm_sha256: sha256(wasmBytes),
@@ -322,7 +334,7 @@ async function main() {
   }
 
   const baseline = await readJson(rootUrl(contract.baseline));
-  for (const key of ["contract_sha256", "case_manifest_sha256", "eval_code_sha256"]) {
+  for (const key of ["corpus_contract_sha256", "case_manifest_sha256", "eval_code_sha256"]) {
     if (baseline.identities[key] !== currentIdentities[key]) throw new Error(`${key} changed; the frozen baseline is invalid and must be regenerated in a separately reviewed prerequisite`);
   }
   const result = compareCandidate(first, baseline, contract);
