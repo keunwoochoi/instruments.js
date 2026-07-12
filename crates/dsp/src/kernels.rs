@@ -3200,6 +3200,12 @@ pub struct DrumVoice {
     hp_c: f32,
     noise_amt: f32,
     tone_amt: f32,
+    /// snare-wire noise upper band edge (one-pole lowpass after the hp
+    /// highpass = broad bandpass): wires are head-driven and radiate
+    /// ~300 Hz–6 kHz, NOT white to Nyquist (white hiss was round-2's
+    /// "weak" snare: all energy above the crack band)
+    lp: f32,
+    lp_c: f32,
     /// kick beater-click gain (velocity-shaped; hp/hp_c double as the click's
     /// brightness lowpass for the Kick kind)
     click: f32,
@@ -3256,6 +3262,8 @@ impl DrumVoice {
             hp_c: 0.2,
             noise_amt: 1.0,
             tone_amt: 0.0,
+            lp: 0.0,
+            lp_c: 1.0, // pass-through unless a kind sets a band edge
             click: 0.0,
             atk_ph: 1.0,
             atk_dp: 0.0,
@@ -3391,16 +3399,20 @@ impl DrumVoice {
                 // Owsinski). Velocity: wires dominate soft hits, shell tone
                 // grows with velocity (soft ref is relatively wire-bright) —
                 // wires get a level floor, the modal shell scales with vel.
-                // (shell Hz, decay, hp_c, noise base, noise vel span,
-                //  modal gain, life s)
-                // rock row hardened 2026-07-12 (owner: "too weak")
-                let (shell, dec, hpc, n0, nv, mg, life) = match kit {
-                    KitStyle::Pop => (186.0, 0.14, 0.40, 0.30, 0.60, 0.40, 0.32),
-                    KitStyle::Rock => (158.0, 0.24, 0.26, 0.44, 0.74, 0.85, 0.44),
-                    KitStyle::Jazz => (214.0, 0.20, 0.32, 0.24, 0.55, 0.60, 0.40),
+                // (shell Hz, decay, wire band lo Hz, wire band hi Hz,
+                //  noise base, noise vel span, modal gain, life s)
+                // rock row hardened 2026-07-12 (owner: "too weak"); round 3
+                // moved the wires from white hiss into a 300 Hz–6.5 kHz band
+                // (head-driven wires; refs hold 400–1500 Hz at +14…+23 dB
+                // over LF while our hiss put it 18 dB UNDER)
+                let (shell, dec, hp_hz, lp_hz, n0, nv, mg, life) = match kit {
+                    KitStyle::Pop => (186.0, 0.14, 400.0, 6000.0, 0.30, 0.60, 0.40, 0.32),
+                    KitStyle::Rock => (158.0, 0.24, 300.0, 4500.0, 0.44, 0.74, 0.85, 0.44),
+                    KitStyle::Jazz => (214.0, 0.20, 450.0, 6500.0, 0.24, 0.55, 0.60, 0.40),
                 };
                 v.decay = t60_gain(dec, sr);
-                v.hp_c = hpc;
+                v.hp_c = 1.0 - (-core::f32::consts::TAU * hp_hz / sr).exp();
+                v.lp_c = 1.0 - (-core::f32::consts::TAU * lp_hz / sr).exp();
                 // velocity lives HERE (wires floor + span) and in the shell's
                 // modal excitation — not in v.amp, or the wires pick up a
                 // second vel factor and soft hits lose their relative wire
@@ -3530,7 +3542,8 @@ impl DrumVoice {
                     let n = self.rng.next();
                     self.hp += self.hp_c * (n - self.hp); // lowpass...
                     let hp = n - self.hp; // ...subtracted = one-pole highpass
-                    s = hp * self.env * self.noise_amt;
+                    self.lp += self.lp_c * (hp - self.lp); // band upper edge
+                    s = self.lp * self.env * self.noise_amt;
                     if self.tone_amt > 0.0 {
                         self.phase = (self.phase + self.freq * dt).fract();
                         s += self.tone_amt * (core::f32::consts::TAU * self.phase).sin() * self.env;
@@ -3542,6 +3555,7 @@ impl DrumVoice {
             self.age += 1;
         }
         self.hp = flush_denormal(self.hp);
+        self.lp = flush_denormal(self.lp);
         self.env = flush_denormal(self.env);
         self.sl_y1 = flush_denormal(self.sl_y1);
         self.sl_y2 = flush_denormal(self.sl_y2);
