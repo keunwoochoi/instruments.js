@@ -177,7 +177,7 @@ pub fn body_defaults(inst: Instrument) -> (f32, &'static [(f32, f32, f32)]) {
                 // preserve skirt+knock (see nylon note) — the sustained
                 // h1-h2 balance at ff (render -7 dB vs ref +5..+7) says the
                 // old A0 peak was low even at its on-peak anchor (G2 h1)
-                (100.0, 0.55, 0.0411),   // P=1.6 A0, Q 25
+                (100.0, 0.55, 0.0600),   // P=2.3 A0, Q 25 (it9: G2 h1 on-peak still 9 dB shy)
                 (190.0, 0.46, 0.0411),   // P=0.83, Q 40
                 (258.0, 0.34, 0.1216),   // P=1.8 T1' ref peak
                 (295.0, 0.30, 0.1081),   // P=1.4
@@ -5380,7 +5380,7 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // body-pump (see AcPluck::thump): sized to the ff attack A0
                 // deficit (−10.8 dB vs ref 015, body round 2026-07-12); vel²
                 // law keeps pp clean (refs' pp attack A0 is already matched)
-                thump: 0.12,
+                thump: 0.085,
                 thump_hz: 105.0,
                 level: 0.5 * (0.55 + 0.45 * vel) * (0.83 * key).exp(),
             };
