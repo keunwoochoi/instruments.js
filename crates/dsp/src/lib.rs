@@ -205,7 +205,7 @@ impl Engine {
         let inst = self.tracks[track].instrument;
         self.seed = self.seed.wrapping_mul(747796405).wrapping_add(2891336453);
         // hi-hat choke: a closed hat (42/44) physically clamps a ringing open hat (46)
-        if inst == Instrument::Drums && (midi == 42 || midi == 44) {
+        if inst.is_drum_kit() && (midi == 42 || midi == 44) {
             let sr = self.sample_rate;
             for v in self.voices.iter_mut() {
                 if v.active() && v.track as usize == track && v.midi == 46 {
@@ -1004,6 +1004,36 @@ mod tests {
             }
         }
         assert!(l2 > r2 * 1.3, "low piano note should sit audience-left: L={l2} R={r2}");
+    }
+
+    /// Choke regression (round-2 mandate): a closed hat (GM 42) must kill a
+    /// still-ringing open hat (GM 46) on the SAME track — on every kit. The
+    /// choked engine is compared against a control whose open hat rings on,
+    /// in a window late enough that the closed hat's own tail has died.
+    #[test]
+    fn closed_hat_chokes_ringing_open_hat_on_every_kit() {
+        let rms = |x: &[f32]| {
+            (x.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / x.len() as f64).sqrt()
+        };
+        for inst in [Instrument::Drums, Instrument::DrumsRock, Instrument::DrumsJazz] {
+            let mut e = Engine::new(48_000.0);
+            e.set_track(0, inst, 0.8, 0.0);
+            e.note_on(0, 46, 0.9);
+            render_seconds(&mut e, 0.4);
+            e.note_on(0, 42, 0.6); // pedal comes down
+            render_seconds(&mut e, 0.8); // closed-hat tail dies too
+            let choked = rms(&render_seconds(&mut e, 0.3));
+
+            let mut c = Engine::new(48_000.0);
+            c.set_track(0, inst, 0.8, 0.0);
+            c.note_on(0, 46, 0.9);
+            render_seconds(&mut c, 1.2);
+            let ringing = rms(&render_seconds(&mut c, 0.3));
+            assert!(
+                ringing > 3.0 * choked.max(1e-9),
+                "{inst:?}: choke failed — ringing {ringing} vs choked {choked}"
+            );
+        }
     }
 
     #[test]
