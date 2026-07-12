@@ -21,6 +21,7 @@ const GROUP = {
   epiano: 6, drums: 7, percussion: 7,
   synthpad: 8, strings: 8, brass: 8, voice: 8, synth: 8,
   piano: 9,
+  "guitar-steel": 10, "guitar-electric": 11, "guitar-distorted": 12,
 };
 
 async function makeEngine() {

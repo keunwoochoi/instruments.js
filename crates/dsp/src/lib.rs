@@ -13,7 +13,7 @@
 
 pub mod kernels;
 
-use kernels::{makeup_gain, start_voice, Instrument, Kernel, Voice, MAX_BLOCK};
+use kernels::{amp_defaults, makeup_gain, start_voice, Instrument, Kernel, Voice, MAX_BLOCK};
 
 pub const MAX_VOICES: usize = 64;
 pub const MAX_TRACKS: usize = 16;
@@ -37,9 +37,24 @@ pub struct TrackBus {
     pub pan: f32, // -1.0 .. 1.0
     /// sustain pedal (CC64): note-offs are deferred while down
     pub pedal: bool,
+    // amp stage (electric guitars): ADAA-antialiased tanh drive + tone lowpass.
+    // Lives on the BUS so simultaneous notes intermodulate like a real amplifier.
+    drive: f32,
+    tone_c: f32,
+    amp_x1: f32,
+    amp_f1: f32,
+    tone_lp: f32,
     // smoothed equal-power gains (one-pole per block, no zipper noise)
     gl: f32,
     gr: f32,
+}
+
+/// Numerically stable ln(cosh(x)) — the antiderivative of tanh, for first-order
+/// antiderivative anti-aliasing (ADAA) of the amp waveshaper.
+#[inline(always)]
+fn ln_cosh(x: f32) -> f32 {
+    let a = x.abs();
+    a + (1.0 + (-2.0 * a).exp()).ln() - core::f32::consts::LN_2
 }
 
 impl TrackBus {
@@ -74,6 +89,11 @@ impl Engine {
                 gain: 0.8,
                 pan: 0.0,
                 pedal: false,
+                drive: 0.0,
+                tone_c: 0.0,
+                amp_x1: 0.0,
+                amp_f1: 0.0,
+                tone_lp: 0.0,
                 gl: 0.0,
                 gr: 0.0,
             }; MAX_TRACKS],
@@ -90,6 +110,13 @@ impl Engine {
             t.instrument = instrument;
             t.gain = gain.clamp(0.0, 2.0);
             t.pan = pan.clamp(-1.0, 1.0);
+            let (drive, tone_hz) = amp_defaults(instrument);
+            t.drive = drive;
+            t.tone_c = if tone_hz > 0.0 {
+                1.0 - (-core::f32::consts::TAU * tone_hz / self.sample_rate).exp()
+            } else {
+                0.0
+            };
         }
     }
 
@@ -246,6 +273,28 @@ impl Engine {
                 bus.gl = tl;
                 bus.gr = tr;
                 continue;
+            }
+            // amp stage (electric guitars): ADAA tanh — antialiased waveshaping
+            // without oversampling — then a one-pole tone/cab lowpass
+            if bus.drive > 0.0 {
+                let d = bus.drive;
+                let inv_d = 1.0 / d;
+                for i in 0..frames {
+                    let x = self.track_buf[i] * d;
+                    let dx = x - bus.amp_x1;
+                    let fx = ln_cosh(x);
+                    let y = if dx.abs() > 1e-4 {
+                        (fx - bus.amp_f1) / dx
+                    } else {
+                        (0.5 * (x + bus.amp_x1)).tanh()
+                    };
+                    bus.amp_x1 = x;
+                    bus.amp_f1 = fx;
+                    bus.tone_lp += bus.tone_c * (y - bus.tone_lp);
+                    self.track_buf[i] = bus.tone_lp * inv_d.max(0.35);
+                }
+                bus.amp_x1 = flush_denormal(bus.amp_x1);
+                bus.tone_lp = flush_denormal(bus.tone_lp);
             }
             // ~1 ms gain smoothing against zipper noise
             let c = 1.0 - (-1.0 / (0.001 * sr)).exp();
@@ -560,6 +609,41 @@ mod tests {
         let peak = out.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(out.iter().all(|s| s.is_finite()));
         assert!(peak > 0.01 && peak <= 1.0, "extremes peak={peak}");
+    }
+
+    #[test]
+    fn electric_guitars_stay_in_tune_through_the_amp() {
+        // the amp stage is an odd monotonic shaper — pitch must survive it
+        for inst in [Instrument::GuitarSteel, Instrument::GuitarElectric, Instrument::GuitarDistorted] {
+            let mut e = Engine::new(48_000.0);
+            e.set_track(0, inst, 0.8, 0.0);
+            e.note_on(0, 57, 0.8); // A3
+            let out = render_seconds(&mut e, 0.7);
+            let tail = &out[(0.3 * 48_000.0) as usize..(0.6 * 48_000.0) as usize];
+            let f_est = estimate_pitch(tail, 48_000.0, 100.0, 500.0);
+            assert!(out.iter().all(|s| s.is_finite()));
+            assert!(
+                (f_est - 220.0).abs() < 220.0 * 0.02,
+                "{inst:?}: estimated {f_est} Hz, want 220"
+            );
+        }
+    }
+
+    #[test]
+    fn distorted_chord_is_bounded_and_alive() {
+        let mut e = Engine::new(48_000.0);
+        e.set_track(0, Instrument::GuitarDistorted, 0.9, 0.0);
+        // power chord — the intermodulation-in-the-amp case
+        e.note_on(0, 40, 1.0);
+        e.note_on(0, 47, 1.0);
+        e.note_on(0, 52, 1.0);
+        let out = render_seconds(&mut e, 1.0);
+        let peak = out.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(out.iter().all(|s| s.is_finite()), "NaN through the amp");
+        assert!(peak > 0.05 && peak <= 1.0, "distorted chord peak={peak}");
+        let late = &out[(0.9 * 48_000.0) as usize..];
+        let sustain = late.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(sustain > 0.02, "distorted guitar should sing: {sustain}");
     }
 
     #[test]

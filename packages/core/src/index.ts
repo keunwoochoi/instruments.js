@@ -45,6 +45,9 @@ export type InstrumentGroup =
   | "epiano"
   | "drums"
   | "synthpad"
+  | "guitar-steel"
+  | "guitar-electric"
+  | "guitar-distorted"
   | "unknown";
 
 /** Engine-side instrument ids (crates/dsp kernels::Instrument). */
@@ -59,6 +62,9 @@ const INST = {
   drums: 7,
   synthpad: 8,
   piano: 9,
+  guitarSteel: 10,
+  guitarElectric: 11,
+  guitarDistorted: 12,
 } as const;
 
 /**
@@ -78,6 +84,9 @@ const GROUP_TO_INSTRUMENT: Record<InstrumentGroup, number> = {
   drums: INST.drums,
   synthpad: INST.synthpad,
   piano: INST.piano, // multi-string waveguide acoustic piano
+  "guitar-steel": INST.guitarSteel,
+  "guitar-electric": INST.guitarElectric,
+  "guitar-distorted": INST.guitarDistorted,
   strings: INST.synthpad, // (placeholder — bowed string is Q3)
   brass: INST.synthpad, // (placeholder — winds are Q3)
   woodwind: INST.glockenspiel, // (placeholder)

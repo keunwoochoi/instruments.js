@@ -87,18 +87,20 @@ function centroid(x, at, n = 4096) {
 }
 
 // ---- metrics on single notes ----
-console.log("note  vel   t60_early  t60_late  ratio   centroid@60ms  @600ms  drop");
+console.log("note  vel   peak    t60_early  t60_late  ratio   centroid@60ms  @600ms  drop");
 for (const [name, midi] of [["C2", 36], ["C4", 60], ["C6", 84]]) {
   for (const vel of [0.35, 0.95]) {
     const { x, p } = await engine();
     const out = renderNotes(x, p, [{ kind: "on", m: midi, v: vel, t: 0 }], 2.2);
+    let peak = 0;
+    for (const s of out) peak = Math.max(peak, Math.abs(s));
     const env = rmsEnvelope(out);
     const early = t60Between(env, 0.1, 0.4);
     const late = t60Between(env, 0.9, 1.9);
     const c1 = centroid(out, 0.06), c2 = centroid(out, 0.6);
     x.ij_engine_free(p);
     console.log(
-      `${name}   ${vel.toFixed(2)}  ${early.toFixed(2).padStart(8)}s ${late.toFixed(2).padStart(8)}s  ${(late / early).toFixed(1).padStart(5)}   ${c1.toFixed(0).padStart(8)} Hz ${c2.toFixed(0).padStart(6)} Hz  ${(c1 / (c2 + 1)).toFixed(2)}`,
+      `${name}   ${vel.toFixed(2)}  ${peak.toFixed(3)}  ${early.toFixed(2).padStart(8)}s ${late.toFixed(2).padStart(8)}s  ${(late / early).toFixed(1).padStart(5)}   ${c1.toFixed(0).padStart(8)} Hz ${c2.toFixed(0).padStart(6)} Hz  ${(c1 / (c2 + 1)).toFixed(2)}`,
     );
   }
 }

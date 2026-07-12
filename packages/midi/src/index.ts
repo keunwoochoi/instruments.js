@@ -37,7 +37,10 @@ export function gmProgramToGroup(program: number): string {
   if (program < 8) return "piano";
   if (program < 16) return program === 8 || program === 11 ? "vibraphone" : "mallet"; // celesta/glock/musicbox/vibes/marimba/xylo/bells/dulcimer
   if (program < 24) return "epiano"; // organs — placeholder
-  if (program < 32) return "guitar";
+  if (program === 24) return "guitar"; // nylon
+  if (program === 25) return "guitar-steel";
+  if (program < 29) return "guitar-electric"; // jazz/clean/muted
+  if (program < 32) return "guitar-distorted"; // overdriven/distortion/harmonics
   if (program < 40) return "bass";
   if (program < 56) return "strings"; // strings + ensemble + choir
   if (program < 64) return "brass";

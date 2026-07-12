@@ -24,6 +24,9 @@ const CASES = [
   ["drums", 7, [[36, 0], [38, 0.3], [42, 0.45], [36, 0.6], [38, 0.9]]],
   ["synthpad", 8, [[57, 0], [60, 0], [64, 0]]],
   ["piano", 9, [[60, 0], [64, 0.3], [67, 0.6]]],
+  ["guitar-steel", 10, [[52, 0], [59, 0.3], [64, 0.6]]],
+  ["guitar-electric", 11, [[52, 0], [59, 0.3], [64, 0.6]]],
+  ["guitar-distorted", 12, [[40, 0], [47, 0], [52, 0.5]]],
 ];
 
 // --wav-dir <dir>: also write per-family mono WAVs for the pyloudnorm (BS.1770

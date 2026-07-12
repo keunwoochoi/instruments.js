@@ -30,6 +30,12 @@ pub enum Instrument {
     SynthPad = 8,
     /// Acoustic piano: multi-string waveguide with dispersion + hammer excitation.
     Piano = 9,
+    /// Steel-string acoustic (brighter pluck than the nylon `Guitar`).
+    GuitarSteel = 10,
+    /// Electric guitar, clean — sustainy dark string through a lightly driven amp.
+    GuitarElectric = 11,
+    /// Electric guitar, distorted — same string, hot ADAA amp stage on the track bus.
+    GuitarDistorted = 12,
 }
 
 impl Instrument {
@@ -44,8 +50,22 @@ impl Instrument {
             7 => Self::Drums,
             8 => Self::SynthPad,
             9 => Self::Piano,
+            10 => Self::GuitarSteel,
+            11 => Self::GuitarElectric,
+            12 => Self::GuitarDistorted,
             _ => Self::Marimba,
         }
+    }
+}
+
+/// Default amp-stage settings per instrument: (drive pre-gain, tone lowpass Hz).
+/// drive 0.0 = bypass. Electric guitars are DEFINED by their amp — the drive lives
+/// on the track bus so simultaneous notes intermodulate like a real amplifier.
+pub fn amp_defaults(inst: Instrument) -> (f32, f32) {
+    match inst {
+        Instrument::GuitarElectric => (1.6, 5200.0),
+        Instrument::GuitarDistorted => (6.5, 3800.0),
+        _ => (0.0, 0.0),
     }
 }
 
@@ -70,7 +90,10 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::EPiano => 1.47,       // was -26.6 LUFS
         Instrument::Drums => 0.61,        // was -27.4 LUFS
         Instrument::SynthPad => 0.48,     // was -26.5 LUFS
-        Instrument::Piano => 0.48,        // was -21.8 LUFS (+4.4 LU hot — user's ear was right)
+        Instrument::Piano => 0.11,          // v3 hammer runs hot; measured -13.5 LUFS pre-correction
+        Instrument::GuitarSteel => 0.76,    // was -25.2 LUFS
+        Instrument::GuitarElectric => 1.5,  // was -31.7 LUFS
+        Instrument::GuitarDistorted => 0.57, // was -27.3 LUFS
     }
 }
 
@@ -383,6 +406,10 @@ struct StringLoop {
     d1_y1: f32,
     d2_x1: f32,
     d2_y1: f32,
+    // in-loop DC blocker (~19 Hz): hammer force injection is unipolar and would
+    // otherwise park a slowly-decaying DC pedestal in the loop
+    dc_x1: f32,
+    dc_y1: f32,
 }
 
 impl StringLoop {
@@ -412,41 +439,22 @@ impl StringLoop {
             d1_y1: 0.0,
             d2_x1: 0.0,
             d2_y1: 0.0,
+            dc_x1: 0.0,
+            dc_y1: 0.0,
         }
     }
 
-    /// Fill the delay line with a HAMMER-shaped excitation (piano v2): a smooth
-    /// raised-cosine displacement pulse at the strike point (contact-time width —
-    /// harder hits = shorter contact = brighter) blended with velocity-brightened
-    /// noise, comb-filtered at the strike position, DC-removed. A pure noise burst
-    /// reads as a pluck (harpsichord); the pulse blend reads as a hammer.
-    fn excite(&mut self, exc_c: f32, strike_pos: f32, pulse_w: f32, noise_mix: f32, rng: &mut Lcg) {
-        let len = self.len;
-        let p = ((strike_pos * len as f32) as usize).clamp(1, len - 1);
-        let w = (pulse_w.max(2.0) as usize).min(len / 2);
-        let mut lp = 0.0f32;
-        let mut tmp = [0.0f32; PLUCK_BUF];
-        for (i, t) in tmp.iter_mut().enumerate().take(len) {
-            lp += exc_c * (rng.next() - lp);
-            let mut s = noise_mix * lp;
-            // raised-cosine hammer pulse centered on the strike point
-            let d = if i >= p { i - p } else { p - i };
-            if d < w {
-                let ph = d as f32 / w as f32;
-                s += 0.5 * (1.0 + (core::f32::consts::PI * ph).cos());
-            }
-            *t = s;
-        }
-        let mut mean = 0.0;
-        for i in 0..len {
-            let comb = tmp[i] - 0.88 * tmp[(i + len - p) % len];
-            self.buf[i] = comb;
-            mean += comb;
-        }
-        mean /= len as f32;
-        for b in self.buf.iter_mut().take(len) {
-            *b -= mean;
-        }
+    /// String displacement at an offset ahead of the read head (contact point).
+    #[inline(always)]
+    fn read_at(&self, off: usize) -> f32 {
+        self.buf[(self.pos + off) % self.len]
+    }
+
+    /// Inject hammer force into the string at the contact point.
+    #[inline(always)]
+    fn inject(&mut self, off: usize, v: f32) {
+        let i = (self.pos + off) % self.len;
+        self.buf[i] += v;
     }
 
     #[inline(always)]
@@ -465,7 +473,11 @@ impl StringLoop {
         let ap = self.ap_c * (d2 - self.ap_y1) + self.ap_x1;
         self.ap_x1 = d2;
         self.ap_y1 = ap;
-        self.buf[self.pos] = ap * self.loss;
+        // DC blocker (loop must not carry the hammer's unipolar injection)
+        let dc = ap - self.dc_x1 + 0.9975 * self.dc_y1;
+        self.dc_x1 = ap;
+        self.dc_y1 = dc;
+        self.buf[self.pos] = dc * self.loss;
         self.pos = (self.pos + 1) % self.len;
         y
     }
@@ -475,14 +487,24 @@ impl StringLoop {
         self.ap_y1 = flush_denormal(self.ap_y1);
         self.d1_y1 = flush_denormal(self.d1_y1);
         self.d2_y1 = flush_denormal(self.d2_y1);
+        self.dc_y1 = flush_denormal(self.dc_y1);
     }
 }
 
 #[derive(Clone, Copy)]
 pub struct PianoVoice {
     strings: [StringLoop; 3],
+    strike_off: [usize; 3],
     n_strings: usize,
     level: f32,
+    // felt hammer state (nonlinear collision — Bank/Välimäki lineage).
+    // Units: string-displacement units; per-sample integration, hammer mass = 1.
+    h_x: f32,
+    h_v: f32,
+    h_k: f32,
+    h_p: f32,
+    h_gain: f32,
+    h_active: bool,
     // soundboard/case knock: 3 fixed low modes excited by the hammer pulse
     body_a1: [f32; 3],
     body_r2: [f32; 3],
@@ -505,49 +527,61 @@ impl PianoVoice {
         let key = ((midi as f32) - 21.0) / 87.0; // 0 = A0 … 1 = C8
         // register scaling: long singing bass → short bright top
         let t60 = (11.0 * (1.0 - key).powf(1.7) + 0.9).min(11.0);
-        // hammer: harder hit and higher register → brighter excitation & loop
-        let exc_c = (0.12 + 0.72 * vel.powf(1.3) + 0.14 * key).clamp(0.10, 0.95);
         let lp_c = (0.32 + 0.44 * key + 0.18 * vel).clamp(0.25, 0.95);
-        // stiffness (inharmonicity): audible on wound bass strings, mild in mid,
-        // rising slightly at the top ("watery" v1 bass had too much — retuned)
+        // stiffness (inharmonicity): audible on wound bass strings, mild in mid
         let disp_c =
             if key < 0.35 { 0.20 * (1.0 - key / 0.35) + 0.05 } else { 0.035 + 0.04 * (key - 0.35) };
-        // hammer contact width as a FRACTION of the string period (spatial extent),
-        // so attack brightness is consistent across registers; harder = narrower
-        let pulse_frac = (0.030 + 0.050 * (1.0 - vel)).clamp(0.025, 0.10);
-        let noise_mix = 0.30 + 0.35 * vel;
 
-        // Two-stage decay (piano v2): string 0 is the SUSTAIN mode (darker loop,
-        // full t60); the others are the ATTACK bloom — brighter and decaying in
-        // ABSOLUTE seconds (a bloom that lasts 4 s is not an attack). Physically:
-        // coupled strings + polarization split the energy into a fast bright
-        // transient and a slow singing tail (Weinreich 1977).
-        // bloom length scales with velocity — a soft touch barely blooms
+        // Two-stage decay: string 0 is the SUSTAIN mode (darker loop, full t60);
+        // the others are the ATTACK bloom (brighter, short, detuned — Weinreich
+        // coupling/polarization). All are struck by the SAME hammer.
         let t_attack = ((0.35 + 1.0 * (1.0 - key)) * (0.4 + 0.6 * vel)).min(0.45 * t60);
         let n_strings = if midi < 32 { 2 } else { 3 };
         let detune_spread = if midi < 32 { 0.35 } else { 1.5 - 0.7 * key };
-        // (detune cents, t60 s, lp_c mult, excitation-brightness scale)
-        // The sustain string is fed a DARKER excitation than the bloom strings, so
-        // the attack is guaranteed to be the brightest moment of the note.
-        let cfg: [(f32, f32, f32, f32); 3] = [
-            (0.0, t60, 0.80, 0.60),                              // sustain
-            (detune_spread, t_attack, 1.25, 1.0),                // attack bloom +
-            (-0.8 * detune_spread, t_attack * 1.15, 1.15, 1.0),  // attack bloom −
+        let cfg: [(f32, f32, f32); 3] = [
+            (0.0, t60, 0.80),                       // (detune cents, t60 s, lp_c mult) sustain
+            (detune_spread, t_attack, 1.40),        // attack bloom +
+            (-0.8 * detune_spread, t_attack * 1.15, 1.28), // attack bloom −
         ];
-        let mut rng = Lcg(seed | 1);
+        let rng = Lcg(seed | 1);
         let mut strings = [StringLoop::new(f0, 0.0, sr, t60, lp_c, disp_c); 3];
+        let mut strike_off = [0usize; 3];
         for (i, s) in strings.iter_mut().enumerate().take(n_strings) {
-            let (cents, t_sec, lp_mul, exc_scale) = cfg[i];
+            let (cents, t_sec, lp_mul) = cfg[i];
             *s = StringLoop::new(f0, cents, sr, t_sec, (lp_c * lp_mul).min(0.97), disp_c);
-            let pulse_w = (pulse_frac * s.len as f32).max(2.0);
-            s.excite((exc_c * exc_scale).clamp(0.06, 0.95), 0.12, pulse_w, noise_mix, &mut rng);
+            strike_off[i] = ((0.12 * s.len as f32) as usize).clamp(1, s.len - 1);
         }
+
+        // Hammer-string collision (the anti-harpsichord): the string starts at REST
+        // and a felt hammer strikes it — force F = K·compression^p injected over the
+        // contact. Contact time then EMERGES from velocity and register instead of
+        // being painted onto a pre-filled pluck. Nondimensionalized: target a
+        // register-scaled contact time at mezzo-forte, let the nonlinearity make
+        // hard hits shorter/brighter and soft hits longer/darker.
+        let h_p = 2.3 + 0.7 * key; // felt hardens up the keyboard
+        let h_v0 = 0.010 + 0.115 * vel; // displacement units per sample
+        // Stiffness normalized at a fixed REFERENCE velocity (mf): the felt law then
+        // does its real job — harder hits compress more → shorter contact → brighter.
+        // (Normalizing at the actual velocity pins contact time and kills the
+        // velocity→timbre physics — measured mistake, see decision log.)
+        let contact_ms = 1.7 - 1.1 * key; // contact target AT the reference velocity
+        let v_ref = 0.010 + 0.115 * 0.6;
+        let omega = core::f32::consts::PI / (contact_ms * 1e-3 * sr);
+        let comp_ref = (v_ref / omega).max(1e-6);
+        let h_k = omega * omega * comp_ref.powf(1.0 - h_p);
 
         // body knock: fixed case/soundboard modes (85/172/318 Hz), short decay
         let mut v = Self {
             strings,
+            strike_off,
             n_strings,
-            level: 0.62 * (0.22 + 0.78 * vel.powf(1.35)) / (n_strings as f32).sqrt(),
+            level: 2.4 / (n_strings as f32),
+            h_x: 0.0,
+            h_v: h_v0,
+            h_k,
+            h_p,
+            h_gain: 260.0, // force→displacement-wave coupling, tuned via piano-audition peaks
+            h_active: true,
             body_a1: [0.0; 3],
             body_r2: [0.0; 3],
             body_y1: [0.0; 3],
@@ -576,7 +610,30 @@ impl PianoVoice {
 
     pub fn render(&mut self, out: &mut [f32]) -> bool {
         let inv_pulse = 1.0 / self.body_pulse_len as f32;
+        let inv_n = 1.0 / self.n_strings as f32;
         for o in out.iter_mut() {
+            // felt-hammer collision: F = K·compression^p while in contact, integrated
+            // per sample (hammer mass 1). Ends when the hammer rebounds clear.
+            if self.h_active {
+                let mut y_s = 0.0;
+                for (i, st) in self.strings.iter().enumerate().take(self.n_strings) {
+                    y_s += st.read_at(self.strike_off[i]);
+                }
+                y_s *= inv_n;
+                let comp = self.h_x - y_s;
+                let f = if comp > 0.0 { self.h_k * comp.powf(self.h_p) } else { 0.0 };
+                self.h_v -= f;
+                self.h_x += self.h_v;
+                if f > 0.0 {
+                    let inj = f * self.h_gain * inv_n;
+                    for i in 0..self.n_strings {
+                        let off = self.strike_off[i];
+                        self.strings[i].inject(off, inj);
+                    }
+                } else if self.h_v < 0.0 {
+                    self.h_active = false; // hammer moving away, contact over
+                }
+            }
             let mut s = 0.0;
             for st in self.strings.iter_mut().take(self.n_strings) {
                 s += st.tick();
@@ -838,15 +895,33 @@ impl DrumVoice {
                 v.life = (2.2 * sr) as u64;
             }
             51 | 59 => {
-                // ride: ping partial + wash
-                v.decay = t60_gain(1.1, sr);
-                v.hp_c = 0.55;
-                v.amp = vel * 0.35;
-                v.tone_amt = 0.5;
-                v.freq = 640.0;
-                v.freq_end = 640.0;
-                v.sweep = 1.0;
-                v.life = (1.6 * sr) as u64;
+                // ride: inharmonic metallic ping cluster (cymbal modes are dense and
+                // irrationally spaced) over a restrained wash — a sine over noise
+                // reads as a test tone, not a cymbal (listening note 2026-07-11)
+                v.decay = t60_gain(1.25, sr);
+                v.hp_c = 0.62;
+                v.amp = vel * 0.16;
+                v.noise_amt = 0.6;
+                v.has_modal = true;
+                v.modal = ModalVoice::start(
+                    905.0,
+                    (vel * 0.9).min(1.0),
+                    sr,
+                    &[
+                        ModeDef { ratio: 1.0, amp: 0.85, t60: 1.7 },
+                        ModeDef { ratio: 1.594, amp: 0.60, t60: 1.15 },
+                        ModeDef { ratio: 2.137, amp: 0.48, t60: 0.85 },
+                        ModeDef { ratio: 2.781, amp: 0.34, t60: 0.62 },
+                        ModeDef { ratio: 3.417, amp: 0.25, t60: 0.45 },
+                        ModeDef { ratio: 4.312, amp: 0.16, t60: 0.32 },
+                        ModeDef { ratio: 5.483, amp: 0.10, t60: 0.22 },
+                    ],
+                    0.35,
+                    0.06,
+                    0.0,
+                    seed ^ 0x51de,
+                );
+                v.life = (2.0 * sr) as u64;
             }
             _ => {
                 // tom-ish fallback: pitched mode by GM note
@@ -1060,5 +1135,18 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
         Instrument::Drums => Kernel::Drum(DrumVoice::start(midi, vel, sr, seed)),
         Instrument::SynthPad => Kernel::Synth(SynthVoice::start(f0, vel, sr)),
         Instrument::Piano => Kernel::Piano(PianoVoice::start(midi, f0, vel, sr, seed)),
+        Instrument::GuitarSteel => {
+            // bright bronze-wound pluck, pick closer to the bridge than the nylon
+            let key = ((midi as f32) - 40.0) / 44.0;
+            let t60 = (5.0 - 2.8 * key).clamp(1.0, 5.0);
+            Kernel::Pluck(PluckVoice::start(f0, vel, sr, t60, 0.68, 0.20, seed))
+        }
+        Instrument::GuitarElectric | Instrument::GuitarDistorted => {
+            // solid-body: darker string, long sustain, bridge-pickup pick position;
+            // the character comes from the track amp stage (amp_defaults)
+            let key = ((midi as f32) - 40.0) / 44.0;
+            let t60 = (7.5 - 3.0 * key).clamp(2.0, 7.5);
+            Kernel::Pluck(PluckVoice::start(f0, vel, sr, t60, 0.42, 0.12, seed))
+        }
     }
 }
