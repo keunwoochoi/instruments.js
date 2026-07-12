@@ -3391,6 +3391,41 @@ impl DrumVoice {
                 );
             }
             38 | 40 => {
+                // Jazz GM 38 = BRUSH tap (GM 40 keeps the stick jazz snare).
+                // A brush is dozens of thin bristles arriving distributed over
+                // 10–30 ms: noise-dominated, soft onset, little modal ping —
+                // the defining jazz comp texture. Measured on the CC0
+                // Frankensnare brush refs (close mic): time-to-peak 22 ms
+                // (hard) to 42 ms (soft) vs 4 ms for sticks; soft taps
+                // wire-bright (cen30 ~3.3 kHz), hard taps head-forward
+                // (~0.9 kHz); t60 0.18–0.24 s.
+                let brush = matches!(kit, KitStyle::Jazz) && gm_note == 38;
+                if brush {
+                    let dyn_g = 0.30 + 0.70 * vel;
+                    v.decay = t60_gain(0.21, sr);
+                    // wire band closes with velocity: light taps are bright
+                    // bristle-on-wire sizzle (ref cen30 ~3.3 kHz), hard taps
+                    // drive the head and read dark (~0.9 kHz)
+                    let lp_hz = 5800.0 - 3800.0 * vel;
+                    v.hp_c = 1.0 - (-core::f32::consts::TAU * 400.0 / sr).exp();
+                    v.lp_c = 1.0 - (-core::f32::consts::TAU * lp_hz / sr).exp();
+                    v.amp = 0.75 * dyn_g;
+                    v.noise_amt = 0.30 + 0.55 * vel;
+                    // bristle-arrival ramp on the noise (soft attack)
+                    let arrive_ms = 30.0 * (1.35 - 0.6 * vel).max(0.4);
+                    v.atk_ph = 0.0;
+                    v.atk_dp = 1000.0 / (arrive_ms * sr);
+                    // quiet head tone: a plain enveloped sine gated by the
+                    // SAME bristle ramp — a modal bank fed a long soft pulse
+                    // leaks the pulse shape as a sub-200 Hz "pat" thump at
+                    // t≈4 ms (measured; quasi-static resonator response), so
+                    // no ModalVoice here. Tone grows with velocity (hard taps
+                    // read head-forward in the refs).
+                    v.freq = 214.0;
+                    v.tone_amt = 0.04 + 0.42 * vel;
+                    v.life = (0.40 * sr) as u64;
+                    return v;
+                }
                 // Snare, kit-voiced: shell fundamental + coupled-head partials
                 // (ratios 1.3–3.0 measured on the CC0 virtuosity snare, 182 Hz
                 // fundamental). Conventions: pop = tight/bright/damped; rock =
@@ -3556,10 +3591,18 @@ impl DrumVoice {
                     self.hp += self.hp_c * (n - self.hp); // lowpass...
                     let hp = n - self.hp; // ...subtracted = one-pole highpass
                     self.lp += self.lp_c * (hp - self.lp); // band upper edge
-                    s = self.lp * self.env * self.noise_amt;
+                    // bristle-arrival ramp (brush voicings; 1.0 = no-op else)
+                    let atk = if self.atk_ph < 1.0 {
+                        let g = 0.5 * (1.0 - (core::f32::consts::PI * self.atk_ph).cos());
+                        self.atk_ph += self.atk_dp;
+                        g
+                    } else {
+                        1.0
+                    };
+                    s = self.lp * self.env * self.noise_amt * atk;
                     if self.tone_amt > 0.0 {
                         self.phase = (self.phase + self.freq * dt).fract();
-                        s += self.tone_amt * (core::f32::consts::TAU * self.phase).sin() * self.env;
+                        s += self.tone_amt * (core::f32::consts::TAU * self.phase).sin() * self.env * atk;
                     }
                 }
             }
