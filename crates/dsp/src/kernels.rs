@@ -85,8 +85,11 @@ pub enum KitStyle {
 pub fn amp_defaults(inst: Instrument) -> (f32, f32) {
     match inst {
         Instrument::GuitarElectric => (1.6, 1800.0),
-        // high gain: compression holds the note while the string decays >20 dB
-        Instrument::GuitarDistorted => (11.0, 4200.0),
+        // high gain: preamp gain must keep the tanh saturated for seconds so the
+        // note SINGS while the string decays >20 dB (drive 11 fell linear after
+        // ~1 s — a crunch, not a lead channel); tone at 3.4 kHz keeps the
+        // regenerated clip harmonics under the fizz gate
+        Instrument::GuitarDistorted => (45.0, 3400.0),
         _ => (0.0, 0.0),
     }
 }
@@ -190,8 +193,8 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::SynthPad => 0.48,     // was -26.5 LUFS
         Instrument::Piano => 0.067, // piano agent re-measure (v4 knock/level rework)
         Instrument::GuitarSteel => 0.50,    // acoustic agent re-bake
-        Instrument::GuitarElectric => 0.73, // electric agent re-measure
-        Instrument::GuitarDistorted => 0.21, // electric agent re-measure (high gain)
+        Instrument::GuitarElectric => 0.78, // electric r2 re-bake (022 dark voicing)
+        Instrument::GuitarDistorted => 0.23, // electric r2 re-bake (drive 45 lead channel)
         Instrument::DrumsRock => 0.43,      // measured 2026-07-11 (pyloudnorm -22.6 pre-bake)
         Instrument::DrumsJazz => 0.59,      // measured 2026-07-11 (pyloudnorm -25.5 pre-bake)
     }
@@ -1298,6 +1301,40 @@ pub struct ElectricVoice {
     ap2_c: f32,
     ap2_x1: f32,
     ap2_y1: f32,
+    // Amp supply-rail sag (pre-drive gain shaping, per-voice stand-in for the
+    // shared rail): a tube amp's plate supply droops under signal current with
+    // the rectifier/filter RC (~25 ms) and recovers slowly (~300 ms), so gain
+    // follows the INVERSE of a slow signal envelope — hard onsets duck, and the
+    // note BLOOMS as the string decays into the recovered rail. Modulation is
+    // sub-audio-rate by construction (band-limited; no extra aliasing).
+    sag_env: f32,
+    sag_a: f32,
+    sag_r: f32,
+    sag_k: f32,
+    // Voicing/cab biquad (RBJ lowpass, transposed DF2): tone-stack + speaker
+    // voicing. A static circuit is fixed-Hz: 550 Hz for the dark clean rig —
+    // it stacks with the bus pickup (1500 Hz) + tone one-pole into the refs'
+    // measured ~−37 dB/oct cliff above 1 kHz, and holds their TIME-FLAT
+    // centroid (spectrum is circuit-shaped, not string-shaped).
+    vf_on: bool,
+    vf_b0: f32,
+    vf_b1: f32,
+    vf_b2: f32,
+    vf_a1: f32,
+    vf_a2: f32,
+    vf_z1: f32,
+    vf_z2: f32,
+    // Fret-release noise (NSynth bright refs: broadband squeak at note-off,
+    // ~+5 dB over the decayed string, >800 Hz dominant, t60 ≈ 0.15 s, scales
+    // with velocity). Injected ON THE STRING (pre-voicing): the dark clean
+    // voicing suppresses it exactly as the dark 022 refs show no burst, while
+    // bright/distorted voicings pass it.
+    rel_rng: Lcg,
+    rel_amp: f32,
+    rel_c: f32,
+    rel_hp_c: f32,
+    rel_lp: f32,
+    vel: f32,
     level: f32,
     life: u64,
     age: u64,
@@ -1339,6 +1376,24 @@ impl ElectricVoice {
             ap2_c: 0.0,
             ap2_x1: 0.0,
             ap2_y1: 0.0,
+            sag_env: 0.0,
+            sag_a: 0.0,
+            sag_r: 0.0,
+            sag_k: 0.0,
+            vf_on: false,
+            vf_b0: 0.0,
+            vf_b1: 0.0,
+            vf_b2: 0.0,
+            vf_a1: 0.0,
+            vf_a2: 0.0,
+            vf_z1: 0.0,
+            vf_z2: 0.0,
+            rel_rng: Lcg(seed ^ 0x9E37_79B9),
+            rel_amp: 0.0,
+            rel_c: 0.0,
+            rel_hp_c: 0.0,
+            rel_lp: 0.0,
+            vel,
             level: 0.5 * (0.35 + 0.65 * vel),
             life: ((t60 * 1.5) * sr) as u64,
             age: 0,
@@ -1376,15 +1431,29 @@ impl ElectricVoice {
     ///   E1 to C5). The loop lowpass applies once per round trip (f0 times/sec),
     ///   so its per-pass attenuation must shrink as f0 rises or trebles die —
     ///   key-track lp_c toward 1.0 up the neck (Jaffe & Smith 1983 loss scaling).
+    ///
+    /// CLEAN VOICING (round-2 decision): the NSynth clean refs split into two
+    /// distinct rigs. The DEFAULT is the dark/saggy one (ref cluster 022:
+    /// neck-pickup jazz tone, centroid ≈ 1.3–1.65·f0 time-flat, deep rail sag,
+    /// t60_late/early ≈ 4.7) — reference-fit here. The alternative BRIGHT/STIFF
+    /// rig (cluster 028: centroid ≈ 3.2–4.2·f0 at low register, sag ratio only
+    /// ≈ 1.3–1.7, audible fret-release squeak) is a future preset row; measured
+    /// directions if exposed: diff_g ON (velocity pickup tilt), vf_on false or
+    /// vfc ≈ 2.6 kHz, sag_k ≈ 2.0, t60_slow ≈ 9 s, texture corner ×2, pickup
+    /// row ≈ (2400 Hz, Q 1.8), tone ≈ 3.2 kHz. The release squeak passes its
+    /// open voicing automatically (it is injected on the string, pre-voicing).
     pub fn start_electric(midi: u32, f0: f32, vel: f32, sr: f32, dist: bool, seed: u32) -> Self {
         let key = ((midi as f32) - 40.0) / 44.0; // 0 = E2 … 1 = C6
         // dist: heavy strings + amp compression read as longer sustain; the pick
         // signal into a high-gain chain is bright (bridge pickup, tone full up)
-        let t60 = if dist { 6.0 } else { 4.6 };
+        // fast (vertical) polarization: strongly bridge-coupled, dies at the
+        // refs' measured early rate; sustain grows up the neck (NSynth electrics
+        // t60_early ≈ 3.4 s at E1 → 4.8 s at C5, round-1 measurement)
+        let t60 = (if dist { 4.5 } else { 3.4 }) + 1.4 * key.max(0.0);
         // per-pass brightness: refs lose ~35 dB/s at 1 kHz in the low register
         // while H2..H5 barely decay — a steep loop corner, key-tracked so the
         // per-second HF decay stays register-flat (Valimaki et al. 1996 loop fit)
-        let mut lp_c = (0.42 + 0.62 * key + 0.06 * vel).clamp(0.30, 0.985);
+        let mut lp_c = (0.51 + 0.56 * key + 0.06 * vel).clamp(0.30, 0.985);
         if dist {
             lp_c = (lp_c + 0.08).min(0.985);
         }
@@ -1399,7 +1468,7 @@ impl ElectricVoice {
         // of the main amplitude — gives the fast-early/slow-late two-stage decay
         // measured in every NSynth electric ref (t60 0.1–0.4 s ≈ 3.5 s but
         // 0.8–1.8 s ≈ 6–20 s).
-        let t60_slow = if dist { 12.0 } else { 9.0 };
+        let t60_slow = if dist { 18.0 } else { 15.0 };
         let f2 = f0 * 1.000289; // +0.5 cents
         let total2 = (sr / f2 - lp_delay).max(3.0);
         let len2 = ((total2 - 0.5).floor() as usize).clamp(2, PLUCK_BUF - 1);
@@ -1420,7 +1489,17 @@ impl ElectricVoice {
             ap_x1: 0.0,
             ap_y1: 0.0,
             pol2_on: true,
-            diff_g: 1.0 / (2.0 * (core::f32::consts::PI * f0 / sr).sin()).max(1e-3),
+            // Magnetic pickups sense string VELOCITY (Zollner ch.4) — but the
+            // clean 022 refs show a displacement-like 1/n² knee at ~1.5·f0:
+            // the rolled-off tone circuit + amp input coupling integrate the
+            // tilt back out. Net transfer ≈ displacement → diff off for clean.
+            // The distorted channel keeps the velocity tilt (bright bridge
+            // pickup feeding the drive is what makes palm-tone chugs cut).
+            diff_g: if dist {
+                1.0 / (2.0 * (core::f32::consts::PI * f0 / sr).sin()).max(1e-3)
+            } else {
+                0.0
+            },
             diff_x1: 0.0,
             buf2: [0.0; PLUCK_BUF],
             len2,
@@ -1430,6 +1509,32 @@ impl ElectricVoice {
             ap2_c: (1.0 - frac2) / (1.0 + frac2),
             ap2_x1: 0.0,
             ap2_y1: 0.0,
+            // rail sag: rectifier charge ~25 ms, filter-cap recovery ~300 ms
+            // (Fender/Marshall RC supplies land in this decade; the audible spec
+            // is the two-slope decay every NSynth electric ref shows).
+            // Depth k is the amp's stiffness: high-gain supplies sag deeper.
+            sag_env: 0.0,
+            sag_a: 1.0 - (-1.0 / (0.025 * sr)).exp(),
+            sag_r: 1.0 - (-1.0 / (0.900 * sr)).exp(),
+            // depth: low notes draw more supply current (more stored string energy),
+            // so sag scales down the neck — deep on E1, mild at C5
+            sag_k: (if dist { 9.0 } else { 6.0 }) * (1.0 - 0.55 * key.clamp(0.0, 1.0)),
+            vf_on: true,
+            vf_b0: 0.0,
+            vf_b1: 0.0,
+            vf_b2: 0.0,
+            vf_a1: 0.0,
+            vf_a2: 0.0,
+            vf_z1: 0.0,
+            vf_z2: 0.0,
+            rel_rng: Lcg(seed ^ 0x9E37_79B9),
+            rel_amp: 0.0,
+            // burst t60 ≈ 0.15 s (NSynth 028 release transients)
+            rel_c: t60_gain(0.15, sr),
+            // squeak brightness: one-pole HP at ~900 Hz (refs: 83-88% energy > 800 Hz)
+            rel_hp_c: 1.0 - (-core::f32::consts::TAU * 900.0 / sr).exp(),
+            rel_lp: 0.0,
+            vel,
             // Velocity moves loudness far less than timbre on an electric (NSynth
             // layer spread ≈ 5 LU, most of it spectral): keep the level curve
             // shallow and let the pick corner carry the dynamics. Mild key boost
@@ -1439,36 +1544,59 @@ impl ElectricVoice {
             age: 0,
             sr,
         };
-        // excitation: a pick pluck is a released displacement triangle ≈ 1/n²
-        // harmonic tilt (−12 dB/oct; Smith PASP, pluck excitation), so shape the
-        // noise with TWO cascaded one-pole lowpasses. Velocity moves the corner
-        // (flesh-soft ≈ 200 Hz → hard plectrum ≈ 1.6 kHz), matching the NSynth
-        // refs where the spectral knee scales with velocity but the cliff stays.
-        // pick point at 0.28 of the sounding length (first comb dip ≈ H3.6);
-        // bridge-side and velocity-tracked variants both measured worse
-        let pick_pos = 0.28;
+        // voicing/cab corner. Clean: FIXED-Hz 2-pole at 550 Hz — the measured 022
+        // mid-third curve is (a) the triangle's sin(nπ·0.13)/n² law through H6,
+        // (b) a −26 dB texture plateau 450 Hz–1 kHz, then (c) a ~−37 dB/oct
+        // cliff: this pole + the bus pickup (1500 Hz) + tone one-pole stack to
+        // exactly that cliff order. A static circuit is fixed-Hz — the earlier
+        // key-tracked corner was wrong (it crushed every harmonic of low notes).
+        // Distorted runs the voicing open at a FIXED 3.2 kHz (bridge-pickup +
+        // presence feed into the drive — a keyed corner choked low power chords
+        // at ~500 Hz and left the channel lifeless; the post-drive cab rolloff
+        // is the bus tone row).
+        let vfc = if dist { 3200.0 } else { 550.0 };
+        let wv = core::f32::consts::TAU * vfc / sr;
+        let (sv, cv) = wv.sin_cos();
+        let alpha = sv / (2.0 * 0.707);
+        let a0 = 1.0 + alpha;
+        v.vf_b0 = ((1.0 - cv) / 2.0) / a0;
+        v.vf_b1 = (1.0 - cv) / a0;
+        v.vf_b2 = v.vf_b0;
+        v.vf_a1 = (-2.0 * cv) / a0;
+        v.vf_a2 = (1.0 - alpha) / a0;
+        // excitation: a pick pluck is a DETERMINISTIC released displacement
+        // triangle (Smith PASP: harmonics ∝ sin(nπ·pick)/n²) plus a small
+        // lowpassed-noise texture layer. Round-2 finding: pure noise excitation
+        // has σ ≈ 7.7 dB note-to-note H2/H1 variance (measured, 40 seeds) — a
+        // tone lottery in exactly the harmonics the dark clean voicing exposes.
+        // Bridge-side electric picking (0.13 of the speaking length) yields the
+        // refs' ~−6 dB/oct low-harmonic slope.
+        let pick_pos = 0.13;
         let mut rng = Lcg(seed | 1);
-        // corner is flatter in velocity than energy is (NSynth layers: the knee
-        // moves ~1 octave from pp to ff, not 3) and tracks register upward
-        let mut fc = ((120.0 + 300.0 * vel) * (1.0 + 1.0 * key)).clamp(80.0, 0.35 * sr);
+        // texture corner: flesh-soft ≈ 200 Hz → hard plectrum ≈ 1.6 kHz,
+        // register-tracked (as in round 1); the deterministic shape underneath
+        // keeps the low-harmonic balance stable across velocity and seed.
+        let mut fc = ((350.0 + 500.0 * vel) * (1.0 + 1.0 * key)).clamp(150.0, 0.35 * sr);
         if dist {
             fc = (fc * 2.5).min(0.35 * sr);
         }
         let exc_c = 1.0 - (-core::f32::consts::TAU * fc / sr).exp();
-        let mut lp1 = 0.0f32;
-        let mut lp = 0.0f32;
-        let mut tmp = [0.0f32; PLUCK_BUF];
-        for t in tmp.iter_mut().take(len) {
-            lp1 += exc_c * (rng.next() - lp1);
-            lp += exc_c * (lp1 - lp);
-            *t = lp;
-        }
         let p = ((pick_pos * len as f32) as usize).clamp(1, len - 1);
+        let mut lp = 0.0f32;
         let mut mean = 0.0;
         for i in 0..len {
-            let comb = tmp[i] - 0.9 * tmp[(i + len - p) % len];
-            v.buf[i] = comb;
-            mean += comb;
+            // released triangle: 0→1 over [0,p], back to 0 over [p,len)
+            let tri = if i < p {
+                i as f32 / p as f32
+            } else {
+                (len - i) as f32 / (len - p) as f32
+            };
+            // texture: ONE-pole noise (fills the refs' −26 dB mid plateau; the
+            // fixed 550 Hz voicing pole + bus filters shape its top)
+            lp += exc_c * (rng.next() - lp);
+            let s = tri + 0.9 * lp;
+            v.buf[i] = s;
+            mean += s;
         }
         mean /= len as f32;
         for b in v.buf.iter_mut().take(len) {
@@ -1476,7 +1604,7 @@ impl ElectricVoice {
         }
         // pick displaces mostly one plane; ~0.3 leaks into the slow polarization
         for i in 0..v.len2 {
-            v.buf2[i] = 0.3 * v.buf[i % len];
+            v.buf2[i] = 0.35 * v.buf[i % len];
         }
         v
     }
@@ -1509,8 +1637,33 @@ impl ElectricVoice {
                 self.diff_x1 = s;
                 s = d;
             }
-            *o += s * self.level;
+            // fret-release squeak: HP'd noise burst on the string (see fields)
+            if self.rel_amp > 1e-5 {
+                let w = self.rel_rng.next();
+                self.rel_lp += self.rel_hp_c * (w - self.rel_lp);
+                s += (w - self.rel_lp) * self.rel_amp;
+                self.rel_amp *= self.rel_c;
+            }
+            let mut u = s * self.level;
+            // voicing/cab biquad (see fields; static per note, fixed-Hz corner)
+            if self.vf_on {
+                let y = self.vf_b0 * u + self.vf_z1;
+                self.vf_z1 = self.vf_b1 * u - self.vf_a1 * y + self.vf_z2;
+                self.vf_z2 = self.vf_b2 * u - self.vf_a2 * y;
+                u = y;
+            }
+            // supply-rail sag: slow follower, gain = 1/(1 + k·env) (see fields)
+            if self.sag_k > 0.0 {
+                let a = u.abs();
+                let c = if a > self.sag_env { self.sag_a } else { self.sag_r };
+                self.sag_env += c * (a - self.sag_env);
+                u /= 1.0 + self.sag_k * self.sag_env;
+            }
+            *o += u;
         }
+        self.sag_env = flush_denormal(self.sag_env);
+        self.vf_z1 = flush_denormal(self.vf_z1);
+        self.vf_z2 = flush_denormal(self.vf_z2);
         self.diff_x1 = flush_denormal(self.diff_x1);
         self.lp = flush_denormal(self.lp);
         self.ap_y1 = flush_denormal(self.ap_y1);
@@ -1528,6 +1681,9 @@ impl ElectricVoice {
             self.loss = t60_gain(0.30, f0);
             self.loss2 = self.loss;
             self.life = self.age + (0.45 * self.sr) as u64;
+            // fret-release squeak: finger-lift friction noise, velocity-scaled
+            // (absolute level — press force, not current string amplitude)
+            self.rel_amp = 0.05 + 0.13 * self.vel;
         } else {
             self.loss = t60_gain(0.07, self.sr);
             self.loss2 = t60_gain(0.07, self.sr);
