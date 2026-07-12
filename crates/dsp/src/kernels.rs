@@ -3429,6 +3429,13 @@ impl DrumVoice {
                         ModeDef { ratio: 1.0, amp: 1.0, t60: 0.11 * dl },
                         ModeDef { ratio: 1.55, amp: 0.6, t60: 0.08 * dl },
                         ModeDef { ratio: 2.1, amp: 0.3, t60: 0.06 * dl },
+                        // coupled-head "crack" modes: the ring at 400–1300 Hz
+                        // ((2,1)/(0,2)/(3,1)-family, air-load stretched) that
+                        // the refs hold +14…+23 dB over LF — strongly velocity
+                        // -grown (ModalVoice brightens uppers ~vel^(1+))
+                        ModeDef { ratio: 2.65, amp: 0.55, t60: 0.055 * dl },
+                        ModeDef { ratio: 3.3, amp: 0.50, t60: 0.045 * dl },
+                        ModeDef { ratio: 4.4, amp: 0.35, t60: 0.035 * dl },
                     ],
                     mg,
                     0.0,
