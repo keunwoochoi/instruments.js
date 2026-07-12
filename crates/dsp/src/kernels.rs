@@ -5127,8 +5127,12 @@ impl AnalogDrumVoice {
                     }
                     let raw = tone / 6.0;
                     self.hp += self.hp_c * (raw - self.hp);
-                    let high = raw - self.hp;
-                    self.lp += self.lp_c * (high - self.lp);
+                    let high1 = raw - self.hp;
+                    self.hp2 += self.hp_c * (high1 - self.hp2);
+                    let high2 = high1 - self.hp2;
+                    self.lp3 += self.hp_c * (high2 - self.lp3);
+                    let high3 = high2 - self.lp3;
+                    self.lp += self.lp_c * (high3 - self.lp);
                     self.lp2 += self.lp_c * (self.lp - self.lp2);
                     tone = self.lp2 * self.tone_env;
                 }
@@ -6027,11 +6031,11 @@ impl DrumVoice {
                 a.noise_env = 1.0;
                 a.noise_dec = t60_gain(if cymbal { 0.65 } else { 0.07 }, sr);
                 a.hp_c = 1.0
-                    - (-core::f32::consts::TAU * if cymbal { 3_200.0 } else { 5_600.0 } / sr).exp();
+                    - (-core::f32::consts::TAU * if cymbal { 3_200.0 } else { 5_000.0 } / sr).exp();
                 let metal_lp = if cymbal {
-                    10_500.0 + 1_500.0 * vel
+                    13_000.0 + 1_500.0 * vel
                 } else {
-                    9_000.0 + 2_000.0 * vel
+                    14_000.0 + 2_000.0 * vel
                 };
                 a.lp_c = 1.0 - (-core::f32::consts::TAU * metal_lp / sr).exp();
                 a.tone_gain = if cymbal { 0.74 } else { 0.82 };
@@ -8038,6 +8042,22 @@ mod drum_808_tests {
         }
         let cross_rate = ratios[0] / ratios[1].max(1e-9);
         assert!((0.65..1.55).contains(&cross_rate), "hat timbre shifts across rates: 44.1/48 ratio {cross_rate}");
+    }
+
+    #[test]
+    fn hat_filter_rejects_the_oscillator_fundamentals() {
+        for sr in [44_100.0f32, 48_000.0] {
+            let hat = render(42, 0.9, sr, 0.18);
+            let fundamentals = [205.3, 304.4, 369.6, 522.7, 540.0, 800.0]
+                .iter()
+                .map(|&f| magnitude(&hat, sr, f, 0.004, 0.07))
+                .sum::<f32>();
+            let metal = [5_800.0, 6_500.0, 7_200.0, 8_000.0]
+                .iter()
+                .map(|&f| magnitude(&hat, sr, f, 0.004, 0.07))
+                .sum::<f32>();
+            assert!(metal > fundamentals * 2.0, "{sr}: oscillator fundamentals leak through hat filter: metal={metal}, fundamentals={fundamentals}");
+        }
     }
 
     #[test]
