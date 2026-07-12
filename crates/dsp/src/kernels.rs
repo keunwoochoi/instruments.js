@@ -167,10 +167,10 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::EPiano => 1.47,       // was -26.6 LUFS
         Instrument::Drums => 0.61,        // was -27.4 LUFS
         Instrument::SynthPad => 0.48,     // was -26.5 LUFS
-        Instrument::Piano => 0.11,          // v3 hammer runs hot; measured -13.5 LUFS pre-correction
-        Instrument::GuitarSteel => 0.52,    // re-baked 2026-07-11 (acoustic rework ran -22.9 LUFS at 0.76)
-        Instrument::GuitarElectric => 0.73, // re-measured after the electric rework: -23.9 LUFS at 0.95
-        Instrument::GuitarDistorted => 0.21, // -17.9 LUFS at makeup 0.55 (high gain)
+        Instrument::Piano => 0.074, // piano agent re-measure (v4 knock/level rework)
+        Instrument::GuitarSteel => 0.52,    // acoustic agent re-bake
+        Instrument::GuitarElectric => 0.73, // electric agent re-measure
+        Instrument::GuitarDistorted => 0.21, // electric agent re-measure (high gain)
     }
 }
 
@@ -853,6 +853,12 @@ struct StringLoop {
     dc_y1: f32,
 }
 
+/// In-loop DC-blocker pole (~3 Hz at 48 k). Shared by `tick` and the delay budget:
+/// the blocker's phase LEAD at f0 shortens the effective loop delay and must be
+/// compensated or every string plays sharp (worst in the bass, where the old 19 Hz
+/// blocker left A1 audibly sharp — found while fixing its fundamental damping).
+const DC_POLE: f32 = 0.9996;
+
 impl StringLoop {
     /// `detune_cents` shifts this string against the nominal pitch (unison beating).
     fn new(f0: f32, detune_cents: f32, sr: f32, t60: f32, lp_c: f32, disp_c: f32) -> Self {
@@ -862,16 +868,38 @@ impl StringLoop {
         // without the dispersion term the stiff strings would all play flat).
         let lp_delay = (1.0 - lp_c) / lp_c;
         let disp_delay = 2.0 * (1.0 - disp_c) / (1.0 + disp_c);
-        let total = (sr / f - lp_delay - disp_delay).max(3.0);
+        // DC blocker H(z) = (1−z⁻¹)/(1−Rz⁻¹): exact phase lead at ω, in samples
+        // (lead = negative group delay contribution → ADD to the target length).
+        let w = core::f32::consts::TAU * f / sr;
+        let dc_lead = ((core::f32::consts::PI - w) / 2.0
+            - (DC_POLE * w.sin()).atan2(1.0 - DC_POLE * w.cos()))
+            / w;
+        let total = (sr / f - lp_delay - disp_delay + dc_lead).max(3.0);
         let len = ((total - 0.5).floor() as usize).clamp(2, PLUCK_BUF - 1);
         let frac = (total - len as f32).clamp(0.1, 1.5);
+        // Loss is applied once per ROUND TRIP (each slot is rewritten every `len`
+        // samples), so the per-pass gain must be exp(-6.9077·period/(t60·sr)) — a
+        // per-SAMPLE t60_gain here silently inflates t60 by ×len (measured: a 49 Hz
+        // fundamental rang ~flat for 3 s once the old DC blocker stopped damping it).
+        // Divide out the loop filters' own magnitude at f0 so the t60 parameter
+        // states the FUNDAMENTAL's decay; upper partials still die faster through
+        // the lowpass (Jaffe–Smith 1983 loss factor; Välimäki et al. 1996 SDL loop).
+        let period = sr / f;
+        let target = (-6.907_755 * period / (t60 * sr)).exp();
+        let a = 1.0 - lp_c;
+        let lp_mag = lp_c / (1.0 + a * a - 2.0 * a * w.cos()).sqrt();
+        let dc_mag = (2.0 - 2.0 * w.cos()).sqrt()
+            / (1.0 + DC_POLE * DC_POLE - 2.0 * DC_POLE * w.cos()).sqrt();
+        // cap: loop gain never reaches 1 at any frequency (|lp|,|dc| ≤ 1 elsewhere,
+        // but treble strings can ask for more f0 gain than the lowpass leaves)
+        let loss = (target / (lp_mag * dc_mag).max(1e-3)).min(0.999_95);
         Self {
             buf: [0.0; PLUCK_BUF],
             len,
             pos: 0,
             lp: 0.0,
             lp_c,
-            loss: t60_gain(t60, sr),
+            loss,
             ap_c: (1.0 - frac) / (1.0 + frac),
             ap_x1: 0.0,
             ap_y1: 0.0,
@@ -914,8 +942,13 @@ impl StringLoop {
         let ap = self.ap_c * (d2 - self.ap_y1) + self.ap_x1;
         self.ap_x1 = d2;
         self.ap_y1 = ap;
-        // DC blocker (loop must not carry the hammer's unipolar injection)
-        let dc = ap - self.dc_x1 + 0.9975 * self.dc_y1;
+        // DC blocker (loop must not carry the hammer's unipolar injection).
+        // Pole 0.9996 ≈ 3 Hz at 48 k: in-loop, a 19 Hz blocker (old 0.9975) costs
+        // −0.6 dB PER ROUND TRIP at 49 Hz (−30 dB/s on A1's fundamental) and −12 dB/s
+        // at C3 — it was silently eating every bass fundamental (measured 2026-07-11:
+        // C3 partial 1 sat 13 dB below the NSynth reference). 3 Hz still drains the
+        // hammer's DC pedestal (τ ≈ 70 ms) at negligible fundamental cost (<1 dB/s).
+        let dc = ap - self.dc_x1 + DC_POLE * self.dc_y1;
         self.dc_x1 = ap;
         self.dc_y1 = dc;
         self.buf[self.pos] = dc * self.loss;
@@ -936,6 +969,11 @@ impl StringLoop {
 pub struct PianoVoice {
     strings: [StringLoop; 3],
     strike_off: [usize; 3],
+    // radiated mix per string: the aftersound pair couples into the board for
+    // seconds while the prompt polarization dumps fast; equal 1:1:1 weighting
+    // left our post-prompt plateau ~15 dB under the peak where the references
+    // hold ~7 dB (env at 1 s: ref −15 dB vs render −30 dB, C3 f).
+    out_w: [f32; 3],
     n_strings: usize,
     level: f32,
     // felt hammer state (nonlinear collision — Bank/Välimäki lineage).
@@ -946,6 +984,11 @@ pub struct PianoVoice {
     h_p: f32,
     h_gain: f32,
     h_active: bool,
+    // Stulov hysteretic felt: F = K·(cᵖ + τ0·d(cᵖ)/dt) — loading is stiffer than
+    // unloading (Stulov, JASA 1995; Hall & Askenfelt), steepening the pulse front.
+    // A symmetric half-sine pulse left the attack ~12 dB short around partial 5.
+    h_tau: f32,
+    h_cp1: f32,
     // soundboard/case knock: 3 fixed low modes excited by the hammer pulse
     body_a1: [f32; 3],
     body_r2: [f32; 3],
@@ -957,8 +1000,22 @@ pub struct PianoVoice {
     thump_env: f32,
     thump_decay: f32,
     thump_amp: f32,
+    // soundboard radiation buildup: the board is a driven resonant radiator whose
+    // low-frequency output rises over several string periods (Suzuki, JASA 1986
+    // soundboard mobility; driven-resonator transient). NSynth refs peak 5–9
+    // periods after onset (G1 ≈ 160 ms, C3 ≈ 40 ms, C5 ≈ 20 ms) — the strings'
+    // radiated sum gets a 1−e^(−t/τ) rise, τ ≈ 2.5 periods; knock/thump bypass.
+    bloom: f32,
+    bloom_c: f32,
+    // radiation highpass at 0.35·f0: the board cannot radiate far below the
+    // string's fundamental (dipole rolloff below the first board modes), and the
+    // hammer's unipolar injection otherwise leaks a subsonic pedestal transient
+    // (measured: a ~20 Hz component 7 dB ABOVE C5's fundamental in the attack).
+    rad_c: f32,
+    rad_lp: f32,
     rng: Lcg,
     sr: f32,
+    key: f32,
     life: u64,
     age: u64,
 }
@@ -966,30 +1023,53 @@ pub struct PianoVoice {
 impl PianoVoice {
     pub fn start(midi: u32, f0: f32, vel: f32, sr: f32, seed: u32) -> Self {
         let key = ((midi as f32) - 21.0) / 87.0; // 0 = A0 … 1 = C8
-        // register scaling: long singing bass → short bright top
-        let t60 = (11.0 * (1.0 - key).powf(1.7) + 0.9).min(11.0);
+        // register scaling of the aftersound t60: real decay times PEAK in the
+        // low-mid register, not in the deep bass (NSynth acoustic refs, t60 of the
+        // 0.8–1.8 s window: G1≈7 s, E♭2≈11 s, C3≈12 s, C5≈6 s; same shape in
+        // Fletcher & Rossing fig. for piano decay vs key). Gaussian bump over key,
+        // tapered above key≈0.7 where real strings shorten rapidly.
+        // Amplitude/width set so the COMPOSITE late decay (aftersound pair mixed
+        // with the still-audible prompt string) lands on the refs: the aftersound
+        // param must exceed the composite target (~20 s at C3 for a measured ~12 s;
+        // real mid-register aftersound runs tens of seconds — Fletcher & Rossing).
+        // asymmetric bump: decay falls off faster below the low-mid peak than above
+        let bw = if key < 0.30 { 0.145 } else { 0.20 };
+        let bump = (-((key - 0.30) / bw) * ((key - 0.30) / bw)).exp();
+        let taper = 1.0 - 0.55 * ((key - 0.7).max(0.0) / 0.3);
+        let t60 = (3.5 + 22.5 * bump) * taper.max(0.2);
         let lp_c = (0.32 + 0.44 * key + 0.18 * vel).clamp(0.25, 0.95);
         // stiffness (inharmonicity): audible on wound bass strings, mild in mid
         let disp_c =
             if key < 0.35 { 0.20 * (1.0 - key / 0.35) + 0.05 } else { 0.035 + 0.04 * (key - 0.35) };
 
         // Two-stage decay: string 0 is the SUSTAIN mode (darker loop, full t60);
-        // the others are the ATTACK bloom (brighter, short, detuned — Weinreich
-        // coupling/polarization). All are struck by the SAME hammer.
-        let t_attack = ((0.35 + 1.0 * (1.0 - key)) * (0.4 + 0.6 * vel)).min(0.45 * t60);
+        // the others are the ATTACK stage (brighter, faster, detuned — Weinreich
+        // 1977 coupled-string prompt sound vs aftersound). All are struck by the
+        // SAME hammer. Refs show prompt t60 ≈ half the aftersound t60 across the
+        // keyboard (C2 3.2→7.0, C3 6.7→12.0, C5 3.5→5.9), slightly faster when
+        // struck harder (bridge coupling grows with amplitude).
+        let t_attack = (0.45 * t60).min(6.0) * (1.05 - 0.15 * vel);
         let n_strings = if midi < 32 { 2 } else { 3 };
         let detune_spread = if midi < 32 { 0.35 } else { 1.5 - 0.7 * key };
+        // Weinreich 1977 roles: the PROMPT sound is one bright, velocity-voiced,
+        // faster-decaying string; the AFTERSOUND is the detuned unison pair at the
+        // full t60 whose mutual beating stretches the composite late decay (the
+        // reference's p2 decays at ~3 dB/s through pair beating while singles do
+        // 8–15 dB/s). Aftersound loop filter is near-transparent (lp_c 0.82 fixed):
+        // real loop losses are ~flat through the low kHz (Välimäki et al. 1996),
+        // and aftersound brightness is not strike-dependent — the prompt string
+        // carries the velocity timbre.
         let cfg: [(f32, f32, f32); 3] = [
-            (0.0, t60, 0.80),                       // (detune cents, t60 s, lp_c mult) sustain
-            (detune_spread, t_attack, 1.40),        // attack bloom +
-            (-0.8 * detune_spread, t_attack * 1.15, 1.28), // attack bloom −
+            (0.0, t_attack, lp_c * 1.40), // (detune cents, t60 s, lp_c) prompt
+            (detune_spread, t60, 0.82),   // aftersound +
+            (-0.8 * detune_spread, t60 * 0.92, 0.82), // aftersound −
         ];
         let rng = Lcg(seed | 1);
         let mut strings = [StringLoop::new(f0, 0.0, sr, t60, lp_c, disp_c); 3];
         let mut strike_off = [0usize; 3];
         for (i, s) in strings.iter_mut().enumerate().take(n_strings) {
-            let (cents, t_sec, lp_mul) = cfg[i];
-            *s = StringLoop::new(f0, cents, sr, t_sec, (lp_c * lp_mul).min(0.97), disp_c);
+            let (cents, t_sec, c) = cfg[i];
+            *s = StringLoop::new(f0, cents, sr, t_sec, c.min(0.97), disp_c);
             strike_off[i] = ((0.12 * s.len as f32) as usize).clamp(1, s.len - 1);
         }
 
@@ -1015,14 +1095,22 @@ impl PianoVoice {
         let mut v = Self {
             strings,
             strike_off,
+            out_w: if n_strings == 2 { [0.5, 1.5, 0.0] } else { [0.5, 1.25, 1.25] },
             n_strings,
-            level: 2.4 / (n_strings as f32),
+            // Velocity→loudness curve, pinned at the vel-0.8 makeup calibration
+            // point: the raw collision gives ~12.5 dB across vel 25→127 where the
+            // references are nearly flat; −9.5 dB/vel-unit of compensation keeps
+            // ~5 dB of musical dynamics without pp vanishing (timbre still tracks
+            // velocity through the felt law, which is where piano dynamics live).
+            level: 2.4 / (n_strings as f32) * (-1.09 * (vel - 0.8)).exp(),
             h_x: 0.0,
             h_v: h_v0,
             h_k,
             h_p,
             h_gain: 260.0, // force→displacement-wave coupling, tuned via piano-audition peaks
             h_active: true,
+            h_tau: 1.5e-4 * sr,
+            h_cp1: 0.0,
             body_a1: [0.0; 3],
             body_r2: [0.0; 3],
             body_y1: [0.0; 3],
@@ -1032,19 +1120,32 @@ impl PianoVoice {
             body_pulse_len: ((0.003 * sr) as u32).max(2),
             thump_env: 1.0,
             thump_decay: t60_gain(0.010, sr),
-            thump_amp: 0.05 * vel,
+            thump_amp: 0.02 * vel,
+            bloom: 0.0,
+            bloom_c: 1.0 - (-f0.max(50.0) / (2.5 * sr)).exp(),
+            rad_c: 1.0 - (-core::f32::consts::TAU * 0.35 * f0 / sr).exp(),
+            rad_lp: 0.0,
             rng,
             sr,
-            life: ((t60 * 1.4 + 0.1) * sr) as u64,
+            key,
+            // cap: the long mid-register aftersound params would otherwise hold
+            // voices ~36 s (pool exhaustion under pedal); inaudible past ~18 s
+            life: (((t60 * 1.4 + 0.1).min(18.0)) * sr) as u64,
             age: 0,
         };
+        // Knock/thump are a subtle PRECURSOR in real recordings (Askenfelt &
+        // Jansson 1990), ~8 dB below the string plateau; at 2.5×vel the 85 Hz
+        // knock mode sat ~10 dB ABOVE it and owned the first 150 ms of every ff
+        // note (and buried the treble attack centroid: C5 read 99 Hz vs ref 665).
+        // Key taper: the case knock shrinks toward the short treble strings.
         let body = [(85.0f32, 0.40f32, 0.30f32), (172.0, 0.28, 0.20), (318.0, 0.18, 0.13)];
+        let knock = 0.6 * vel * (1.0 - 0.55 * key);
         for (i, &(bf, bt, ba)) in body.iter().enumerate() {
             let r = t60_gain(bt, sr);
             let w = core::f32::consts::TAU * bf / sr;
             v.body_a1[i] = 2.0 * r * w.cos();
             v.body_r2[i] = r * r;
-            v.body_g[i] = ba * (1.0 - r) * 2.5 * vel;
+            v.body_g[i] = ba * (1.0 - r) * knock;
         }
         v
     }
@@ -1062,7 +1163,11 @@ impl PianoVoice {
                 }
                 y_s *= inv_n;
                 let comp = self.h_x - y_s;
-                let f = if comp > 0.0 { self.h_k * comp.powf(self.h_p) } else { 0.0 };
+                let cp = if comp > 0.0 { comp.powf(self.h_p) } else { 0.0 };
+                // Stulov hysteresis (see field docs): boost the loading edge,
+                // relax the unloading edge; force stays repulsive (≥ 0)
+                let f = (self.h_k * (cp + self.h_tau * (cp - self.h_cp1))).max(0.0);
+                self.h_cp1 = cp;
                 self.h_v -= f;
                 self.h_x += self.h_v;
                 if f > 0.0 {
@@ -1076,9 +1181,16 @@ impl PianoVoice {
                 }
             }
             let mut s = 0.0;
-            for st in self.strings.iter_mut().take(self.n_strings) {
-                s += st.tick();
+            for (i, st) in self.strings.iter_mut().enumerate().take(self.n_strings) {
+                s += st.tick() * self.out_w[i];
             }
+            // soundboard radiation buildup (see field docs): strings bloom in,
+            // the percussive knock/thump below stay immediate
+            self.bloom += self.bloom_c * (1.0 - self.bloom);
+            s *= self.bloom;
+            // radiation highpass at 0.35·f0 (see field docs)
+            self.rad_lp += self.rad_c * (s - self.rad_lp);
+            s -= self.rad_lp;
             // hammer pulse into the body modes (case knock) + key thump noise
             let mut x = 0.0;
             if self.body_pulse_pos < self.body_pulse_len {
@@ -1106,16 +1218,24 @@ impl PianoVoice {
             self.body_y1[m] = flush_denormal(self.body_y1[m]);
             self.body_y2[m] = flush_denormal(self.body_y2[m]);
         }
+        self.rad_lp = flush_denormal(self.rad_lp);
         self.age += out.len() as u64;
         self.age < self.life
     }
 
-    /// Damper falls: fast but not instant (real dampers take ~0.1 s to kill a string).
+    /// Damper falls: fast but not instant. Felt dampers grip thin treble strings
+    /// almost immediately but take ~0.3 s to stop a heavy wound bass string, and
+    /// the NSynth references keep decaying ~1 s past note-off (damper + soundboard
+    /// ring + room). A hard stop at +0.25 s left the whole reference tail third
+    /// compared against digital silence (measured −240 dB vs the ref's −27…−60 dB).
     pub fn damp(&mut self) {
+        let key = self.key;
+        let t_damp = 0.32 - 0.20 * key; // s: bass 0.32 → treble 0.12
         for st in self.strings.iter_mut().take(self.n_strings) {
-            st.loss = t60_gain(0.12, self.sr);
+            // per-pass (round-trip) loss, same bookkeeping as StringLoop::new
+            st.loss = (-6.907_755 * st.len as f32 / (t_damp * self.sr)).exp();
         }
-        self.life = self.age + (0.25 * self.sr) as u64;
+        self.life = self.age + (1.2 * self.sr) as u64;
     }
 }
 
