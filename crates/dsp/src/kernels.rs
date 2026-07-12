@@ -754,6 +754,7 @@ impl Default for AcPluck {
             click_slow: 0.0,
             click_hz: 2800.0,
             click_ramp: 0.0015,
+            rel_ramp: 0.0,
             pol_mix: 0.0,
             pol_detune_cents: 0.0,
             pol_t60_ratio: 1.0,
