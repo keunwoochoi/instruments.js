@@ -891,6 +891,8 @@ pub struct CymbalVoice {
     burst_env: f32,
     burst_dec: f32,
     amp: f32,
+    /// Σ|initial ring amplitude| — worst-case (phase-aligned) strike sum
+    strike_sum: f32,
     rng: Lcg,
     life: u64,
     age: u64,
@@ -930,9 +932,23 @@ impl CymbalVoice {
             burst_env: 1.0,
             burst_dec: 0.0,
             amp: 0.0,
+            strike_sum: 0.0,
             rng: Lcg(seed | 1),
             life: 0,
             age: 0,
+        }
+    }
+
+    /// Deterministic headroom guard: if the worst-case (phase-aligned) sum of
+    /// initial ring amplitudes exceeds `cap`, scale the strike states down so
+    /// no first-millisecond spike can exceed it regardless of phase draws.
+    fn cap_strike(&mut self, cap: f32) {
+        if self.strike_sum > cap {
+            let k = cap / self.strike_sum;
+            for i in 0..self.n_bands {
+                self.y1[i] *= k;
+                self.y2[i] *= k;
+            }
         }
     }
 
@@ -960,6 +976,7 @@ impl CymbalVoice {
         let phi = core::f32::consts::PI * self.rng.next();
         self.y1[i] = c * (phi - w).sin();
         self.y2[i] = c * (phi - 2.0 * w).sin();
+        self.strike_sum += c.abs();
         // sustained-noise "chick": bright contact scrape that carries the
         // attack's HF for the first ~30 ms, then hands over to the wash
         // (reference onset energy concentrates at 6–18 kHz — iteration 20)
@@ -980,8 +997,12 @@ impl CymbalVoice {
             self.burst_env *= self.burst_dec;
             let mut s = 0.0;
             for i in 0..self.n_bands {
-                let x = self.g_burst[i] * nb
-                    + self.g_wash[i] * (1.0 - self.bloom[i]) * self.wash_env[i] * n;
+                // squared bloom gate = sigmoid onset: nonlinear upward energy
+                // transfer is autocatalytic, so HF stays near-silent for ~τ/2
+                // then floods in (a plain exponential leaks HF into the first
+                // 30 ms — the crash reference is dark until then; iteration 26)
+                let bl = 1.0 - self.bloom[i];
+                let x = self.g_burst[i] * nb + self.g_wash[i] * bl * bl * self.wash_env[i] * n;
                 let y = self.a1[i] * self.y1[i] - self.r2[i] * self.y2[i] + x;
                 self.y2[i] = self.y1[i];
                 self.y1[i] = y;
@@ -1019,13 +1040,14 @@ impl CymbalVoice {
         // CC0 reference sustain (0.15–0.65 s FFT): a beating cluster at
         // ~444/462/467 Hz (4.5 Hz beat), one strong mode ~1221 Hz, light
         // support ~2244 Hz. The spectrum DIPS at 200–350 and 500–1000 Hz.
+        // (levels pre-compensated ×1.8 for the cap_strike renormalization)
         for (f, ring, burst) in [
-            (402.0, 2.0, 0.07f32),
-            (444.0, 2.5, 0.11),
-            (462.0, 3.5, 0.19),
-            (466.5, 3.0, 0.15),
-            (1221.0, 2.2, 0.24),
-            (2244.0, 1.4, 0.22),
+            (402.0, 2.0, 0.13f32),
+            (444.0, 2.5, 0.20),
+            (462.0, 3.5, 0.34),
+            (466.5, 3.0, 0.27),
+            (1221.0, 2.2, 0.43),
+            (2244.0, 1.4, 0.40),
         ] {
             v.push_band(
                 CymBand {
@@ -1056,11 +1078,11 @@ impl CymbalVoice {
             let decay = (5.2 * (1500.0 / f).sqrt()).clamp(1.7, 5.6);
             // bloom: mids arrive latest/deepest (1–2 kHz band peaks ~60 ms late)
             let (bloom_frac, bloom_tau) = if f < 700.0 {
-                (0.15, 0.020)
+                (0.15, 0.015)
             } else if f < 3000.0 {
-                (0.75 * (0.5 + 0.5 * vel), 0.055)
+                (0.85 * (0.5 + 0.5 * vel), 0.040)
             } else {
-                (0.45 * (0.5 + 0.5 * vel), 0.030)
+                (0.45 * (0.5 + 0.5 * vel), 0.022)
             };
             // burst: stick contact is broadband and instant (reference: every
             // band peaks in the first frame except the blooming mids), with a
@@ -1073,7 +1095,7 @@ impl CymbalVoice {
             // stick contact is treble-tilted: small broadband floor, strong
             // bump around 7 kHz (reference onset energy peaks at 9–13 kHz)
             let lnr = (f / 7000.0).ln();
-            let burst = (0.15 + 1.6 * (-lnr * lnr / 0.9).exp()) * vel.powf(0.7) * imp * dip;
+            let burst = (0.12 + 1.6 * (-lnr * lnr / 0.9).exp()) * vel.powf(0.7) * imp * dip;
             // below ~500 Hz the real wash rolls off steeply (−26 dB/bin at
             // 200–350 Hz; the LF body is the tonal cluster, not noise); the
             // stick band ~3 kHz sits ~3 dB proud; gentle shelf above 5 kHz
@@ -1098,6 +1120,153 @@ impl CymbalVoice {
                 sr,
             );
         }
+        v.cap_strike(1.6);
+        v
+    }
+
+    /// Crash cymbal (GM 49/57): explosive wash whose brightness BLOOMS after
+    /// the hit (reference centroid rises 1.8→7.7 kHz into ~50 ms; every band
+    /// peaks 45–170 ms late, lower-mids last), then a fast, bright decay.
+    fn crash(vel: f32, sr: f32, seed: u32) -> Self {
+        let mut v = Self::new(seed);
+        v.burst_dec = t60_gain(0.045, sr);
+        v.amp = 1.15 * (0.25 + 0.75 * vel);
+        v.life = (3.8 * sr) as u64;
+        let mut jit = Lcg(seed ^ 0xc4a5 | 1);
+        let imp = 0.08;
+
+        // light tonal skeleton — crashes are wash-dominated
+        for (f, ring, burst) in [(524.0, 1.8, 0.14f32), (1173.0, 1.4, 0.12)] {
+            v.push_band(
+                CymBand {
+                    freq: f,
+                    ring_t60: ring,
+                    burst: burst * imp * vel.powf(0.8),
+                    chick: 0.0,
+                    wash: 0.0,
+                    decay_t60: ring,
+                    bloom_frac: 0.0,
+                    bloom_tau: 0.0,
+                },
+                sr,
+            );
+        }
+        let n_wash = CYM_BANDS - v.n_bands;
+        for k in 0..n_wash {
+            let t = k as f32 / (n_wash - 1) as f32;
+            let f = 380.0 * (16000.0f32 / 380.0).powf(t) * (1.0 + 0.05 * jit.next());
+            let ring = 44.0 / f;
+            // faster, brighter decay than the ride: mids ~3 s, top ~1.4 s
+            let decay = (2.8 * (2000.0 / f).powf(0.35)).clamp(1.4, 3.4);
+            // deep bloom everywhere; lower-mids arrive LAST (ref: 500–1 kHz
+            // band peaks at ~170 ms, HF at ~50 ms)
+            // near-total bloom: the crash starts as a dark thud and the
+            // brightness floods in (ref: −7 dB HF at 20 ms, full by ~50 ms)
+            let depth = 0.95 * (0.75 + 0.25 * vel);
+            let (bloom_frac, bloom_tau) = if f < 1000.0 {
+                (depth, 0.070)
+            } else if f < 2500.0 {
+                (depth, 0.045)
+            } else {
+                (depth, 0.028)
+            };
+            // crash onset is DARK (ref centroid 1.8 kHz at 20 ms) — the
+            // brightness arrives via the bloom, not the contact (iteration 24)
+            let lnr = (f / 2500.0).ln();
+            let burst = (0.12 + 0.9 * (-lnr * lnr / 1.2).exp()) * vel.powf(0.7) * imp;
+            let wash = 0.62 * if f < 700.0 { (f / 700.0).powf(1.2) } else { 1.0 };
+            let chick = 0.12 * (f / 6000.0).powf(0.8).min(2.0) * vel.powf(1.2);
+            v.push_band(
+                CymBand {
+                    freq: f,
+                    ring_t60: ring,
+                    burst,
+                    chick,
+                    wash,
+                    decay_t60: decay,
+                    bloom_frac,
+                    bloom_tau,
+                },
+                sr,
+            );
+        }
+        v.cap_strike(1.6);
+        v
+    }
+
+    /// Hi-hats (GM 42/44 closed, 46 open): small bright plates. Closed chokes
+    /// in ~0.4 s with no bloom; open sizzles for seconds with a mild mid bloom
+    /// (reference band t60s hump at 1–2 kHz).
+    fn hat(open: bool, vel: f32, sr: f32, seed: u32) -> Self {
+        let mut v = Self::new(seed);
+        v.burst_dec = t60_gain(0.012, sr);
+        v.amp = if open { 0.68 } else { 0.5 } * (0.3 + 0.7 * vel);
+        v.life = if open { (3.2 * sr) as u64 } else { (0.7 * sr) as u64 };
+        let mut jit = Lcg(seed ^ 0x4a75 | 1);
+        if open {
+            // tonal skeleton measured from the CC0 open-hat sustain:
+            // 614/634 Hz beating pair, 1003, 1114, 1771 Hz
+            for (f, ring, burst) in [
+                (614.0, 2.8, 0.016f32),
+                (634.0, 3.2, 0.021),
+                (1003.0, 3.0, 0.019),
+                (1114.0, 2.8, 0.018),
+                (1771.0, 2.4, 0.014),
+            ] {
+                v.push_band(
+                    CymBand {
+                        freq: f,
+                        ring_t60: ring,
+                        burst: burst * vel.powf(0.8),
+                        chick: 0.0,
+                        wash: 0.0,
+                        decay_t60: ring,
+                        bloom_frac: 0.0,
+                        bloom_tau: 0.0,
+                    },
+                    sr,
+                );
+            }
+        }
+        let n_bands = CYM_BANDS - v.n_bands;
+        for k in 0..n_bands {
+            let t = k as f32 / (n_bands - 1) as f32;
+            let f = 550.0 * (15500.0f32 / 550.0).powf(t) * (1.0 + 0.05 * jit.next());
+            let ring = (44.0 / f).min(0.03);
+            let decay = if open {
+                // measured hump: ~5 s at 1.6 kHz, ~1.5 s at 12 kHz
+                let lnh = (f / 1600.0).ln();
+                (0.8 + 4.0 * (-lnh * lnh / 2.4).exp()).clamp(0.8, 4.8)
+            } else {
+                (0.45 * (3000.0 / f).powf(0.25)).clamp(0.22, 0.55)
+            };
+            let (bloom_frac, bloom_tau) = if open && f > 800.0 && f < 3500.0 {
+                (0.5 * (0.4 + 0.6 * vel), 0.050)
+            } else {
+                (0.0, 0.0)
+            };
+            let lnr = (f / 7000.0).ln();
+            let burst = (0.10 + 1.1 * (-lnr * lnr / 1.0).exp()) * vel.powf(0.7) * 0.13;
+            let wash = 0.5
+                * if f < 1200.0 { (f / 1200.0).powf(1.4) } else { 1.0 }
+                * if open && f > 6000.0 { 0.75 } else { 1.0 };
+            let chick =
+                if open { 0.8 } else { 1.5 } * (f / 6000.0).powf(0.7).min(2.0) * vel.powf(1.1);
+            v.push_band(
+                CymBand {
+                    freq: f,
+                    ring_t60: ring,
+                    burst,
+                    chick,
+                    wash,
+                    decay_t60: decay,
+                    bloom_frac,
+                    bloom_tau,
+                },
+                sr,
+            );
+        }
+        v.cap_strike(1.6);
         v
     }
 }
@@ -1190,25 +1359,22 @@ impl DrumVoice {
                 v.life = (0.35 * sr) as u64;
             }
             42 | 44 => {
-                // closed hat
-                v.decay = t60_gain(0.055, sr);
-                v.hp_c = 0.72;
-                v.amp = vel * 0.55;
-                v.life = (0.12 * sr) as u64;
+                // closed hat (44 = pedal: slightly softer/shorter via velocity)
+                v.kind = DrumKind::Cymbal;
+                v.cym = CymbalVoice::hat(false, if gm_note == 44 { vel * 0.8 } else { vel }, sr, seed);
+                v.life = v.cym.life;
             }
             46 => {
                 // open hat
-                v.decay = t60_gain(0.38, sr);
-                v.hp_c = 0.7;
-                v.amp = vel * 0.5;
-                v.life = (0.7 * sr) as u64;
+                v.kind = DrumKind::Cymbal;
+                v.cym = CymbalVoice::hat(true, vel, sr, seed);
+                v.life = v.cym.life;
             }
             49 | 57 => {
                 // crash
-                v.decay = t60_gain(1.6, sr);
-                v.hp_c = 0.5;
-                v.amp = vel * 0.5;
-                v.life = (2.2 * sr) as u64;
+                v.kind = DrumKind::Cymbal;
+                v.cym = CymbalVoice::crash(vel, sr, seed);
+                v.life = v.cym.life;
             }
             51 | 59 => {
                 // ride: banded-noise resonator bank (see CymbalVoice) — the old
@@ -1446,5 +1612,115 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
             let t60 = (7.5 - 3.0 * key).clamp(2.0, 7.5);
             Kernel::Pluck(PluckVoice::start(f0, vel, sr, t60, 0.42, 0.12, seed))
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cymbal tests (ride/crash/hat code paths only)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod cymbal_tests {
+    use super::*;
+
+    /// Render a drum GM note to a mono buffer until the voice ends (cap 8 s).
+    fn render_drum(gm: u32, vel: f32, sr: f32) -> Vec<f32> {
+        let mut v = DrumVoice::start(gm, vel, sr, 0x1234_5678);
+        let mut out = Vec::new();
+        let mut block = [0.0f32; 128];
+        for _ in 0..(8.0 * sr / 128.0) as usize {
+            block.fill(0.0);
+            let alive = v.render(&mut block, sr);
+            out.extend_from_slice(&block);
+            if !alive {
+                return out;
+            }
+        }
+        panic!("drum voice for GM {gm} did not terminate within 8 s");
+    }
+
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|s| s * s).sum::<f32>() / x.len().max(1) as f32).sqrt()
+    }
+
+    /// Two-pole bandpass RMS in a time window — same resonator form as the DSP.
+    fn band_rms(x: &[f32], f: f32, sr: f32, t0: f32, t1: f32) -> f32 {
+        let r = t60_gain(0.030, sr);
+        let w = core::f32::consts::TAU * f / sr;
+        let g = (1.0 - r) * w.sin();
+        let (mut y1, mut y2) = (0.0f32, 0.0f32);
+        let (a1, r2) = (2.0 * r * w.cos(), r * r);
+        let (i0, i1) = ((t0 * sr) as usize, ((t1 * sr) as usize).min(x.len()));
+        let mut acc = 0.0;
+        for (i, &s) in x.iter().enumerate().take(i1) {
+            let y = a1 * y1 - r2 * y2 + g * s;
+            y2 = y1;
+            y1 = y;
+            if i >= i0 {
+                acc += y * y;
+            }
+        }
+        (acc / (i1 - i0).max(1) as f32).sqrt()
+    }
+
+    #[test]
+    fn cymbals_finite_bounded_and_terminate_at_both_rates() {
+        for &sr in &[44100.0f32, 48000.0] {
+            for &gm in &[42u32, 44, 46, 49, 51, 57, 59] {
+                let out = render_drum(gm, 1.0, sr);
+                for (i, &s) in out.iter().enumerate() {
+                    assert!(s.is_finite(), "GM {gm} sr {sr}: non-finite at {i}");
+                    assert!(s.abs() <= 2.0, "GM {gm} sr {sr}: |{s}| > 2 at {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cymbal_velocity_is_monotonic() {
+        for &gm in &[42u32, 46, 49, 51] {
+            let soft = rms(&render_drum(gm, 0.3, 48000.0));
+            let hard = rms(&render_drum(gm, 1.0, 48000.0));
+            assert!(
+                hard > soft * 1.3,
+                "GM {gm}: hard hit ({hard}) not louder than soft ({soft})"
+            );
+        }
+    }
+
+    /// Ride bloom signature measured on the CC0 reference: the 1–2 kHz wash
+    /// arrives late (band peaks ~60 ms after the strike, NOT in the first
+    /// frames) while the strike itself is immediate.
+    #[test]
+    fn ride_mid_band_blooms_after_strike() {
+        let out = render_drum(51, 0.8, 48000.0);
+        let early = band_rms(&out, 1500.0, 48000.0, 0.005, 0.030);
+        let late = band_rms(&out, 1500.0, 48000.0, 0.045, 0.110);
+        assert!(
+            late > early * 1.05,
+            "ride 1.5 kHz band should bloom after the strike: early {early}, late {late}"
+        );
+    }
+
+    /// Crash bloom: the whole envelope keeps RISING for >35 ms after the hit
+    /// (reference peaks at ~46 ms; brightness floods in via mode coupling).
+    #[test]
+    fn crash_envelope_blooms() {
+        let out = render_drum(49, 1.0, 48000.0);
+        let early = rms(&out[0..(0.035 * 48000.0) as usize]);
+        let late = rms(&out[(0.060 * 48000.0) as usize..(0.120 * 48000.0) as usize]);
+        assert!(late > early, "crash should still be blooming at 60–120 ms: {early} vs {late}");
+    }
+
+    /// The ride must actually RING: audible (> −50 dB rel peak) past 2.5 s.
+    #[test]
+    fn ride_tail_rings_long() {
+        let out = render_drum(51, 0.8, 48000.0);
+        assert!(out.len() as f32 / 48000.0 > 3.0, "ride voice ends too early");
+        let tail = rms(&out[(2.4 * 48000.0) as usize..(2.6 * 48000.0) as usize]);
+        assert!(tail > 1e-4, "ride tail inaudible at 2.5 s: rms {tail}");
+        // closed hat, by contrast, must be short
+        let hat = render_drum(42, 0.8, 48000.0);
+        assert!((hat.len() as f32) < 1.0 * 48000.0, "closed hat rings too long");
     }
 }
