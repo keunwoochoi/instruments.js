@@ -3203,6 +3203,11 @@ pub struct DrumVoice {
     /// kick beater-click gain (velocity-shaped; hp/hp_c double as the click's
     /// brightness lowpass for the Kick kind)
     click: f32,
+    /// beater contact ramp on the kick body: raised-cosine 0→1 over the
+    /// contact time (felt compresses ~5–8 ms, hard beaters ~4 ms) — the refs
+    /// peak 6–10 ms AFTER onset; an instant-on sine is the "electronic" edge
+    atk_ph: f32,
+    atk_dp: f32,
     /// beater "slap" resonator: an impulse-rung two-pole at the head's
     /// overtone region (~500–700 Hz, t60 ~30 ms) — the mid-band knock that
     /// separates a hard beater hit from the pitched fundamental (CC0 hard-kick
@@ -3252,6 +3257,8 @@ impl DrumVoice {
             noise_amt: 1.0,
             tone_amt: 0.0,
             click: 0.0,
+            atk_ph: 1.0,
+            atk_dp: 0.0,
             sl_a1: 0.0,
             sl_r2: 0.0,
             sl_y1: 0.0,
@@ -3291,6 +3298,14 @@ impl DrumVoice {
                     KitStyle::Jazz => (77.0, 0.18, 0.005, 0.30, 0.10, 0.50, 0.38, 0.8),
                 };
                 v.kind = DrumKind::Kick;
+                // contact ramp: felt (jazz) ~7 ms base, harder beaters ~5 ms;
+                // harder hits compress faster (same law as ModalVoice contact)
+                let contact_ms = match kit {
+                    KitStyle::Jazz => 7.0,
+                    _ => 5.0,
+                } * (1.35 - 0.5 * vel).max(0.5);
+                v.atk_ph = 0.0;
+                v.atk_dp = 1000.0 / (contact_ms * sr);
                 v.freq = f1 * (1.10 + rv * vel);
                 v.freq_end = f1;
                 v.sweep = (-1.0 / (sw * sr)).exp();
@@ -3448,14 +3463,26 @@ impl DrumVoice {
                 DrumKind::Kick => {
                     self.freq = self.freq_end + (self.freq - self.freq_end) * self.sweep;
                     self.phase = (self.phase + self.freq * dt).fract();
-                    s = (core::f32::consts::TAU * self.phase).sin() * self.env;
-                    // beater-contact click for the first ~4 ms: velocity-shaped
-                    // gain (click) through a velocity-opened lowpass (hp/hp_c) —
-                    // felt-beater thud at pp, hard slap at ff
-                    if self.age < (0.010 * sr) as u64 {
+                    // raised-cosine beater-contact ramp (body only: click IS
+                    // the contact, slap resonator IS the contact knock)
+                    let atk = if self.atk_ph < 1.0 {
+                        let g = 0.5 * (1.0 - (core::f32::consts::PI * self.atk_ph).cos());
+                        self.atk_ph += self.atk_dp;
+                        g
+                    } else {
+                        1.0
+                    };
+                    s = (core::f32::consts::TAU * self.phase).sin() * self.env * atk;
+                    // beater-contact click: velocity-shaped gain (click) through
+                    // a velocity-opened lowpass (hp/hp_c), modulated by the
+                    // contact FORCE pulse sin²(π·ph) — noise exists only while
+                    // beater and head touch, peaking mid-contact (felt thud at
+                    // pp, hard slap at ff)
+                    if self.atk_ph < 1.0 {
+                        let force = (core::f32::consts::PI * self.atk_ph).sin();
                         let n = self.rng.next();
                         self.hp += self.hp_c * (n - self.hp);
-                        s += self.click * self.hp * self.env;
+                        s += self.click * self.hp * force * force;
                     }
                     // beater slap ring (impulse initial condition, decays on its own)
                     let y = self.sl_a1 * self.sl_y1 - self.sl_r2 * self.sl_y2;
