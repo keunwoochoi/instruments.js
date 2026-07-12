@@ -616,6 +616,12 @@ pub struct PianoVoice {
     // radiated sum gets a 1−e^(−t/τ) rise, τ ≈ 2.5 periods; knock/thump bypass.
     bloom: f32,
     bloom_c: f32,
+    // radiation highpass at 0.35·f0: the board cannot radiate far below the
+    // string's fundamental (dipole rolloff below the first board modes), and the
+    // hammer's unipolar injection otherwise leaks a subsonic pedestal transient
+    // (measured: a ~20 Hz component 7 dB ABOVE C5's fundamental in the attack).
+    rad_c: f32,
+    rad_lp: f32,
     rng: Lcg,
     sr: f32,
     key: f32,
@@ -631,9 +637,13 @@ impl PianoVoice {
         // 0.8–1.8 s window: G1≈7 s, E♭2≈11 s, C3≈12 s, C5≈6 s; same shape in
         // Fletcher & Rossing fig. for piano decay vs key). Gaussian bump over key,
         // tapered above key≈0.7 where real strings shorten rapidly.
-        let bump = (-((key - 0.30) / 0.25) * ((key - 0.30) / 0.25)).exp();
+        // Amplitude/width set so the COMPOSITE late decay (aftersound pair mixed
+        // with the still-audible prompt string) lands on the refs: the aftersound
+        // param must exceed the composite target (~20 s at C3 for a measured ~12 s;
+        // real mid-register aftersound runs tens of seconds — Fletcher & Rossing).
+        let bump = (-((key - 0.30) / 0.17) * ((key - 0.30) / 0.17)).exp();
         let taper = 1.0 - 0.55 * ((key - 0.7).max(0.0) / 0.3);
-        let t60 = (4.0 + 8.5 * bump) * taper.max(0.2);
+        let t60 = (4.2 + 16.0 * bump) * taper.max(0.2);
         let lp_c = (0.32 + 0.44 * key + 0.18 * vel).clamp(0.25, 0.95);
         // stiffness (inharmonicity): audible on wound bass strings, mild in mid
         let disp_c =
@@ -645,19 +655,21 @@ impl PianoVoice {
         // SAME hammer. Refs show prompt t60 ≈ half the aftersound t60 across the
         // keyboard (C2 3.2→7.0, C3 6.7→12.0, C5 3.5→5.9), slightly faster when
         // struck harder (bridge coupling grows with amplitude).
-        let t_attack = 0.45 * t60 * (1.05 - 0.15 * vel);
+        let t_attack = (0.45 * t60).min(6.0) * (1.05 - 0.15 * vel);
         let n_strings = if midi < 32 { 2 } else { 3 };
         let detune_spread = if midi < 32 { 0.35 } else { 1.5 - 0.7 * key };
-        // Sustain string: near-transparent recirculation filter (lp_c 0.82, fixed).
-        // Real loop losses are ~flat through the low kHz (Välimäki et al. 1996 loop
-        // filter fits); with the velocity-tracked filter the C3 aftersound's mid
-        // partials died at 12–14 dB/s where the reference holds ~6 dB/s (≈ its own
-        // fundamental rate). Aftersound brightness is not strike-dependent — the
-        // attack strings carry the velocity timbre.
+        // Weinreich 1977 roles: the PROMPT sound is one bright, velocity-voiced,
+        // faster-decaying string; the AFTERSOUND is the detuned unison pair at the
+        // full t60 whose mutual beating stretches the composite late decay (the
+        // reference's p2 decays at ~3 dB/s through pair beating while singles do
+        // 8–15 dB/s). Aftersound loop filter is near-transparent (lp_c 0.82 fixed):
+        // real loop losses are ~flat through the low kHz (Välimäki et al. 1996),
+        // and aftersound brightness is not strike-dependent — the prompt string
+        // carries the velocity timbre.
         let cfg: [(f32, f32, f32); 3] = [
-            (0.0, t60, 0.82),                       // (detune cents, t60 s, lp_c) sustain
-            (detune_spread, t_attack, lp_c * 1.40), // attack bloom +
-            (-0.8 * detune_spread, t_attack * 1.15, lp_c * 1.28), // attack bloom −
+            (0.0, t_attack, lp_c * 1.40), // (detune cents, t60 s, lp_c) prompt
+            (detune_spread, t60, 0.82),   // aftersound +
+            (-0.8 * detune_spread, t60 * 0.92, 0.82), // aftersound −
         ];
         let rng = Lcg(seed | 1);
         let mut strings = [StringLoop::new(f0, 0.0, sr, t60, lp_c, disp_c); 3];
@@ -710,6 +722,8 @@ impl PianoVoice {
             thump_amp: 0.02 * vel,
             bloom: 0.0,
             bloom_c: 1.0 - (-f0.max(50.0) / (2.5 * sr)).exp(),
+            rad_c: 1.0 - (-core::f32::consts::TAU * 0.35 * f0 / sr).exp(),
+            rad_lp: 0.0,
             rng,
             sr,
             key,
@@ -767,6 +781,9 @@ impl PianoVoice {
             // the percussive knock/thump below stay immediate
             self.bloom += self.bloom_c * (1.0 - self.bloom);
             s *= self.bloom;
+            // radiation highpass at 0.35·f0 (see field docs)
+            self.rad_lp += self.rad_c * (s - self.rad_lp);
+            s -= self.rad_lp;
             // hammer pulse into the body modes (case knock) + key thump noise
             let mut x = 0.0;
             if self.body_pulse_pos < self.body_pulse_len {
@@ -794,6 +811,7 @@ impl PianoVoice {
             self.body_y1[m] = flush_denormal(self.body_y1[m]);
             self.body_y2[m] = flush_denormal(self.body_y2[m]);
         }
+        self.rad_lp = flush_denormal(self.rad_lp);
         self.age += out.len() as u64;
         self.age < self.life
     }
