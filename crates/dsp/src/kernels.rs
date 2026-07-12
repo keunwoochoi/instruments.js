@@ -609,6 +609,13 @@ pub struct PianoVoice {
     thump_env: f32,
     thump_decay: f32,
     thump_amp: f32,
+    // soundboard radiation buildup: the board is a driven resonant radiator whose
+    // low-frequency output rises over several string periods (Suzuki, JASA 1986
+    // soundboard mobility; driven-resonator transient). NSynth refs peak 5–9
+    // periods after onset (G1 ≈ 160 ms, C3 ≈ 40 ms, C5 ≈ 20 ms) — the strings'
+    // radiated sum gets a 1−e^(−t/τ) rise, τ ≈ 2.5 periods; knock/thump bypass.
+    bloom: f32,
+    bloom_c: f32,
     rng: Lcg,
     sr: f32,
     key: f32,
@@ -641,17 +648,23 @@ impl PianoVoice {
         let t_attack = 0.45 * t60 * (1.05 - 0.15 * vel);
         let n_strings = if midi < 32 { 2 } else { 3 };
         let detune_spread = if midi < 32 { 0.35 } else { 1.5 - 0.7 * key };
+        // Sustain string: near-transparent recirculation filter (lp_c 0.82, fixed).
+        // Real loop losses are ~flat through the low kHz (Välimäki et al. 1996 loop
+        // filter fits); with the velocity-tracked filter the C3 aftersound's mid
+        // partials died at 12–14 dB/s where the reference holds ~6 dB/s (≈ its own
+        // fundamental rate). Aftersound brightness is not strike-dependent — the
+        // attack strings carry the velocity timbre.
         let cfg: [(f32, f32, f32); 3] = [
-            (0.0, t60, 0.80),                       // (detune cents, t60 s, lp_c mult) sustain
-            (detune_spread, t_attack, 1.40),        // attack bloom +
-            (-0.8 * detune_spread, t_attack * 1.15, 1.28), // attack bloom −
+            (0.0, t60, 0.82),                       // (detune cents, t60 s, lp_c) sustain
+            (detune_spread, t_attack, lp_c * 1.40), // attack bloom +
+            (-0.8 * detune_spread, t_attack * 1.15, lp_c * 1.28), // attack bloom −
         ];
         let rng = Lcg(seed | 1);
         let mut strings = [StringLoop::new(f0, 0.0, sr, t60, lp_c, disp_c); 3];
         let mut strike_off = [0usize; 3];
         for (i, s) in strings.iter_mut().enumerate().take(n_strings) {
-            let (cents, t_sec, lp_mul) = cfg[i];
-            *s = StringLoop::new(f0, cents, sr, t_sec, (lp_c * lp_mul).min(0.97), disp_c);
+            let (cents, t_sec, c) = cfg[i];
+            *s = StringLoop::new(f0, cents, sr, t_sec, c.min(0.97), disp_c);
             strike_off[i] = ((0.12 * s.len as f32) as usize).clamp(1, s.len - 1);
         }
 
@@ -694,20 +707,28 @@ impl PianoVoice {
             body_pulse_len: ((0.003 * sr) as u32).max(2),
             thump_env: 1.0,
             thump_decay: t60_gain(0.010, sr),
-            thump_amp: 0.05 * vel,
+            thump_amp: 0.02 * vel,
+            bloom: 0.0,
+            bloom_c: 1.0 - (-f0.max(50.0) / (2.5 * sr)).exp(),
             rng,
             sr,
             key,
             life: ((t60 * 1.4 + 0.1) * sr) as u64,
             age: 0,
         };
+        // Knock/thump are a subtle PRECURSOR in real recordings (Askenfelt &
+        // Jansson 1990), ~8 dB below the string plateau; at 2.5×vel the 85 Hz
+        // knock mode sat ~10 dB ABOVE it and owned the first 150 ms of every ff
+        // note (and buried the treble attack centroid: C5 read 99 Hz vs ref 665).
+        // Key taper: the case knock shrinks toward the short treble strings.
         let body = [(85.0f32, 0.40f32, 0.30f32), (172.0, 0.28, 0.20), (318.0, 0.18, 0.13)];
+        let knock = 0.6 * vel * (1.0 - 0.55 * key);
         for (i, &(bf, bt, ba)) in body.iter().enumerate() {
             let r = t60_gain(bt, sr);
             let w = core::f32::consts::TAU * bf / sr;
             v.body_a1[i] = 2.0 * r * w.cos();
             v.body_r2[i] = r * r;
-            v.body_g[i] = ba * (1.0 - r) * 2.5 * vel;
+            v.body_g[i] = ba * (1.0 - r) * knock;
         }
         v
     }
@@ -742,6 +763,10 @@ impl PianoVoice {
             for st in self.strings.iter_mut().take(self.n_strings) {
                 s += st.tick();
             }
+            // soundboard radiation buildup (see field docs): strings bloom in,
+            // the percussive knock/thump below stay immediate
+            self.bloom += self.bloom_c * (1.0 - self.bloom);
+            s *= self.bloom;
             // hammer pulse into the body modes (case knock) + key thump noise
             let mut x = 0.0;
             if self.body_pulse_pos < self.body_pulse_len {
