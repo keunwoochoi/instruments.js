@@ -3310,7 +3310,10 @@ impl DrumVoice {
                 v.freq_end = f1;
                 v.sweep = (-1.0 / (sw * sr)).exp();
                 v.decay = t60_gain(t60, sr);
-                v.amp = vel * amp;
+                // dynamic law: refs span 26 dB LUFS from feathered (vl1) to
+                // slammed (vl4); linear-in-vel gave only ~10 dB. Head drive is
+                // supralinear in stick/beater speed (momentum + contact time)
+                v.amp = vel.powf(1.7) * amp;
                 v.click = ck0 + ckv * vel * vel;
                 v.hp_c = 0.08 + ckb * vel; // click lowpass: felt thud → hard slap
                 // resonant-head ring: after the batter transient the front head
