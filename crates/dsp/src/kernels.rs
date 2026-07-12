@@ -2718,6 +2718,11 @@ pub struct PianoVoice {
     // radiated sum gets a 1−e^(−t/τ) rise, τ ≈ 2.5 periods; knock/thump bypass.
     bloom: f32,
     bloom_c: f32,
+    // Coherent note-on radiation buildup for the heavy bass bridge/body.
+    // This integrates the new felt-force detail without a first-3-ms click;
+    // it tapers out by C3 and is unity long before the approved decay region.
+    onset_env: f32,
+    onset_c: f32,
     // radiation highpass, 2nd order at max(0.35·f0, 88 Hz): the board cannot
     // radiate below its first modes REGARDLESS of the string's pitch — the
     // deep-bass refs radiate p2 ABOVE p1 (G1-ff: p1 −13.6 dB rel p2) where an
@@ -3008,9 +3013,17 @@ impl PianoVoice {
             // felt sends the sharper share into the string. Held-out C#5 stays
             // a small-force-detail guard rather than receiving a global click.
             body_force_mix: {
-                let register = ((0.62 - key) / (0.62 - 39.0 / 87.0)).clamp(0.0, 1.5);
+                let c4 = 39.0 / 87.0;
+                // Soundboard driving-point mobility peaks through the lower
+                // middle bridge: the extreme bass is massive/slow, while the
+                // treble bridge localizes and sheds literal case force.
+                let register = if key <= c4 {
+                    0.70 + 0.30 * key / c4
+                } else {
+                    ((0.59 - key) / (0.59 - c4)).clamp(0.0, 1.0)
+                };
                 let touch = (1.3 - 1.1 * vel).clamp(0.2, 1.0);
-                (register * touch).clamp(0.02, 1.0)
+                (register * touch).clamp(0.0, 1.0)
             },
             body_pulse_pos: 1,
             body_pulse_len: 1,
@@ -3038,6 +3051,12 @@ impl PianoVoice {
             noise_lp_c: 0.10,
             bloom: 0.0,
             bloom_c: 1.0 - (-f0.max(50.0) / (2.5 * sr)).exp(),
+            onset_env: 0.0,
+            onset_c: {
+                let bass = (1.0 - key / 0.30).max(0.0);
+                let tau = 0.0001 + 0.048 * bass * bass;
+                1.0 - (-1.0 / (tau * sr)).exp()
+            },
             // r3: 0.35/80 → 0.4/100 — Salamander's bass fundamentals sit lower
             // still (A0 attack p1 −31 dB rel p3; C2 p1 −18 rel p2)
             rad_c: 1.0 - (-core::f32::consts::TAU * (0.35 * f0).max(88.0) / sr).exp(),
@@ -3335,7 +3354,8 @@ impl PianoVoice {
                 s += self.thump_amp * self.thump_env * self.noise_lp;
                 self.thump_env *= self.thump_decay;
             }
-            *o += s * self.level;
+            self.onset_env += self.onset_c * (1.0 - self.onset_env);
+            *o += s * self.level * self.onset_env;
         }
         for st in self.strings.iter_mut().take(self.n_strings) {
             st.flush();
@@ -6481,8 +6501,8 @@ mod tests {
     }
 
     /// Owner attack gate (2026-07-12): the literal nonlinear felt-force path
-    /// is bass/soft-forward, not a global click. It must remain strong for the
-    /// A1 and C4-pp tune anchors, compress at C4-ff, and stay subtle at the
+    /// follows bridge mobility and touch, not a global click. It must remain
+    /// substantial for A1, peak at C4-pp, compress at C4-ff, and be off at the
     /// held-out C#5 register at both supported rates.
     #[test]
     fn piano_hammer_force_body_coupling_is_register_and_touch_voiced() {
@@ -6492,14 +6512,19 @@ mod tests {
             let c4_ff = PianoVoice::start(60, midi_to_hz(60.0), 122.0 / 127.0, sr, 3);
             let cs5 = PianoVoice::start(73, midi_to_hz(73.0), 90.0 / 127.0, sr, 4);
             assert!(a1.h_force_ref.is_finite() && a1.h_force_ref > 0.0);
-            assert!(a1.body_force_mix > 0.70, "A1 force path too weak at {sr} Hz");
+            assert!(
+                (0.35..0.50).contains(&a1.body_force_mix),
+                "A1 force/mobility balance lost at {sr} Hz: {}",
+                a1.body_force_mix
+            );
             assert!(c4_pp.body_force_mix > 0.95, "C4 pp force path too weak at {sr} Hz");
             assert!(
                 (0.20..0.30).contains(&c4_ff.body_force_mix),
                 "C4 ff force compression lost at {sr} Hz: {}",
                 c4_ff.body_force_mix
             );
-            assert!(cs5.body_force_mix < 0.10, "C#5 force path leaked globally at {sr} Hz");
+            assert!(cs5.body_force_mix == 0.0, "C#5 force path leaked globally at {sr} Hz");
+            assert!(a1.onset_c < c4_pp.onset_c, "bass radiation must build slower at {sr} Hz");
         }
     }
 
