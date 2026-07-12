@@ -63,19 +63,33 @@ function persist() {
   }
 }
 
-function recoverStoredSession() {
+async function recoverStoredSession() {
   try {
     const matches = [];
+    const keys = [];
     for (let index = 0; index < localStorage.length; index++) {
       const key = localStorage.key(index);
-      if (!key?.startsWith("ij-listening:")) continue;
+      if (key?.startsWith("ij-listening:")) keys.push(key);
+    }
+    for (const key of keys) {
       try {
         const value = JSON.parse(localStorage.getItem(key));
-        if (value.experiment_id === experiment.id && value.experiment_digest === digest) matches.push(value);
-      } catch {}
+        if (value.experiment_id === experiment.id && value.experiment_digest === digest) matches.push({ key, value });
+      } catch {
+        localStorage.removeItem(key);
+        setStatus("Discarded malformed stored session. Use a known-good manual recovery copy if available.");
+      }
     }
-    matches.sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)));
-    return matches[0] ?? null;
+    matches.sort((a, b) => String(b.value.started_at).localeCompare(String(a.value.started_at)));
+    for (const entry of matches) {
+      try {
+        return await validateRestoredSession(entry.value);
+      } catch (error) {
+        localStorage.removeItem(entry.key);
+        setStatus(`Discarded invalid stored session (${error.message}). Use a known-good manual recovery copy if available.`);
+      }
+    }
+    return null;
   } catch (error) {
     storageAvailable = false;
     setStatus(`Browser storage cannot be read (${error.name}). New sessions still work in memory and can be copied manually.`);
@@ -253,21 +267,27 @@ const durationCache = new Map();
 
 function durationMs(path) {
   const url = audioUrl(path);
-  if (!durationCache.has(url)) durationCache.set(url, new Promise((resolve, reject) => {
-    const audio = new Audio();
-    const timeout = setTimeout(() => reject(new Error("audio metadata timed out")), 10000);
-    audio.preload = "metadata";
-    audio.addEventListener("loadedmetadata", () => {
-      clearTimeout(timeout);
-      if (!Number.isFinite(audio.duration) || audio.duration <= 0) reject(new Error("audio duration is invalid"));
-      else resolve(Math.round(audio.duration * 1000));
-    }, { once: true });
-    audio.addEventListener("error", () => {
-      clearTimeout(timeout);
-      reject(new Error("audio metadata could not be loaded"));
-    }, { once: true });
-    audio.src = url;
-  }));
+  if (!durationCache.has(url)) {
+    const pending = new Promise((resolve, reject) => {
+      const audio = new Audio();
+      const timeout = setTimeout(() => reject(new Error("audio metadata timed out")), 10000);
+      audio.preload = "metadata";
+      audio.addEventListener("loadedmetadata", () => {
+        clearTimeout(timeout);
+        if (!Number.isFinite(audio.duration) || audio.duration <= 0) reject(new Error("audio duration is invalid"));
+        else resolve(Math.round(audio.duration * 1000));
+      }, { once: true });
+      audio.addEventListener("error", () => {
+        clearTimeout(timeout);
+        reject(new Error("audio metadata could not be loaded"));
+      }, { once: true });
+      audio.src = url;
+    }).catch((error) => {
+      durationCache.delete(url);
+      throw error;
+    });
+    durationCache.set(url, pending);
+  }
   return durationCache.get(url);
 }
 
@@ -407,7 +427,7 @@ $("#clear").addEventListener("click", () => {
   location.reload();
 });
 
-recoverableSession = recoverStoredSession();
+recoverableSession = await recoverStoredSession();
 if (recoverableSession) {
   $("#resume").hidden = false;
   $("#resume").textContent = recoverableSession.submitted_at ? "Recover completed session" : `Resume saved session (${recoverableSession.trials.length}/${experiment.trials.length})`;

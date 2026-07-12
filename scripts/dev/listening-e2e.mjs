@@ -2,7 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, webkit } from "playwright";
 import { manifestDigest, presentations, trialOrder } from "../../evals/listening/randomization.js";
@@ -13,6 +13,7 @@ const BROWSER_NAME = process.env.LISTENING_BROWSER ?? "chromium";
 const BROWSER = BROWSER_NAME === "webkit" ? webkit : chromium;
 const port = 8174;
 const server = spawn(PYTHON, ["-m", "http.server", String(port), "--bind", "127.0.0.1"], { cwd: ROOT, stdio: "ignore" });
+const servers = [server];
 const downloads = await mkdtemp(join(tmpdir(), "ij-listening-downloads-"));
 const campaignRoot = await mkdtemp(join(ROOT, ".listening-e2e-"));
 let browser;
@@ -166,8 +167,10 @@ try {
   };
 
   const { candidate, bundle, analysis } = await createCampaignBundle();
-  const bundleUrl = relative(ROOT, join(bundle, "index.html")).split(sep).join("/");
-  const campaignUrl = `http://127.0.0.1:${port}/${bundleUrl}?seed=305419896`;
+  const campaignPort = port + 1;
+  servers.push(spawn(PYTHON, ["-m", "http.server", String(campaignPort), "--bind", "127.0.0.1"], { cwd: bundle, stdio: "ignore" }));
+  await waitForServer(`http://127.0.0.1:${campaignPort}/`);
+  const campaignUrl = `http://127.0.0.1:${campaignPort}/?seed=305419896`;
   await page.goto(campaignUrl, { waitUntil: "networkidle" });
   const publicExperiment = JSON.parse(await readFile(join(bundle, "experiment.json"), "utf8"));
   const publicText = JSON.stringify(publicExperiment);
@@ -176,6 +179,7 @@ try {
   await completeSetup(page, "campaign-browser-pilot");
   const campaignVisible = await page.locator("body").innerText();
   const mediaUrls = await page.locator("audio").evaluateAll((elements) => elements.map((element) => element.src));
+  const campaignPrivateStatus = (await fetch(`http://127.0.0.1:${campaignPort}/listening-analysis.json`)).status;
   if (/candidate|incumbent/i.test(campaignVisible) || mediaUrls.some((url) => /candidate|incumbent/i.test(url))) {
     throw new Error(`campaign browser surface leaks condition identity: ${campaignVisible} ${JSON.stringify(mediaUrls)}`);
   }
@@ -189,27 +193,50 @@ try {
   await page.getByRole("button", { name: "Submit session" }).click();
   const campaignSessionPath = join(downloads, "campaign-session.json");
   const campaignSession = await exportSession(page, campaignSessionPath);
+  const manualFallbackSessionId = JSON.parse(await page.locator("#manual-export").inputValue()).session_id;
   const analysisPath = join(downloads, "campaign-analysis.json");
   runPython(["scripts/dev/listening.py", "analyze", analysis, campaignSessionPath, "--out", analysisPath]);
   const campaignAnalysis = JSON.parse(await readFile(analysisPath, "utf8"));
+  await page.evaluate((valid) => {
+    const corrupt = structuredClone(valid);
+    corrupt.session_id = "corrupt-stored-session";
+    corrupt.started_at = "9999-12-31T23:59:59.999Z";
+    corrupt.trials[0].playback[corrupt.trials[0].presentation[0]].listened_ms = 0;
+    localStorage.setItem("ij-listening:corrupt-stored-session", JSON.stringify(corrupt));
+    localStorage.setItem("ij-listening:malformed-stored-session", "{not-json");
+  }, campaignSession);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Recover completed session" }).waitFor();
+  const recoveryStatus = await page.locator("#status").innerText();
+  const storedRecovery = await page.evaluate(() => ({
+    corruptRemoved: localStorage.getItem("ij-listening:corrupt-stored-session") === null,
+    malformedRemoved: localStorage.getItem("ij-listening:malformed-stored-session") === null,
+  }));
   const campaignAssertions = {
     sampleRate44100: publicExperiment.sample_rate === 44100,
     participantManifestIsOpaque: !/candidate|incumbent|role|source_sha|222222/i.test(publicText),
+    privateManifestNotServed: campaignPrivateStatus === 404,
     digestMatchesAcrossLanguages: campaignSession.experiment_digest === await manifestDigest(publicExperiment)
       && campaignSession.experiment_digest === campaignAnalysis.experiment_digest,
     resumeRecoveredCompletedTrial: firstProgress.includes("Trial 2 of 2") && resumedProgress.includes("Trial 2 of 2") && campaignSession.trials.length === 2,
     completePlaybackStored: campaignSession.trials.every((trial) => Object.values(trial.playback).every((item) => item.completed === 1 && item.listened_ms >= 790)),
     pythonAcceptedBrowserSession: campaignAnalysis.n_submitted === 1 && campaignAnalysis.n_included === 1,
     rawSessionRetained: campaignAnalysis.raw_sessions[0].session_id === campaignSession.session_id,
-    manualFallbackPopulated: JSON.parse(await page.locator("#manual-export").inputValue()).session_id === campaignSession.session_id,
+    manualFallbackPopulated: manualFallbackSessionId === campaignSession.session_id,
+    corruptStoredSessionRejected: storedRecovery.corruptRemoved,
+    malformedStoredSessionRejected: storedRecovery.malformedRemoved,
+    invalidStorageWarningShown: recoveryStatus.startsWith("Discarded "),
     noVerdict: campaignAnalysis.quality_verdict === null,
   };
 
   const abx = await createAbxBundle(candidate, bundle, analysis);
-  const abxUrl = relative(ROOT, join(abx.bundle, "index.html")).split(sep).join("/");
-  await page.goto(`http://127.0.0.1:${port}/${abxUrl}?seed=2271560481`, { waitUntil: "networkidle" });
+  const abxPort = port + 2;
+  servers.push(spawn(PYTHON, ["-m", "http.server", String(abxPort), "--bind", "127.0.0.1"], { cwd: abx.bundle, stdio: "ignore" }));
+  await waitForServer(`http://127.0.0.1:${abxPort}/`);
+  await page.goto(`http://127.0.0.1:${abxPort}/?seed=2271560481`, { waitUntil: "networkidle" });
   const abxPublicText = JSON.stringify(abx.experiment);
   if (/x_source|candidate|incumbent/i.test(abxPublicText)) throw new Error("ABX participant manifest exposes its answer key");
+  const abxPrivateStatus = (await fetch(`http://127.0.0.1:${abxPort}/listening-abx-analysis.json`)).status;
   await completeSetup(page, "abx-browser-pilot");
   for (let trial = 0; trial < abx.experiment.trials.length; trial++) {
     await playEveryVisibleSampleToCompletion(page);
@@ -223,6 +250,7 @@ try {
   const abxAnalysis = JSON.parse(await readFile(abxAnalysisPath, "utf8"));
   const abxAssertions = {
     publicAnswerKeyAbsent: !/x_source|candidate|incumbent/i.test(abxPublicText),
+    privateAnswerKeyNotServed: abxPrivateStatus === 404,
     opaqueXPlayedCompletely: abxSession.trials.every((trial) => trial.playback.x.completed === 1),
     pythonAcceptedBrowserSession: abxAnalysis.n_included === 1 && abxAnalysis.abx.total === abx.experiment.trials.length,
     noVerdict: abxAnalysis.quality_verdict === null,
@@ -289,7 +317,7 @@ try {
   if (verdict !== "PASS") process.exitCode = 1;
 } finally {
   if (browser) await browser.close();
-  server.kill("SIGTERM");
+  for (const child of servers) child.kill("SIGTERM");
   await rm(downloads, { recursive: true, force: true });
   await rm(campaignRoot, { recursive: true, force: true });
 }
