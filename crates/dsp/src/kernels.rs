@@ -238,7 +238,7 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::Drums => 0.56,        // drums r3 re-bake (kick vel law + snare band)
         Instrument::SynthPad => 0.50,     // was -26.5 LUFS
         Instrument::Piano => 0.130, // piano r3 re-measure (board dip + radiation revoice; x1.46 per measure-loudness)
-        Instrument::GuitarSteel => 0.213,   // guitar r3 re-bake (acceleration chain ran +9 dB at 0.46)
+        Instrument::GuitarSteel => 0.362,   // re-bake after onset-impulse fix (the impulse carried 4.6 LU of K-weighted loudness)
         Instrument::GuitarElectric => 0.41, // electric r3 re-bake (bright-028 rig, pyloudnorm -22.5 pre-bake)
         Instrument::GuitarDistorted => 0.21, // electric r3 re-bake (drive-90 lead, tone 5.5k)
         Instrument::DrumsRock => 0.38,      // drums r3 re-bake (rock snare 1.45 anchor)
