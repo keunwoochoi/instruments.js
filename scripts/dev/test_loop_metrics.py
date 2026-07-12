@@ -121,6 +121,54 @@ class AlignmentAndDistanceTests(unittest.TestCase):
         self.assertEqual(result["mean"], 0.0)
 
 
+class TrajectoryAndStructureTests(unittest.TestCase):
+    def test_decay_mutation_increases_envelope_trajectory_distance(self):
+        t = np.arange(SR) / SR
+        slow = np.sin(2 * np.pi * 440 * t) * np.exp(-2 * t)
+        fast = np.sin(2 * np.pi * 440 * t) * np.exp(-6 * t)
+        identity = compare.trajectory_diagnostics(slow, slow, SR, 30)
+        mutation = compare.trajectory_diagnostics(fast, slow, SR, 30)
+        self.assertEqual(identity["envelope_db"]["distance"]["cost"], 0.0)
+        self.assertGreater(mutation["envelope_db"]["distance"]["cost"], 1.0)
+
+    def test_decay_mutation_increases_partial_decay_trajectory_distance(self):
+        t = np.arange(SR) / SR
+        slow = np.sin(2 * np.pi * 440 * t) * np.exp(-2 * t)
+        fast = np.sin(2 * np.pi * 440 * t) * np.exp(-6 * t)
+        identity = compare.trajectory_diagnostics(slow, slow, SR, 30, 440.0)
+        mutation = compare.trajectory_diagnostics(fast, slow, SR, 30, 440.0)
+        self.assertEqual(identity["partial_decay_db"]["distances"]["1"]["cost"], 0.0)
+        self.assertGreater(mutation["partial_decay_db"]["distances"]["1"]["cost"], 1.0)
+
+    def test_bounded_warp_reports_and_limits_displacement(self):
+        a = [0, 1, 2, 3, 4, 5]
+        b = [0, 0, 1, 2, 3, 4]
+        rigid = compare.bounded_dtw(a, b, 0)
+        warped = compare.bounded_dtw(a, b, 2)
+        self.assertLess(warped["cost"], rigid["cost"])
+        self.assertLessEqual(warped["max_displacement_frames"], 2)
+
+    def test_detune_increases_fundamental_aware_partial_residual(self):
+        reference = tone(440, seconds=0.8)
+        identity = compare.match_harmonic_partials(reference, reference, SR, 440.0)
+        detuned = compare.match_harmonic_partials(tone(445, seconds=0.8), reference, SR, 440.0)
+        self.assertEqual(identity["mean_abs_cents"], 0.0)
+        self.assertGreater(detuned["mean_abs_cents"], 2.0)
+
+    def test_stereo_collapse_moves_width_and_correlation_axes(self):
+        t = np.arange(SR) / SR
+        left = np.sin(2 * np.pi * 440 * t)
+        right = np.sin(2 * np.pi * 440 * t + np.pi / 2)
+        wide = compare.stereo_stats(np.column_stack([left, right]))
+        collapsed = compare.stereo_stats(np.column_stack([left, left]))
+        self.assertGreater(wide["width_db"], collapsed["width_db"])
+        self.assertLess(wide["correlation"], collapsed["correlation"])
+
+    def test_profiles_own_thresholds(self):
+        self.assertEqual(compare.PROFILES["kick"]["thresholds"]["max_warp_ms"], 10.0)
+        self.assertGreater(compare.PROFILES["cymbal"]["thresholds"]["max_ultrasonic_ratio"], compare.PROFILES["default"]["thresholds"]["max_ultrasonic_ratio"])
+
+
 class ReportContractTests(unittest.TestCase):
     def test_reports_are_deterministic_and_content_addressed(self):
         x = tone(seconds=0.7)
@@ -196,8 +244,8 @@ class GoldenFixtureTests(unittest.TestCase):
             expected = json.load(f)
         ref = os.path.join(fixture_dir, "reference.wav")
         candidate = os.path.join(fixture_dir, "candidate-artifact.wav")
-        identity = compare.compare_files(ref, ref, expected_onset_s=0.05)
-        mutation = compare.compare_files(candidate, ref, expected_onset_s=0.05)
+        identity = compare.compare_files(ref, ref, expected_onset_s=0.05, expected_f0=440.0)
+        mutation = compare.compare_files(candidate, ref, expected_onset_s=0.05, expected_f0=440.0)
 
         self.assertEqual(identity["inputs"]["render"]["sha256"], expected["identity"]["render_sha256"])
         self.assertEqual(identity["mr_stft"], expected["identity"]["mr_stft"])
@@ -205,6 +253,9 @@ class GoldenFixtureTests(unittest.TestCase):
         self.assertEqual(mutation["inputs"]["render"]["sha256"], expected["artifact_mutation"]["render_sha256"])
         self.assertEqual(mutation["mr_stft"], expected["artifact_mutation"]["mr_stft"])
         self.assertEqual(mutation["logmel_dist"], expected["artifact_mutation"]["logmel_dist"])
+        self.assertEqual(mutation["trajectories"], expected["artifact_mutation"]["trajectories"])
+        self.assertEqual(mutation["harmonic_partials"], expected["artifact_mutation"]["harmonic_partials"])
+        self.assertEqual(mutation["stereo"], expected["artifact_mutation"]["stereo"])
         self.assertEqual(mutation["gates"], expected["artifact_mutation"]["gates"])
         self.assertEqual(mutation["interpretation"], "untrusted")
 

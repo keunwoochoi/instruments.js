@@ -276,6 +276,7 @@ def run_campaign(args):
             expected_onset_s=r["lead_seconds"],
             note_off_s=None if is_drum else r["lead_seconds"] + r["note_seconds"],
             max_post_note_off_db=case["analysis"].get("max_post_note_off_db"),
+            expected_f0=440.0 * (2.0 ** ((r["midi"] - 69) / 12.0)),
         )
         report_path = out / "reports" / f"{case['id']}.json"
         write_json(report_path, report)

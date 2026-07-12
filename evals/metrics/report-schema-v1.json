@@ -18,10 +18,13 @@
     "logmel_dist",
     "mr_stft",
     "gates",
+    "trajectories",
+    "harmonic_partials",
+    "stereo",
     "axis_validity"
   ],
   "properties": {
-    "schema_version": { "const": "1.0.0" },
+    "schema_version": { "const": "1.1.0" },
     "metric_version": { "type": "string", "minLength": 1 },
     "interpretation": { "enum": ["trusted", "untrusted"] },
     "inputs": {
@@ -70,6 +73,9 @@
         "trusted": { "type": "boolean" }
       }
     },
+    "trajectories": { "type": "object", "required": ["hop_ms", "max_warp_ms", "envelope_db", "centroid_hz", "partial_decay_db"] },
+    "harmonic_partials": { "type": ["object", "null"] },
+    "stereo": { "type": "object", "required": ["render", "reference"] },
     "axis_validity": { "type": "object" }
   },
   "$defs": {

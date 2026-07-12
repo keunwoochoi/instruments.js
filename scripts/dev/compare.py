@@ -16,6 +16,7 @@ def parse_args(argv=None):
     p.add_argument("--expected-onset-s", type=float)
     p.add_argument("--note-off-s", type=float)
     p.add_argument("--max-post-note-off-db", type=float)
+    p.add_argument("--expected-f0", type=float)
     p.add_argument("--json", action="store_true", help="retained for compatibility; JSON is always emitted")
     return p.parse_args(argv)
 
@@ -30,6 +31,7 @@ def main(argv=None):
         expected_onset_s=args.expected_onset_s,
         note_off_s=args.note_off_s,
         max_post_note_off_db=args.max_post_note_off_db,
+        expected_f0=args.expected_f0,
     )
     print(json.dumps(report, indent=2))
 
