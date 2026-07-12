@@ -32,10 +32,23 @@
     },
     "exclusion_policy": {
       "type": "object",
-      "required": ["min_completed_trials", "hidden_reference_min_score"],
+      "required": ["min_completed_trials", "hidden_reference_min_score", "min_plays_per_stimulus"],
       "properties": {
         "min_completed_trials": { "type": "integer", "minimum": 1 },
-        "hidden_reference_min_score": { "type": "integer", "minimum": 0, "maximum": 100 }
+        "hidden_reference_min_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "min_plays_per_stimulus": { "type": "integer", "minimum": 1, "maximum": 10 }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["generator", "candidate_commit", "baseline_commit", "metric_version", "case_manifest_sha256"],
+      "properties": {
+        "generator": { "const": "campaign-ab-v1" },
+        "candidate_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "baseline_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "metric_version": { "type": "string", "minLength": 1 },
+        "case_manifest_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
       },
       "additionalProperties": false
     },
@@ -64,7 +77,18 @@
         "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
         "path": { "type": "string", "pattern": "^(?!/)(?!.*\\.\\.).+\\.wav$" },
         "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-        "role": { "enum": ["candidate", "incumbent", "hidden_reference", "anchor"] }
+        "role": { "enum": ["candidate", "incumbent", "hidden_reference", "anchor"] },
+        "provenance": {
+          "type": "object",
+          "required": ["source_sha256", "gain_db", "integrated_lufs_before", "integrated_lufs_after"],
+          "properties": {
+            "source_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "gain_db": { "type": "number" },
+            "integrated_lufs_before": { "type": "number" },
+            "integrated_lufs_after": { "type": "number" }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

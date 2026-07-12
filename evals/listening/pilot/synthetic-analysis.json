@@ -14,7 +14,7 @@
       "session_id": "synthetic-pilot-6"
     }
   ],
-  "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+  "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
   "experiment_id": "hidden-reference-anchor-pilot",
   "interpretation": "Listening evidence with uncertainty; a human owner applies the declared gate. Synthetic pilot sessions validate only the harness.",
   "n_included": 5,
@@ -23,7 +23,7 @@
   "raw_sessions": [
     {
       "evidence_kind": "synthetic_harness_pilot",
-      "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+      "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
       "experiment_id": "hidden-reference-anchor-pilot",
       "listener": {
         "experience": "synthetic fixture",
@@ -44,6 +44,9 @@
       },
       "started_at": "2026-07-12T12:01:00Z",
       "submitted_at": "2026-07-12T12:01:30Z",
+      "trial_order": [
+        "synthetic-tone-mushra"
+      ],
       "trials": [
         {
           "play_counts": {
@@ -71,7 +74,7 @@
     },
     {
       "evidence_kind": "synthetic_harness_pilot",
-      "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+      "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
       "experiment_id": "hidden-reference-anchor-pilot",
       "listener": {
         "experience": "synthetic fixture",
@@ -92,6 +95,9 @@
       },
       "started_at": "2026-07-12T12:02:00Z",
       "submitted_at": "2026-07-12T12:02:30Z",
+      "trial_order": [
+        "synthetic-tone-mushra"
+      ],
       "trials": [
         {
           "play_counts": {
@@ -119,7 +125,7 @@
     },
     {
       "evidence_kind": "synthetic_harness_pilot",
-      "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+      "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
       "experiment_id": "hidden-reference-anchor-pilot",
       "listener": {
         "experience": "synthetic fixture",
@@ -140,6 +146,9 @@
       },
       "started_at": "2026-07-12T12:03:00Z",
       "submitted_at": "2026-07-12T12:03:30Z",
+      "trial_order": [
+        "synthetic-tone-mushra"
+      ],
       "trials": [
         {
           "play_counts": {
@@ -167,7 +176,7 @@
     },
     {
       "evidence_kind": "synthetic_harness_pilot",
-      "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+      "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
       "experiment_id": "hidden-reference-anchor-pilot",
       "listener": {
         "experience": "synthetic fixture",
@@ -188,6 +197,9 @@
       },
       "started_at": "2026-07-12T12:04:00Z",
       "submitted_at": "2026-07-12T12:04:30Z",
+      "trial_order": [
+        "synthetic-tone-mushra"
+      ],
       "trials": [
         {
           "play_counts": {
@@ -215,7 +227,7 @@
     },
     {
       "evidence_kind": "synthetic_harness_pilot",
-      "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+      "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
       "experiment_id": "hidden-reference-anchor-pilot",
       "listener": {
         "experience": "synthetic fixture",
@@ -236,6 +248,9 @@
       },
       "started_at": "2026-07-12T12:05:00Z",
       "submitted_at": "2026-07-12T12:05:30Z",
+      "trial_order": [
+        "synthetic-tone-mushra"
+      ],
       "trials": [
         {
           "play_counts": {
@@ -263,7 +278,7 @@
     },
     {
       "evidence_kind": "synthetic_harness_pilot",
-      "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+      "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
       "experiment_id": "hidden-reference-anchor-pilot",
       "listener": {
         "experience": "synthetic fixture",
@@ -284,6 +299,9 @@
       },
       "started_at": "2026-07-12T12:06:00Z",
       "submitted_at": "2026-07-12T12:06:30Z",
+      "trial_order": [
+        "synthetic-tone-mushra"
+      ],
       "trials": [
         {
           "play_counts": {
@@ -315,7 +333,7 @@
     "condition-a": {
       "mean": 22.0,
       "mean_ci95_bootstrap": [
-        19.4,
+        19.2,
         24.6
       ],
       "median": 21.0,
@@ -338,7 +356,7 @@
       "mean": 97.2,
       "mean_ci95_bootstrap": [
         95.8,
-        98.6
+        98.8
       ],
       "median": 97.0,
       "n": 5,

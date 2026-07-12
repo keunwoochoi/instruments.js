@@ -33,10 +33,23 @@ export function presentations(experiment, seed) {
   ]));
 }
 
+export function trialOrder(experiment, seed) {
+  return shuffleIds(experiment.trials.map((trial) => trial.id), trialSeed(seed, experiment.trials.length));
+}
+
 export function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value && typeof value === "object") {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("canonical JSON does not permit non-finite numbers");
+    if (Number.isInteger(value)) {
+      if (!Number.isSafeInteger(value)) throw new Error("canonical JSON integer exceeds the browser-safe range");
+      return String(value);
+    }
+    const [mantissa, exponent] = value.toExponential(16).split("e");
+    return `${mantissa}e${Number(exponent)}`;
   }
   return JSON.stringify(value);
 }

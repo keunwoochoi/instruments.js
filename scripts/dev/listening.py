@@ -12,22 +12,54 @@ import hashlib
 import json
 import math
 import random
+import shutil
 import statistics
 import sys
 from pathlib import Path
 from typing import Any, Iterable
 
 import jsonschema
+import numpy as np
+import pyloudnorm
+import soundfile as sf
 
 
 ROOT = Path(__file__).resolve().parents[2]
 LISTENING_ROOT = ROOT / "evals" / "listening"
 SCHEMA_VERSION = "1.0.0"
 RANDOMIZATION_ALGORITHM = "xorshift32-fisher-yates-v1"
+CAMPAIGN_BUNDLE_VERSION = "campaign-ab-v1"
+CAMPAIGN_TARGET_LUFS = -23.0
+CAMPAIGN_TOLERANCE_LU = 0.1
 
 
 def canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    def encode(item: Any) -> str:
+        if isinstance(item, dict):
+            return "{" + ",".join(
+                f"{json.dumps(key, ensure_ascii=False)}:{encode(item[key])}" for key in sorted(item)
+            ) + "}"
+        if isinstance(item, list):
+            return "[" + ",".join(encode(child) for child in item) + "]"
+        if item is None or isinstance(item, (str, bool)):
+            return json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+        if isinstance(item, int):
+            if abs(item) > 9_007_199_254_740_991:
+                raise ValueError("canonical JSON integer exceeds the browser-safe range")
+            return str(item)
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ValueError("canonical JSON does not permit non-finite numbers")
+            if item.is_integer():
+                integer = int(item)
+                if abs(integer) > 9_007_199_254_740_991:
+                    raise ValueError("canonical JSON integer exceeds the browser-safe range")
+                return str(integer)
+            mantissa, exponent = format(item, ".16e").split("e")
+            return f"{mantissa}e{int(exponent)}"
+        raise TypeError(f"unsupported canonical JSON value: {type(item).__name__}")
+
+    return encode(value)
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -62,6 +94,125 @@ def _safe_audio_path(base: Path, relative: str) -> Path:
     return candidate
 
 
+def _prepare_level_matched_audio(source: Path, destination: Path, target_lufs: float) -> dict[str, Any]:
+    audio, sample_rate = sf.read(source, dtype="float64", always_2d=True)
+    if audio.size == 0 or not np.isfinite(audio).all():
+        raise ValueError(f"invalid campaign listening source: {source}")
+    meter = pyloudnorm.Meter(sample_rate)
+    before = float(meter.integrated_loudness(audio))
+    if not math.isfinite(before):
+        raise ValueError(f"campaign listening source has no measurable loudness: {source}")
+    prepared = np.asarray(pyloudnorm.normalize.loudness(audio, before, target_lufs), dtype=np.float64)
+    peak = float(np.max(np.abs(prepared)))
+    if not np.isfinite(prepared).all() or peak >= 1.0:
+        raise ValueError(f"campaign listening normalization clips {source}: peak={peak}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(destination, prepared, sample_rate, subtype="FLOAT")
+    round_trip, written_rate = sf.read(destination, dtype="float64", always_2d=True)
+    after = float(pyloudnorm.Meter(written_rate).integrated_loudness(round_trip))
+    if abs(after - target_lufs) > CAMPAIGN_TOLERANCE_LU:
+        raise ValueError(f"campaign listening loudness missed target for {source}: {after} LUFS")
+    return {
+        "source_sha256": sha256_bytes(source.read_bytes()),
+        "gain_db": round(target_lufs - before, 6),
+        "integrated_lufs_before": round(before, 6),
+        "integrated_lufs_after": round(after, 6),
+    }
+
+
+def prepare_campaign_bundle(iteration_dir: Path | str, baseline_dir: Path | str, out: Path | str) -> dict[str, Any]:
+    iteration_dir = Path(iteration_dir).resolve()
+    baseline_dir = Path(baseline_dir).resolve()
+    out = Path(out).resolve()
+    if out.exists() and any(out.iterdir()):
+        raise FileExistsError(f"listening bundle directory is not empty: {out}")
+    candidate = load_json(iteration_dir / "iteration.json")
+    baseline = load_json(baseline_dir / "iteration.json")
+    if candidate["family"] != baseline["family"]:
+        raise ValueError("candidate and baseline listening families differ")
+    baseline_cases = {item["id"]: item for item in baseline["cases"]}
+    candidate_ids = [item["id"] for item in candidate["cases"]]
+    if set(candidate_ids) != set(baseline_cases):
+        raise ValueError("candidate and baseline listening case matrices differ")
+
+    out.mkdir(parents=True, exist_ok=True)
+    for name in ("app.js", "randomization.js", "style.css"):
+        shutil.copyfile(LISTENING_ROOT / name, out / name)
+    index = (LISTENING_ROOT / "index.html").read_text()
+    index = index.replace(
+        '<meta name="ij-listening-experiment" content="pilot/experiment.json">',
+        '<meta name="ij-listening-experiment" content="experiment.json">',
+    )
+    (out / "index.html").write_text(index)
+
+    sample_rates: set[int] = set()
+    trials: list[dict[str, Any]] = []
+    for case in candidate["cases"]:
+        case_id = case["id"]
+        if not case_id or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-" for character in case_id):
+            raise ValueError(f"unsafe listening case id: {case_id}")
+        sources = {
+            "incumbent": baseline_dir / "renders" / f"{case_id}.wav",
+            "candidate": iteration_dir / "renders" / f"{case_id}.wav",
+        }
+        stimuli = []
+        for role, source in sources.items():
+            if not source.is_file():
+                raise FileNotFoundError(f"missing campaign listening source: {source}")
+            sample_rates.add(sf.info(source).samplerate)
+            stimulus_id = f"{case_id}-{role}"
+            relative = Path("audio") / f"{stimulus_id}.wav"
+            provenance = _prepare_level_matched_audio(source, out / relative, CAMPAIGN_TARGET_LUFS)
+            stimuli.append({
+                "id": stimulus_id,
+                "path": relative.as_posix(),
+                "sha256": sha256_bytes((out / relative).read_bytes()),
+                "role": role,
+                "provenance": provenance,
+            })
+        trials.append({
+            "id": case_id,
+            "protocol": "ab",
+            "prompt": f"Which rendering better matches the intended {candidate['family']} sound for {case_id}?",
+            "stimuli": stimuli,
+        })
+    if len(sample_rates) != 1 or next(iter(sample_rates)) not in {44100, 48000}:
+        raise ValueError(f"campaign listening bundle requires one browser sample rate, got {sorted(sample_rates)}")
+
+    experiment = {
+        "schema_version": SCHEMA_VERSION,
+        "id": f"{candidate['family']}-{candidate['source']['commit'][:12]}-iteration",
+        "title": f"Blind {candidate['family']} iteration",
+        "purpose": "iteration",
+        "instructions": "Keep playback volume fixed. Compare realism, articulation, and artifacts; use no preference when neither rendering is clearly better.",
+        "sample_rate": next(iter(sample_rates)),
+        "level_matching": {
+            "method": "bs1770_integrated",
+            "target_lufs": CAMPAIGN_TARGET_LUFS,
+            "tolerance_lu": CAMPAIGN_TOLERANCE_LU,
+        },
+        "randomization": {"algorithm": RANDOMIZATION_ALGORITHM, "seed_policy": "per_listener"},
+        "exclusion_policy": {"min_completed_trials": len(trials), "hidden_reference_min_score": 90, "min_plays_per_stimulus": 1},
+        "provenance": {
+            "generator": CAMPAIGN_BUNDLE_VERSION,
+            "candidate_commit": candidate["source"]["commit"],
+            "baseline_commit": baseline["source"]["commit"],
+            "metric_version": candidate["metric_version"],
+            "case_manifest_sha256": candidate["manifest"]["sha256"],
+        },
+        "trials": trials,
+    }
+    experiment_path = out / "experiment.json"
+    experiment_path.write_text(json.dumps(experiment, indent=2, sort_keys=True) + "\n")
+    validated = validate_experiment(experiment_path)
+    return {
+        "experiment": str(experiment_path.relative_to(iteration_dir)),
+        "experiment_digest": manifest_digest(validated),
+        "protocol": "ab",
+        "trials": len(trials),
+    }
+
+
 def validate_experiment(path: Path | str, verify_files: bool = True) -> dict[str, Any]:
     path = Path(path)
     value = load_json(path)
@@ -69,7 +220,7 @@ def validate_experiment(path: Path | str, verify_files: bool = True) -> dict[str
     _require_keys(
         value,
         {"schema_version", "id", "title", "purpose", "instructions", "sample_rate", "level_matching", "randomization", "exclusion_policy", "trials"},
-        {"schema_version", "id", "title", "purpose", "instructions", "sample_rate", "level_matching", "randomization", "exclusion_policy", "trials"},
+        {"schema_version", "id", "title", "purpose", "instructions", "sample_rate", "level_matching", "randomization", "exclusion_policy", "trials", "provenance"},
         "experiment",
     )
     if value["schema_version"] != SCHEMA_VERSION:
@@ -86,11 +237,26 @@ def validate_experiment(path: Path | str, verify_files: bool = True) -> dict[str
     _require_keys(value["level_matching"], {"method", "target_lufs", "tolerance_lu"}, {"method", "target_lufs", "tolerance_lu"}, "level_matching")
     if value["level_matching"]["method"] not in {"bs1770_integrated", "declared_prematched"}:
         raise ValueError("level matching method is invalid")
-    _require_keys(value["exclusion_policy"], {"min_completed_trials", "hidden_reference_min_score"}, {"min_completed_trials", "hidden_reference_min_score"}, "exclusion_policy")
+    if "provenance" in value:
+        _require_keys(
+            value["provenance"],
+            {"generator", "candidate_commit", "baseline_commit", "metric_version", "case_manifest_sha256"},
+            {"generator", "candidate_commit", "baseline_commit", "metric_version", "case_manifest_sha256"},
+            "experiment provenance",
+        )
+        if value["provenance"]["generator"] != CAMPAIGN_BUNDLE_VERSION:
+            raise ValueError("unsupported campaign listening generator")
+    _require_keys(
+        value["exclusion_policy"],
+        {"min_completed_trials", "hidden_reference_min_score", "min_plays_per_stimulus"},
+        {"min_completed_trials", "hidden_reference_min_score", "min_plays_per_stimulus"},
+        "exclusion_policy",
+    )
     if not isinstance(value["trials"], list) or not value["trials"]:
         raise ValueError("experiment must contain trials")
 
     trial_ids: set[str] = set()
+    experiment_stimulus_ids: set[str] = set()
     base = path.parent
     for trial in value["trials"]:
         _require_keys(trial, {"id", "protocol", "prompt", "stimuli"}, {"id", "protocol", "prompt", "stimuli", "reference", "x_source"}, f"trial {trial.get('id', '?')}")
@@ -111,10 +277,13 @@ def validate_experiment(path: Path | str, verify_files: bool = True) -> dict[str
         stimulus_ids: set[str] = set()
         roles: list[str] = []
         for stimulus in stimuli:
-            _require_keys(stimulus, {"id", "path", "sha256", "role"}, {"id", "path", "sha256", "role"}, f"{trial_id} stimulus")
+            _require_keys(stimulus, {"id", "path", "sha256", "role"}, {"id", "path", "sha256", "role", "provenance"}, f"{trial_id} stimulus")
             if stimulus["id"] in stimulus_ids:
                 raise ValueError(f"{trial_id}: duplicate stimulus id {stimulus['id']}")
+            if stimulus["id"] in experiment_stimulus_ids:
+                raise ValueError(f"stimulus id must be globally unique: {stimulus['id']}")
             stimulus_ids.add(stimulus["id"])
+            experiment_stimulus_ids.add(stimulus["id"])
             roles.append(stimulus["role"])
             audio = _safe_audio_path(base, stimulus["path"])
             if verify_files:
@@ -123,8 +292,28 @@ def validate_experiment(path: Path | str, verify_files: bool = True) -> dict[str
                 actual = sha256_bytes(audio.read_bytes())
                 if actual != stimulus["sha256"]:
                     raise ValueError(f"stimulus digest mismatch: {stimulus['id']}")
+                info = sf.info(audio)
+                if info.samplerate != value["sample_rate"]:
+                    raise ValueError(f"{trial_id}: stimulus sample rate mismatch")
+                samples, rate = sf.read(audio, dtype="float64", always_2d=True)
+                loudness = float(pyloudnorm.Meter(rate).integrated_loudness(samples))
+                target = value["level_matching"]["target_lufs"]
+                tolerance = value["level_matching"]["tolerance_lu"]
+                if not math.isfinite(loudness) or abs(loudness - target) > tolerance:
+                    raise ValueError(f"{trial_id}: stimulus loudness outside declared tolerance: {loudness}")
+                if "provenance" in stimulus:
+                    _require_keys(
+                        stimulus["provenance"],
+                        {"source_sha256", "gain_db", "integrated_lufs_before", "integrated_lufs_after"},
+                        {"source_sha256", "gain_db", "integrated_lufs_before", "integrated_lufs_after"},
+                        f"{trial_id} stimulus provenance",
+                    )
+                    if abs(stimulus["provenance"]["integrated_lufs_after"] - loudness) > 0.01:
+                        raise ValueError(f"{trial_id}: prepared loudness provenance mismatch")
         if protocol == "abx" and trial.get("x_source") not in stimulus_ids:
             raise ValueError(f"{trial_id}: x_source must name an A/B stimulus")
+        if protocol in {"ab", "abx"} and sorted(roles) != ["candidate", "incumbent"]:
+            raise ValueError(f"{trial_id}: {protocol} requires one candidate and one incumbent")
         if protocol == "mushra":
             if "reference" not in trial:
                 raise ValueError(f"{trial_id}: MUSHRA requires an explicit reference")
@@ -134,6 +323,10 @@ def validate_experiment(path: Path | str, verify_files: bool = True) -> dict[str
             if verify_files:
                 if not reference_path.is_file() or sha256_bytes(reference_path.read_bytes()) != reference["sha256"]:
                     raise ValueError(f"{trial_id}: reference digest mismatch")
+                reference_audio, reference_rate = sf.read(reference_path, dtype="float64", always_2d=True)
+                reference_loudness = float(pyloudnorm.Meter(reference_rate).integrated_loudness(reference_audio))
+                if reference_rate != value["sample_rate"] or abs(reference_loudness - value["level_matching"]["target_lufs"]) > value["level_matching"]["tolerance_lu"]:
+                    raise ValueError(f"{trial_id}: explicit reference violates sample-rate or loudness contract")
             hidden = [item for item in stimuli if item["role"] == "hidden_reference"]
             anchors = [item for item in stimuli if item["role"] == "anchor"]
             if len(hidden) != 1 or not anchors:
@@ -177,12 +370,16 @@ def expected_presentations(experiment: dict[str, Any], seed: int) -> dict[str, l
     }
 
 
+def expected_trial_order(experiment: dict[str, Any], seed: int) -> list[str]:
+    return shuffled_ids((trial["id"] for trial in experiment["trials"]), trial_seed(seed, len(experiment["trials"])))
+
+
 def validate_session(session: dict[str, Any], experiment: dict[str, Any], digest: str) -> None:
     jsonschema.validate(session, load_json(LISTENING_ROOT / "session-schema-v1.json"))
     _require_keys(
         session,
-        {"schema_version", "experiment_id", "experiment_digest", "session_id", "evidence_kind", "listener", "setup", "randomization", "started_at", "submitted_at", "trials"},
-        {"schema_version", "experiment_id", "experiment_digest", "session_id", "evidence_kind", "listener", "setup", "randomization", "started_at", "submitted_at", "trials"},
+        {"schema_version", "experiment_id", "experiment_digest", "session_id", "evidence_kind", "listener", "setup", "randomization", "trial_order", "started_at", "submitted_at", "trials"},
+        {"schema_version", "experiment_id", "experiment_digest", "session_id", "evidence_kind", "listener", "setup", "randomization", "trial_order", "started_at", "submitted_at", "trials"},
         "session",
     )
     if session["schema_version"] != SCHEMA_VERSION or session["experiment_id"] != experiment["id"] or session["experiment_digest"] != digest:
@@ -198,6 +395,11 @@ def validate_session(session: dict[str, Any], experiment: dict[str, Any], digest
     if randomization["algorithm"] != RANDOMIZATION_ALGORITHM or not isinstance(randomization["seed"], int):
         raise ValueError("session randomization is invalid")
     expected = expected_presentations(experiment, randomization["seed"])
+    trial_order = expected_trial_order(experiment, randomization["seed"])
+    if session["trial_order"] != trial_order:
+        raise ValueError("session trial order/randomization mismatch")
+    if [response["trial_id"] for response in session["trials"]] != trial_order[:len(session["trials"])]:
+        raise ValueError("response order does not match randomized trial order")
     trials_by_id = {trial["id"]: trial for trial in experiment["trials"]}
     seen: set[str] = set()
     for response in session["trials"]:
@@ -224,8 +426,7 @@ def validate_session(session: dict[str, Any], experiment: dict[str, Any], digest
             raise ValueError(f"{trial_id}: ABX choice invalid")
 
 
-def _percentile(values: list[float], q: float) -> float:
-    ordered = sorted(values)
+def _percentile(ordered: list[float], q: float) -> float:
     if not ordered:
         return math.nan
     position = (len(ordered) - 1) * q
@@ -240,7 +441,8 @@ def bootstrap_mean_ci(values: list[float], seed: int, iterations: int = 2000) ->
     if not values:
         return None
     rng = random.Random(seed)
-    means = [statistics.fmean(rng.choice(values) for _ in values) for _ in range(iterations)]
+    means = [statistics.fmean(rng.choices(values, k=len(values))) for _ in range(iterations)]
+    means.sort()
     return [round(_percentile(means, 0.025), 3), round(_percentile(means, 0.975), 3)]
 
 
@@ -269,6 +471,8 @@ def analyze(experiment: dict[str, Any], sessions: list[dict[str, Any]]) -> dict[
             reasons.append("incomplete")
         for response in session["trials"]:
             trial = trials_by_id[response["trial_id"]]
+            if any(count < policy["min_plays_per_stimulus"] for count in response["play_counts"].values()):
+                reasons.append(f"insufficient_playback:{trial['id']}")
             if trial["protocol"] == "mushra":
                 hidden = next(item["id"] for item in trial["stimuli"] if item["role"] == "hidden_reference")
                 if response["response"]["ratings"][hidden] < policy["hidden_reference_min_score"]:
@@ -360,7 +564,15 @@ def main(argv: list[str] | None = None) -> int:
     analyze_parser.add_argument("results", nargs="+")
     analyze_parser.add_argument("--out", required=True)
     analyze_parser.add_argument("--markdown")
+    prepare = sub.add_parser("prepare-campaign")
+    prepare.add_argument("iteration")
+    prepare.add_argument("--baseline", required=True)
+    prepare.add_argument("--out", required=True)
     args = parser.parse_args(argv)
+    if args.command == "prepare-campaign":
+        result = prepare_campaign_bundle(args.iteration, args.baseline, args.out)
+        print(json.dumps(result, sort_keys=True))
+        return 0
     experiment = validate_experiment(args.experiment, verify_files=not getattr(args, "no_files", False))
     if args.command == "validate":
         print(json.dumps({"experiment": experiment["id"], "digest": manifest_digest(experiment), "trials": len(experiment["trials"])}))

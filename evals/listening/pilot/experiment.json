@@ -16,7 +16,8 @@
   },
   "exclusion_policy": {
     "min_completed_trials": 1,
-    "hidden_reference_min_score": 90
+    "hidden_reference_min_score": 90,
+    "min_plays_per_stimulus": 1
   },
   "trials": [
     {

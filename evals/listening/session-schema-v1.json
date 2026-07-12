@@ -3,7 +3,7 @@
   "$id": "https://instruments.js/evals/listening/session-schema-v1.json",
   "title": "instruments.js raw listener session v1",
   "type": "object",
-  "required": ["schema_version", "experiment_id", "experiment_digest", "session_id", "evidence_kind", "listener", "setup", "randomization", "started_at", "submitted_at", "trials"],
+  "required": ["schema_version", "experiment_id", "experiment_digest", "session_id", "evidence_kind", "listener", "setup", "randomization", "trial_order", "started_at", "submitted_at", "trials"],
   "properties": {
     "schema_version": { "const": "1.0.0" },
     "experiment_id": { "type": "string" },
@@ -40,6 +40,7 @@
       },
       "additionalProperties": false
     },
+    "trial_order": { "type": "array", "items": { "type": "string" }, "uniqueItems": true, "minItems": 1 },
     "started_at": { "type": "string" },
     "submitted_at": { "type": "string" },
     "trials": {

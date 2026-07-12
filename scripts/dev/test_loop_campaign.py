@@ -182,7 +182,11 @@ class EndToEndTests(unittest.TestCase):
             second = loop_campaign.verify_iteration(out2)
             self.assertEqual(second["classification"], "listening_required")
             self.assertEqual(second["drift"]["status"], "pass")
-            self.assertTrue((out2 / "audition.html").is_file())
+            self.assertEqual(second["audition"], "listening/index.html")
+            self.assertEqual(second["listening"]["protocol"], "ab")
+            self.assertEqual(second["listening"]["trials"], 2)
+            self.assertTrue((out2 / "listening" / "index.html").is_file())
+            self.assertTrue((out2 / "listening" / "experiment.json").is_file())
 
             with open(out2 / "summary.md", "a") as f:
                 f.write("tamper\n")

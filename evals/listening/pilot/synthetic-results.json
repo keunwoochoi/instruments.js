@@ -2,7 +2,7 @@
   {
     "schema_version": "1.0.0",
     "experiment_id": "hidden-reference-anchor-pilot",
-    "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+    "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
     "session_id": "synthetic-pilot-1",
     "evidence_kind": "synthetic_harness_pilot",
     "listener": {
@@ -20,6 +20,9 @@
       "algorithm": "xorshift32-fisher-yates-v1",
       "seed": 268500993
     },
+    "trial_order": [
+      "synthetic-tone-mushra"
+    ],
     "started_at": "2026-07-12T12:01:00Z",
     "submitted_at": "2026-07-12T12:01:30Z",
     "trials": [
@@ -50,7 +53,7 @@
   {
     "schema_version": "1.0.0",
     "experiment_id": "hidden-reference-anchor-pilot",
-    "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+    "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
     "session_id": "synthetic-pilot-2",
     "evidence_kind": "synthetic_harness_pilot",
     "listener": {
@@ -68,6 +71,9 @@
       "algorithm": "xorshift32-fisher-yates-v1",
       "seed": 537001986
     },
+    "trial_order": [
+      "synthetic-tone-mushra"
+    ],
     "started_at": "2026-07-12T12:02:00Z",
     "submitted_at": "2026-07-12T12:02:30Z",
     "trials": [
@@ -98,7 +104,7 @@
   {
     "schema_version": "1.0.0",
     "experiment_id": "hidden-reference-anchor-pilot",
-    "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+    "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
     "session_id": "synthetic-pilot-3",
     "evidence_kind": "synthetic_harness_pilot",
     "listener": {
@@ -116,6 +122,9 @@
       "algorithm": "xorshift32-fisher-yates-v1",
       "seed": 805502979
     },
+    "trial_order": [
+      "synthetic-tone-mushra"
+    ],
     "started_at": "2026-07-12T12:03:00Z",
     "submitted_at": "2026-07-12T12:03:30Z",
     "trials": [
@@ -146,7 +155,7 @@
   {
     "schema_version": "1.0.0",
     "experiment_id": "hidden-reference-anchor-pilot",
-    "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+    "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
     "session_id": "synthetic-pilot-4",
     "evidence_kind": "synthetic_harness_pilot",
     "listener": {
@@ -164,6 +173,9 @@
       "algorithm": "xorshift32-fisher-yates-v1",
       "seed": 1074003972
     },
+    "trial_order": [
+      "synthetic-tone-mushra"
+    ],
     "started_at": "2026-07-12T12:04:00Z",
     "submitted_at": "2026-07-12T12:04:30Z",
     "trials": [
@@ -194,7 +206,7 @@
   {
     "schema_version": "1.0.0",
     "experiment_id": "hidden-reference-anchor-pilot",
-    "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+    "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
     "session_id": "synthetic-pilot-5",
     "evidence_kind": "synthetic_harness_pilot",
     "listener": {
@@ -212,6 +224,9 @@
       "algorithm": "xorshift32-fisher-yates-v1",
       "seed": 1342504965
     },
+    "trial_order": [
+      "synthetic-tone-mushra"
+    ],
     "started_at": "2026-07-12T12:05:00Z",
     "submitted_at": "2026-07-12T12:05:30Z",
     "trials": [
@@ -242,7 +257,7 @@
   {
     "schema_version": "1.0.0",
     "experiment_id": "hidden-reference-anchor-pilot",
-    "experiment_digest": "f3a2eabea4aafdd35d92b6d66350ec8394fd432324976fec85d4ba0509551e2e",
+    "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
     "session_id": "synthetic-pilot-6",
     "evidence_kind": "synthetic_harness_pilot",
     "listener": {
@@ -260,6 +275,9 @@
       "algorithm": "xorshift32-fisher-yates-v1",
       "seed": 1611005958
     },
+    "trial_order": [
+      "synthetic-tone-mushra"
+    ],
     "started_at": "2026-07-12T12:06:00Z",
     "submitted_at": "2026-07-12T12:06:30Z",
     "trials": [

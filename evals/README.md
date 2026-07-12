@@ -23,3 +23,17 @@ npm run loop:pilot -- --reference-root /path/to/scratchpad --out /path/to/pilot 
 ```
 
 The runner refuses missing references, absent held-out cases, corpus-axis contradictions, dirty source by default, stale shipped WASM, incompatible metric versions, and non-empty iteration directories. It records source/WASM/manifest/reference/render digests and never generates an audition after a red trust gate or failed drift gate.
+
+## Listening evidence
+
+When a baseline-backed campaign reaches `candidate` or `listening_required`, the runner writes a sealed `listening/` bundle inside the iteration instead of a label-revealing A/B page. The bundle copies exact baseline/candidate sources, normalizes each condition to the declared BS.1770 target, records source and prepared-audio digests plus gain provenance, randomizes condition order per listener, and stores only pseudonymous local session evidence until export.
+
+Serve the iteration directory over localhost, open `listening/index.html`, keep playback volume fixed, complete the randomized trials, and export the raw session JSON. Validate and analyze exports with the experiment manifest that was sealed into the same iteration:
+
+```sh
+npm run listening:validate -- /path/to/iteration/listening/experiment.json
+npm run listening:analyze -- /path/to/iteration/listening/experiment.json /path/to/session-*.json --out /path/to/analysis.json --markdown /path/to/analysis.md
+npm run audit:listening
+```
+
+The analyzer retains listener-level raw responses, declared exclusions, setup metadata, play counts, and uncertainty. It always emits `quality_verdict: null`; the human owner applies the listening gate.

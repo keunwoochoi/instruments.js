@@ -44,6 +44,17 @@
       }
     },
     "baseline_dir": { "type": ["string", "null"] },
-    "audition": { "type": "string" }
+    "audition": { "type": "string", "pattern": "^(audition\\.html|listening/index\\.html)$" },
+    "listening": {
+      "type": "object",
+      "required": ["experiment", "experiment_digest", "protocol", "trials"],
+      "properties": {
+        "experiment": { "type": "string", "pattern": "^listening/experiment\\.json$" },
+        "experiment_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "protocol": { "const": "ab" },
+        "trials": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
   }
 }

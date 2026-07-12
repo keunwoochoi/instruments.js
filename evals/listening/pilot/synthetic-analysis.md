@@ -6,9 +6,9 @@ This report does not contain a release verdict. Synthetic pilot sessions validat
 
 | Stimulus | Role | n | Mean | 95% bootstrap CI |
 |---|---:|---:|---:|---:|
-| condition-a | anchor | 5 | 22.0 | [19.4, 24.6] |
+| condition-a | anchor | 5 | 22.0 | [19.2, 24.6] |
 | condition-c | candidate | 5 | 80.6 | [77.8, 83.2] |
-| condition-h | hidden_reference | 5 | 97.2 | [95.8, 98.6] |
+| condition-h | hidden_reference | 5 | 97.2 | [95.8, 98.8] |
 
 ## Exclusions
 

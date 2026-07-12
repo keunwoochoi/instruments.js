@@ -13,6 +13,7 @@ from pathlib import Path
 import jsonschema
 import soundfile as sf
 
+import listening
 import loop_metrics
 
 
@@ -234,6 +235,18 @@ def verify_iteration(out):
     validate_iteration(iteration)
     for case in iteration["cases"]:
         loop_metrics.validate_report(read_json(out / case["report"]))
+    if "listening" in iteration:
+        experiment_path = (out / iteration["listening"]["experiment"]).resolve()
+        try:
+            experiment_path.relative_to(out)
+        except ValueError as exc:
+            raise ValueError("unsafe listening experiment path") from exc
+        experiment = listening.validate_experiment(experiment_path)
+        if listening.manifest_digest(experiment) != iteration["listening"]["experiment_digest"]:
+            raise ValueError("listening experiment digest mismatch")
+        audition_path = (out / iteration["audition"]).resolve()
+        if not audition_path.is_file():
+            raise ValueError("listening audition entrypoint is missing")
     return iteration
 
 
@@ -263,6 +276,10 @@ def run_campaign(args):
     (out / "reports").mkdir()
 
     baseline_dir = Path(args.baseline_dir).resolve() if args.baseline_dir else None
+    if baseline_dir:
+        baseline_iteration = verify_iteration(baseline_dir)
+        if baseline_iteration["family"] != manifest["family"]:
+            raise ValueError("baseline family differs from campaign manifest")
     cases = []
     for case, reference, corpus in resolved:
         render_path = out / "renders" / f"{case['id']}.wav"
@@ -331,10 +348,11 @@ def run_campaign(args):
 
     audition = None
     if baseline_dir and classification in {"candidate", "listening_required"} and (baseline_dir / "renders").is_dir():
-        audition = out / "audition.html"
-        subprocess.run(["node", str(ROOT / "scripts" / "dev" / "ab-page.mjs"), str(baseline_dir / "renders"), str(out / "renders"), str(audition)], cwd=ROOT, check=True, text=True, capture_output=True)
+        listening_evidence = listening.prepare_campaign_bundle(out, baseline_dir, out / "listening")
+        audition = out / "listening" / "index.html"
     if audition:
-        iteration["audition"] = "audition.html"
+        iteration["audition"] = "listening/index.html"
+        iteration["listening"] = listening_evidence
         validate_iteration(iteration)
         write_json(out / "iteration.json", iteration)
     seal_iteration(out)

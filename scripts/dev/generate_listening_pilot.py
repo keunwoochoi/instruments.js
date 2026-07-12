@@ -72,7 +72,7 @@ def experiment(digests: dict[str, str]) -> dict:
         "sample_rate": SR,
         "level_matching": {"method": "bs1770_integrated", "target_lufs": TARGET_LUFS, "tolerance_lu": 0.1},
         "randomization": {"algorithm": listening.RANDOMIZATION_ALGORITHM, "seed_policy": "fixed_pilot"},
-        "exclusion_policy": {"min_completed_trials": 1, "hidden_reference_min_score": 90},
+        "exclusion_policy": {"min_completed_trials": 1, "hidden_reference_min_score": 90, "min_plays_per_stimulus": 1},
         "trials": [
             {
                 "id": "synthetic-tone-mushra",
@@ -111,6 +111,7 @@ def sessions(value: dict) -> list[dict]:
             "listener": {"id": f"simulated-{index}", "experience": "synthetic fixture", "hearing_notes": "not a human listener"},
             "setup": {"transducer": "other", "environment": "deterministic test fixture", "device": "none", "volume_check": True},
             "randomization": {"algorithm": listening.RANDOMIZATION_ALGORITHM, "seed": seed},
+            "trial_order": listening.expected_trial_order(value, seed),
             "started_at": f"2026-07-12T12:0{index}:00Z",
             "submitted_at": f"2026-07-12T12:0{index}:30Z",
             "trials": [{

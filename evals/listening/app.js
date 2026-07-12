@@ -1,7 +1,8 @@
-import { RANDOMIZATION_ALGORITHM, manifestDigest, presentations } from "./randomization.js";
+import { RANDOMIZATION_ALGORITHM, manifestDigest, presentations, trialOrder } from "./randomization.js";
 
 const $ = (selector) => document.querySelector(selector);
-const manifestUrl = new URLSearchParams(location.search).get("experiment") ?? "pilot/experiment.json";
+const configuredExperiment = document.querySelector('meta[name="ij-listening-experiment"]')?.content;
+const manifestUrl = new URLSearchParams(location.search).get("experiment") ?? configuredExperiment ?? "pilot/experiment.json";
 const experiment = await fetch(manifestUrl).then((response) => {
   if (!response.ok) throw new Error(`experiment load failed: ${response.status}`);
   return response.json();
@@ -47,7 +48,7 @@ function baseResponse(trial, order) {
 
 function showTrial() {
   if (trialIndex >= experiment.trials.length) return finish();
-  const trial = experiment.trials[trialIndex];
+  const trial = byTrial[session.trial_order[trialIndex]];
   const order = session.randomized_presentations[trial.id];
   const response = baseResponse(trial, order);
   const section = $("#trial");
@@ -112,7 +113,8 @@ function showTrial() {
     const complete = trial.protocol === "mushra"
       ? Object.keys(response.response.ratings ?? {}).length === order.length
       : Boolean(response.response.choice);
-    if (!complete) return setStatus("Complete every rating or choice before continuing.");
+    const played = Object.values(response.play_counts).every((count) => count >= experiment.exclusion_policy.min_plays_per_stimulus);
+    if (!complete || !played) return setStatus("Play every sample and complete every rating or choice before continuing.");
     session.trials.push(response);
     trialIndex += 1;
     persist();
@@ -151,6 +153,7 @@ $("#start").addEventListener("click", () => {
     listener: { id: listener, experience, hearing_notes: $("#hearing").value.trim() },
     setup: { transducer: $("#transducer").value, environment, device, volume_check: true },
     randomization: { algorithm: RANDOMIZATION_ALGORITHM, seed },
+    trial_order: trialOrder(experiment, seed),
     randomized_presentations: presentations(experiment, seed),
     started_at: new Date().toISOString(),
     submitted_at: "",
