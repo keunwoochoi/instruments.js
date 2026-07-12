@@ -44,6 +44,8 @@ export type InstrumentGroup =
   | "musicbox"
   | "epiano"
   | "drums"
+  | "drums-rock"
+  | "drums-jazz"
   | "synthpad"
   | "guitar-steel"
   | "guitar-electric"
@@ -60,6 +62,8 @@ const INST = {
   bass: 5,
   epiano: 6,
   drums: 7,
+  drumsRock: 13,
+  drumsJazz: 14,
   synthpad: 8,
   piano: 9,
   guitarSteel: 10,
@@ -84,6 +88,8 @@ const GROUP_TO_INSTRUMENT: Record<InstrumentGroup, number> = {
   drums: INST.drums,
   synthpad: INST.synthpad,
   piano: INST.piano, // multi-string waveguide acoustic piano
+  "drums-rock": INST.drumsRock,
+  "drums-jazz": INST.drumsJazz,
   "guitar-steel": INST.guitarSteel,
   "guitar-electric": INST.guitarElectric,
   "guitar-distorted": INST.guitarDistorted,

@@ -88,7 +88,9 @@
         <option value="bass">Bass</option>
         <option value="epiano">Electric piano</option>
         <option value="synthpad">Synth pad</option>
-        <option value="drums">Drum kit</option>
+        <option value="drums">Drum kit (pop)</option>
+        <option value="drums-rock">Drum kit (rock)</option>
+        <option value="drums-jazz">Drum kit (jazz)</option>
       </select>
     </label>
     <label>Velocity <input type="range" id="vel" min="10" max="127" value="96" /></label>
@@ -217,7 +219,7 @@
         e.preventDefault();
         if (!pedalDown && engine) {
           pedalDown = true;
-          track($("inst").value === "drums" ? "drums" : $("inst").value).pedal(true);
+          track($("inst").value).pedal(true);
           status("sustain pedal DOWN (space)");
         }
         return;
@@ -228,7 +230,7 @@
         status(`octave ${octave >= 0 ? "+" : ""}${octave}`);
         return;
       }
-      if ($("inst").value === "drums") {
+      if ($("inst").value.startsWith("drums")) {
         const pad = PAD_KEYS[e.key];
         if (pad) hitPad(pad);
         return;
@@ -240,7 +242,7 @@
       if (e.code === "Space") {
         pedalDown = false;
         if (engine) {
-          track($("inst").value === "drums" ? "drums" : $("inst").value).pedal(false);
+          track($("inst").value).pedal(false);
           status("engine live — pedal up");
         }
         return;
@@ -264,10 +266,11 @@
     }
     function hitPad(note) {
       if (!engine) return;
-      track("drums").noteOn(note, Number($("vel").value));
+      const kit = $("inst").value.startsWith("drums") ? $("inst").value : "drums";
+      track(kit).noteOn(note, Number($("vel").value));
     }
     $("inst").addEventListener("change", () => {
-      const drums = $("inst").value === "drums";
+      const drums = $("inst").value.startsWith("drums");
       padsEl.style.display = drums ? "grid" : "none";
       keysEl.style.display = drums ? "none" : "flex";
     });
