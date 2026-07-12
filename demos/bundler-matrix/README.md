@@ -8,7 +8,7 @@ configuration. Each fixture is a minimal real app checked headlessly by
 |---|---|---|---|---|
 | **Vite 6** | ✅ PASS | ✅ PASS | 2026-07-11, headless Chromium | `new URL(..., import.meta.url)` assets auto-copied (worklet + wasm hashed into dist/assets) — no config |
 | **Next.js 15** | ✅ PASS | ✅ PASS | 2026-07-11, headless Chromium | zero config; client-component import prerenders statically (SSR-safe verified); assets emitted by webpack build |
-| Webpack 5 (raw) | — | — | not yet | de-facto exercised by the Next prod build; standalone fixture pending |
+| **Webpack 5 (raw)** | ✅ PASS | ✅ PASS | 2026-07-11, headless Chromium | zero config; worklet + wasm emitted as asset modules automatically |
 
 The explicit `workletUrl`/`wasmUrl` options remain available for exotic setups
 (see `packages/core/README.md` and `demos/customer-zero/`). Run a fixture:
