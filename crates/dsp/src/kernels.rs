@@ -233,7 +233,7 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::Glockenspiel => 30.0, // was -39.6 LUFS (tiny raw kernel level)
         Instrument::MusicBox => 14.8,     // was -35.6 LUFS
         Instrument::Guitar => 0.151,       // guitar r3 re-bake (radiation chain; was -27.4 LUFS at 0.126)
-        Instrument::Bass => 2.19,         // electric-bass reference round re-bake (pickup-chain voicing measured -31.1 LUFS at 0.63, x3.28 per measure-loudness)
+        Instrument::Bass => 1.91,         // electric-bass reference round re-bake (pyloudnorm vs marimba ref; slope-priming fix re-measured x0.87 on 2.19)
         Instrument::EPiano => 1.54,       // was -26.6 LUFS
         Instrument::Drums => 0.59,        // kick round re-bake (pop kick unchanged; family drifted -21.3)
         Instrument::SynthPad => 0.50,     // was -26.5 LUFS
@@ -583,6 +583,17 @@ pub struct AcPluck {
     /// note-off loss transition time (s): 0 = legacy instant loss step
     /// (see PluckVoice::rel_ramp for why differencer-tapped voices need > 0)
     pub rel_ramp: f32,
+    /// FLAGGED ADDITION (bass agent 2026-07-12): prime the output
+    /// differencers by backward slope extrapolation (br_x1 = 2*m0 - m1,
+    /// acc_x1 = m1 - m0) instead of the legacy constant-history assumption
+    /// x(-1) = x(0). Constant history makes f(0) ~ 0, so the SECOND output
+    /// sample of the acc tap is the full first-difference of the carrier -
+    /// not the second difference - and the double renorm (~x663 at A1)
+    /// clips it to a +/-FS doublet on every mid-stream note-on (measured;
+    /// t = 0 notes are masked by the track-gain smoother). false = legacy,
+    /// bit-identical for nylon/steel; steel is also differencer-tapped and
+    /// likely wants this - flagged for its owner.
+    pub prime_slope: bool,
     /// bridge differencer leak (0 = raw displacement out)
     pub br_rho: f32,
     /// radiation monopole high-pass corner (Hz; 0 = off)
@@ -1061,7 +1072,7 @@ impl PluckVoice {
             rad_p: 0.0,
             rad_x1: 0.0,
             rad_y1: 0.0,
-            acc_rho: 0.0,
+            acc_rho: 0.995,
             acc_x1: 0.0,
             tm_dev: 0.0,
             tm_env: 0.0,
@@ -1548,10 +1559,25 @@ impl PluckVoice {
         // level renorm then amplifies ~1/|H(3f0)| per tap).
         if p.br_rho > 0.0 {
             let m0 = v.buf[0] + p.pol_mix * v.buf2[0];
-            v.br_x1 = m0;
-            v.acc_x1 = m0 * (1.0 - p.br_rho);
-            if v.rad_k > 0.0 {
-                v.rad_x1 = m0 * (1.0 - p.br_rho) * (1.0 - p.acc_rho) * v.level;
+            if p.prime_slope {
+                // slope-extrapolated history (see AcPluck::prime_slope):
+                // with d = m1 - m0, br_x1 = m0 - d makes f(0) ~ d (the true
+                // slope) and acc_x1 = d makes acc(0)/acc(1) proper second
+                // differences - kills the +/-FS onset doublet the constant-
+                // history prime produced through the double renorm.
+                let m1 = v.buf[1] + p.pol_mix * v.buf2[1];
+                let d = m1 - m0;
+                v.br_x1 = m0 - d;
+                v.acc_x1 = d;
+                if v.rad_k > 0.0 {
+                    v.rad_x1 = d * (1.0 - p.acc_rho) * v.level;
+                }
+            } else {
+                v.br_x1 = m0;
+                v.acc_x1 = m0 * (1.0 - p.br_rho);
+                if v.rad_k > 0.0 {
+                    v.rad_x1 = m0 * (1.0 - p.br_rho) * (1.0 - p.acc_rho) * v.level;
+                }
             }
         }
         v
@@ -5074,6 +5100,7 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 rel_t60: 0.10,
                 rel_click: 0.25,
                 rel_ramp: 0.0, // legacy instant damp (bit-identical; see AcPluck)
+                prime_slope: false, // legacy differencer priming (bit-identical)
                 pol_mix: 0.35,
                 pol_detune_cents: 2.2,
                 pol_t60_ratio: 0.55,
@@ -5099,7 +5126,7 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // dominant in mid/high register; low-register h2 emphasis comes
                 // from the body's T1 mode, not a global force tilt
                 br_rho: 0.0,
-                acc_rho: 0.0,
+                acc_rho: 0.995,
                 // radiated sound only: monopole HP (Woodhouse 2012 f_c ~250 Hz)
                 rad_hz: 250.0,
                 // register slope ~12 dB/key (within-source NSynth slope is
@@ -5169,7 +5196,10 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 // decayed body at E1 — file ttp read 3.9 s = note-off)
                 rel_click: 0.004 * (f0 / 41.2).powf(1.5),
                 rel_ramp: 0.02,
-                pol_mix: 0.0,
+                // slope-extrapolated differencer priming: the legacy prime
+                // clipped a +/-FS doublet on every mid-stream note-on (AcPluck)
+                prime_slope: true,
+                pol_mix: 0.25,
                 pol_detune_cents: 1.2,
                 pol_t60_ratio: 0.5,
                 // NSynth bass_electronic refs measure essentially harmonic
@@ -5274,6 +5304,7 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
                 rel_t60: 0.90,
                 rel_click: 0.5,
                 rel_ramp: 0.0, // legacy instant damp (bit-identical; see AcPluck)
+                prime_slope: false, // legacy differencer priming (bit-identical)
                 // two-stage decay, Weinreich roles corrected round 2: the
                 // strongly-coupled (plucked) polarization decays FAST; the
                 // orthogonal one couples weakly to the bridge and carries the
