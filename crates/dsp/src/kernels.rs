@@ -3754,10 +3754,16 @@ impl CymbalVoice {
     /// tail, and ~1 dB hotter because the ride carries the time.
     fn ride(vel: f32, sr: f32, seed: u32, kit: KitStyle) -> Self {
         // (ping, wash, chick, decay, amp, HF shelf >5 kHz)
+        // jazz r4 (owner: "consider brushy ride behavior — wash-forward,
+        // less ping"): voiced toward the Swirly/DRS brush-ride refs
+        // (CC0/CC-BY-4.0): ping cluster halved, wash up, HF shelf FLIPPED
+        // dark->airy (ref body leads at 4-10 kHz, -3.5 dB rel, with the
+        // low gong at -22), low gong cut below. Still a stick-able ride —
+        // not a literal brush patch (it keeps the time).
         let (m_ping, m_wash, m_chick, m_dec, m_amp, m_hf) = match kit {
             KitStyle::Pop => (1.0f32, 0.92f32, 1.0f32, 1.0f32, 1.0f32, 0.75f32),
             KitStyle::Rock => (1.55, 1.05, 1.25, 1.0, 1.1, 0.85),
-            KitStyle::Jazz => (0.95, 1.22, 0.80, 1.08, 1.12, 0.62),
+            KitStyle::Jazz => (0.55, 1.35, 0.90, 1.08, 1.12, 1.0),
         };
         let mut v = Self::new(seed);
         v.burst_dec = t60_gain(0.030, sr);
@@ -3833,8 +3839,9 @@ impl CymbalVoice {
             // 200–350 Hz; the LF body is the tonal cluster, not noise); the
             // stick band ~3 kHz sits ~3 dB proud; gentle shelf above 5 kHz
             let lnw = (f / 3000.0).ln();
+            let gong_roll = if matches!(kit, KitStyle::Jazz) { 2.2 } else { 1.5 };
             let shape = (1.0 + 0.45 * (-lnw * lnw / 0.8).exp())
-                * if f < 500.0 { (f / 500.0).powf(1.5) } else { 1.0 }
+                * if f < 500.0 { (f / 500.0).powf(gong_roll) } else { 1.0 }
                 * if f > 5000.0 { m_hf } else { 1.0 };
             let wash = 0.5 * m_wash * dip * shape;
             // chick: treble-tilted contact noise, ~2× the wash gain up top
@@ -4911,10 +4918,18 @@ impl DrumVoice {
                 // rack 87.5 — big drums tuned LOW and CLOSE together
                 // (f_lo 56.5 / step 1.12 puts GM43 at 63 Hz and GM48 at
                 // 89), ringing t60 1.6-4 s where our r3 tom died at 0.75 s
+                // jazz r4 (owner: "how about making others all played by
+                // brush?"): jazz toms are BRUSH TAPS now — measured on the
+                // Swirly Drums brush kit (CC0) + DRSKit whisker toms
+                // (CC-BY-4.0, references/jazzkit/SOURCES.txt): bristle
+                // arrival 8-20 ms (vs 2-4 ms stick), attack = broadband
+                // 500-4k scrape with rolled top (a "shhk", no click), body
+                // skin-dominant (>=1 kHz collapses -19..-37 dB while
+                // 200-500 leads), and the undamped head RINGS (t60 1.7 s).
                 let (f_lo, step, t60, ckb, amp) = match kit {
                     KitStyle::Pop => (70.0, 1.165f32, 0.38, 0.45, 0.85),
                     KitStyle::Rock => (56.5, 1.120, 1.50, 0.50, 0.95),
-                    KitStyle::Jazz => (82.0, 1.160, 0.30, 0.32, 0.75),
+                    KitStyle::Jazz => (82.0, 1.160, 1.00, 0.45, 0.75),
                 };
                 let f1 = f_lo * step.powf(idx);
                 v.kind = DrumKind::Kick;
@@ -4925,18 +4940,29 @@ impl DrumVoice {
                 v.decay = t60_gain(t60, sr);
                 let dyn_g = 0.30 + 0.70 * vel;
                 v.amp = amp * dyn_g;
-                // stick contact: ~3 ms ramp, force-shaped click
+                // contact: stick = ~3 ms ramp + force click; jazz brush =
+                // 16 ms bristle arrival + scrape noise, no click snap
+                let brush = matches!(kit, KitStyle::Jazz);
+                let contact_ms = if brush { 30.0 * (1.35 - 0.6 * vel).max(0.4) } else { 3.0 * (1.35 - 0.5 * vel).max(0.5) };
                 v.atk_ph = 0.0;
-                v.atk_dp = 1000.0 / (3.0 * (1.35 - 0.5 * vel).max(0.5) * sr);
-                v.click = 0.10 + 0.45 * vel * vel;
+                v.atk_dp = 1000.0 / (contact_ms * sr);
+                v.click = if brush { 1.9 + 2.1 * vel } else { 0.10 + 0.45 * vel * vel };
                 v.hp_c = 0.06 + ckb * vel;
+                if brush {
+                    // bristles SETTLE on the head after the tap (brush
+                    // technique): quiet lowpassed scrape residue via the
+                    // post-contact ring path (the Swirly refs hold 500-1k
+                    // at -7 dB rel through the body window)
+                    v.lp = 0.22;
+                    v.lp_c = t60_gain(0.15, sr);
+                }
                 // stick "thwack": head-knock resonator tracked to the drum
                 // (~4.5×f1, clamped to the 450–950 Hz knock region) — low toms
                 // otherwise have NO energy above 400 Hz (modal tops out at
                 // 2.14×f1) and read as sine blobs
                 let sf = (4.5 * f1).clamp(450.0, 950.0);
                 let sa = match kit {
-                    KitStyle::Jazz => 1.0,
+                    KitStyle::Jazz => 0.0, // brush: no stick thwack ring
                     // r4: Muldjord attack holds 500-1k at -8 dB rel (big
                     // stick, coated head) — 1.5 measured 11 dB shy
                     KitStyle::Rock => 2.8,
