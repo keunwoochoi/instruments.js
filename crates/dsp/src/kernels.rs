@@ -87,9 +87,10 @@ pub fn amp_defaults(inst: Instrument) -> (f32, f32) {
         Instrument::GuitarElectric => (1.6, 3200.0),
         // high gain: preamp gain must keep the tanh saturated for seconds so the
         // note SINGS while the string decays >20 dB (drive 11 fell linear after
-        // ~1 s — a crunch, not a lead channel); tone at 3.4 kHz keeps the
-        // regenerated clip harmonics under the fizz gate
-        Instrument::GuitarDistorted => (90.0, 3400.0),
+        // ~1 s — a crunch, not a lead channel); tone (cab corner) at 5.5 kHz —
+        // r3: 3.4 kHz choked the presence the refs keep (5–7.5 kHz at −13…−19
+        // rel max); fizz stays gated by the 12 kHz collapse either way
+        Instrument::GuitarDistorted => (90.0, 5500.0),
         _ => (0.0, 0.0),
     }
 }
@@ -102,8 +103,13 @@ pub fn pickup_defaults(inst: Instrument) -> (f32, f32) {
         // a heavily loaded pickup + rolled tone pot pulls the RLC resonance down
         // and damps its Q (Zollner, Physics of the Electric Guitar, ch. 5).
         Instrument::GuitarElectric => (2400.0, 1.8),
-        // distorted: vocal mid hump BEFORE the drive (TS-style pre-emphasis; the
-        // in-voice differentiator already tightens the lows pre-drive)
+        // distorted (r3 refit vs FreePats FSBS dist2 CC0 refs): PRESENCE
+        // resonance into the clipper — at drive 90 the tanh is a limiter, so
+        // only narrow strong pre-boosts survive into the output spectrum
+        // (measured: broad 3 kHz/Q1.5 LOST 4 dB of top vs the old 1700/Q3.4
+        // whose hump visibly survived). A real channel boosts 3–5 kHz into
+        // the power stage; the refs keep 2.5–5 kHz within −6…−11 dB of the
+        // band max where a bare clipped square would sit at −20.
         Instrument::GuitarDistorted => (1700.0, 3.4),
         _ => (0.0, 0.0),
     }
@@ -2253,6 +2259,10 @@ impl ElectricVoice {
         v.vf_a1 = (-2.0 * cv) / a0;
         v.vf_a2 = (1.0 - alpha) / a0;
         // cab/box resonance highpass (see field comment): RBJ HP, fc 95, Q 1.4
+        // (r3 note: a dist-only 60 Hz/Q2 "depth" bump was tried against the
+        // FreePats chug refs and measured NEUTRAL-to-worse — pre-clip LF
+        // boosts cannot out-vote the velocity-pickup tilt at drive 90; the
+        // refs' LF-dominant chug needs a POST-clip cab bump, see report recs)
         let wh = core::f32::consts::TAU * 95.0 / sr;
         let (sh, ch) = wh.sin_cos();
         let alpha_h = sh / (2.0 * 1.4);
