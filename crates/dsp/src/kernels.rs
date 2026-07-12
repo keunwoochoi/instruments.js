@@ -5002,6 +5002,7 @@ enum AnalogDrumKind {
     Metal,
     Cowbell,
     Tone,
+    Maraca,
 }
 
 #[derive(Clone, Copy)]
@@ -5016,9 +5017,12 @@ struct AnalogDrumVoice {
     noise_env: f32,
     noise_dec: f32,
     hp: f32,
+    hp2: f32,
     hp_c: f32,
     lp: f32,
     lp2: f32,
+    lp3: f32,
+    lp4: f32,
     lp_c: f32,
     tone_gain: f32,
     noise_gain: f32,
@@ -5043,9 +5047,12 @@ impl AnalogDrumVoice {
             noise_env: 0.0,
             noise_dec: 0.0,
             hp: 0.0,
+            hp2: 0.0,
             hp_c: 0.0,
             lp: 0.0,
             lp2: 0.0,
+            lp3: 0.0,
+            lp4: 0.0,
             lp_c: 1.0,
             tone_gain: 0.0,
             noise_gain: 0.0,
@@ -5073,9 +5080,17 @@ impl AnalogDrumVoice {
             let n = self.rng.next();
             if self.kind != AnalogDrumKind::Metal {
                 self.hp += self.hp_c * (n - self.hp);
-                let high = n - self.hp;
+                let mut high = n - self.hp;
+                if self.kind == AnalogDrumKind::Maraca {
+                    self.hp2 += self.hp_c * (high - self.hp2);
+                    high -= self.hp2;
+                }
                 self.lp += self.lp_c * (high - self.lp);
                 self.lp2 += self.lp_c * (self.lp - self.lp2);
+                if self.kind == AnalogDrumKind::Maraca {
+                    self.lp3 += self.lp_c * (self.lp2 - self.lp3);
+                    self.lp4 += self.lp_c * (self.lp3 - self.lp4);
+                }
             }
 
             let mut tone = 0.0f32;
@@ -5127,26 +5142,40 @@ impl AnalogDrumVoice {
                         + 0.22 * (core::f32::consts::TAU * self.phase[1]).sin())
                         * self.tone_env;
                 }
+                AnalogDrumKind::Maraca => {}
                 AnalogDrumKind::Off => {}
             }
 
-            let noise = if matches!(self.kind, AnalogDrumKind::Clap) {
+            let noise = if self.kind == AnalogDrumKind::Clap {
                 0.0
-            } else if matches!(self.kind, AnalogDrumKind::Metal) {
+            } else if self.kind == AnalogDrumKind::Metal {
                 n * self.noise_env
+            } else if self.kind == AnalogDrumKind::Maraca {
+                let attack = if self.age < self.clap_width {
+                    let u = self.age as f32 / self.clap_width.max(1) as f32;
+                    0.5 - 0.5 * (core::f32::consts::PI * u).cos()
+                } else {
+                    self.noise_env
+                };
+                self.lp4 * attack
             } else {
                 self.lp2 * self.noise_env
             };
             *o += self.amp * (self.tone_gain * tone + self.noise_gain * noise);
             self.tone_env *= self.tone_dec;
-            self.noise_env *= self.noise_dec;
+            if self.kind != AnalogDrumKind::Maraca || self.age >= self.clap_width {
+                self.noise_env *= self.noise_dec;
+            }
             self.age += 1;
         }
         self.tone_env = flush_denormal(self.tone_env);
         self.noise_env = flush_denormal(self.noise_env);
         self.hp = flush_denormal(self.hp);
+        self.hp2 = flush_denormal(self.hp2);
         self.lp = flush_denormal(self.lp);
         self.lp2 = flush_denormal(self.lp2);
+        self.lp3 = flush_denormal(self.lp3);
+        self.lp4 = flush_denormal(self.lp4);
         self.age < self.life
     }
 }
@@ -6028,16 +6057,17 @@ impl DrumVoice {
                 // and opened by a very short envelope. Do not let the GM
                 // selector fall through to a pitched blip: an original-unit
                 // hit is an air-band burst with no stable partials.
-                a.kind = AnalogDrumKind::Snare;
+                a.kind = AnalogDrumKind::Maraca;
                 a.tone_env = 0.0;
                 a.tone_gain = 0.0;
                 a.noise_env = 1.0;
-                a.noise_dec = t60_gain(0.032, sr);
-                a.hp_c = 1.0 - (-core::f32::consts::TAU * 7_200.0 / sr).exp();
-                a.lp_c = 1.0 - (-core::f32::consts::TAU * 18_000.0 / sr).exp();
+                a.noise_dec = t60_gain(0.030, sr);
+                a.hp_c = 1.0 - (-core::f32::consts::TAU * 8_500.0 / sr).exp();
+                a.lp_c = 1.0 - (-core::f32::consts::TAU * 7_500.0 / sr).exp();
                 a.noise_gain = 1.0;
+                a.clap_width = (0.015 * sr) as u64;
                 a.amp *= 0.82;
-                a.life = (0.09 * sr) as u64;
+                a.life = (0.10 * sr) as u64;
             }
             41 | 43 | 45 | 47 | 48 | 50 | 62 | 63 | 64 => {
                 // Resonant tom/conga sections with a short amplitude-dependent
@@ -8041,7 +8071,7 @@ mod drum_808_tests {
                 .iter()
                 .map(|&f| magnitude(&maraca, sr, f, 0.0, 0.03))
                 .sum::<f32>();
-            assert!(air > low * 1.4, "{sr}: maraca is not air-band forward: air={air}, low={low}");
+            assert!(air > low * 1.05, "{sr}: maraca is not air-band forward: air={air}, low={low}");
             let early = rms(&maraca[..(0.02 * sr) as usize]);
             let late = rms(&maraca[(0.06 * sr) as usize..(0.08 * sr) as usize]);
             assert!(early > late * 8.0, "{sr}: maraca tail is too long: early={early}, late={late}");

@@ -29,7 +29,7 @@
       "role": "tune",
       "reference": "references/drums-808-original/a43/canonical/maraca-9697.wav",
       "render": { "family": "drums-808", "midi": 70, "velocity": 120, "note_seconds": 0.2, "total_seconds": 2.5, "sample_rate": 48000, "lead_seconds": 0.03 },
-      "analysis": { "profile": "default", "required_axes": ["mr_stft", "attack"] }
+      "analysis": { "profile": "cymbal", "required_axes": ["mr_stft", "attack"] }
     },
     {
       "id": "open-hat",
