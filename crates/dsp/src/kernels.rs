@@ -501,7 +501,9 @@ impl PluckVoice {
         // refs where the spectral knee scales with velocity but the cliff stays.
         let pick_pos = 0.28;
         let mut rng = Lcg(seed | 1);
-        let fc = 180.0 + 1450.0 * vel * vel;
+        // corner is flatter in velocity than energy is (NSynth layers: the knee
+        // moves ~1 octave from pp to ff, not 3) and tracks register upward
+        let fc = ((300.0 + 750.0 * vel) * (1.0 + 0.8 * key)).clamp(120.0, 0.35 * sr);
         let exc_c = 1.0 - (-core::f32::consts::TAU * fc / sr).exp();
         let mut lp1 = 0.0f32;
         let mut lp = 0.0f32;
