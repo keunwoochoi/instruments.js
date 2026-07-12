@@ -42,6 +42,20 @@ def lufs(x, sr):
     return pyloudnorm.Meter(sr).integrated_loudness(x)
 
 
+# Per-instrument-class analysis profiles (owner 2026-07-12: "for some insts we
+# need special STFT params, e.g. kick"). A kick fundamental (~50-70 Hz) sits in
+# bins 1-2 of the default 1024-pt STFT and its beater attack is smeared by 21 ms
+# windows — so the kick profile analyzes TWICE: a fine-time view for the attack
+# and a long-window low-frequency view for the fundamental/tail.
+PROFILES = {
+    "default": {"n": 1024, "hop": 256, "mels": 64, "fmin": 30.0},
+    "kick":    {"n": 256,  "hop": 64,  "mels": 48, "fmin": 25.0,
+                "lf": {"n": 4096, "hop": 512, "mels": 40, "fmin": 20.0, "fmax": 400.0}},
+    "cymbal":  {"n": 2048, "hop": 512, "mels": 72, "fmin": 100.0},
+    "pitched": {"n": 1024, "hop": 256, "mels": 64, "fmin": 30.0},
+}
+
+
 def frames(x, n=1024, hop=256):
     if len(x) < n:
         x = np.pad(x, (0, n - len(x)))
@@ -68,11 +82,57 @@ def mel_bank(sr, n_fft, n_mels=64, fmin=30.0, fmax=None):
     return fb
 
 
-def log_mel(x, sr):
-    F, _ = frames(x)
+def log_mel(x, sr, n=1024, hop=256, mels=64, fmin=30.0, fmax=None):
+    F, _ = frames(x, n=n, hop=hop)
     spec = np.abs(np.fft.rfft(F, axis=1)) ** 2
-    mel = spec @ mel_bank(sr, F.shape[1]).T
+    mel = spec @ mel_bank(sr, F.shape[1], n_mels=mels, fmin=fmin, fmax=fmax).T
     return np.log10(mel + 1e-10)
+
+
+def logmel_dist(xr, xf, sr, **kw):
+    mr, mf = log_mel(xr, sr, **kw), log_mel(xf, sr, **kw)
+    t = min(len(mr), len(mf))
+    d = np.abs(mr[:t] - mf[:t])
+    thirds = np.array_split(d, 3)
+    return {
+        "overall": round(float(d.mean()), 4),
+        "attack": round(float(thirds[0].mean()), 4),
+        "mid": round(float(thirds[1].mean()), 4),
+        "tail": round(float(thirds[2].mean()), 4),
+    }
+
+
+def crest_factor(x):
+    rms = float(np.sqrt(np.mean(x ** 2)) + 1e-12)
+    return round(float(np.max(np.abs(x))) / rms, 2)
+
+
+def glide_track(x, sr, ms=150, fmax=250.0):
+    """Kick pitch track over the first `ms`: LP the signal, autocorr per 10 ms hop."""
+    seg = x[: int(ms * 1e-3 * sr)]
+    # crude one-pole LP at fmax*2 to isolate the fundamental
+    c = 1.0 - np.exp(-2 * np.pi * fmax * 2 / sr)
+    lp = np.zeros_like(seg)
+    acc = 0.0
+    for i, v in enumerate(seg):
+        acc += c * (v - acc)
+        lp[i] = acc
+    hop = int(0.010 * sr)
+    out = []
+    for i in range(0, len(lp) - hop * 3, hop):
+        w = lp[i : i + hop * 3]
+        if np.max(np.abs(w)) < 1e-4:
+            out.append(None)
+            continue
+        min_lag, max_lag = int(sr / fmax), int(sr / 25.0)
+        max_lag = min(max_lag, len(w) - 1)
+        if max_lag <= min_lag:
+            out.append(None)
+            continue
+        ac = [float(np.dot(w[:-lag], w[lag:])) for lag in range(min_lag, max_lag)]
+        lag = int(np.argmax(ac)) + min_lag
+        out.append(round(sr / lag, 1))
+    return out
 
 
 def centroid_traj(x, sr):
@@ -153,6 +213,10 @@ def partial_decay(x, sr, top=6):
 
 def main():
     render_path, ref_path = sys.argv[1], sys.argv[2]
+    profile = "default"
+    if "--profile" in sys.argv:
+        profile = sys.argv[sys.argv.index("--profile") + 1]
+    prof = PROFILES.get(profile, PROFILES["default"])
     xr, sr_r = load_mono(render_path)
     xf, sr_f = load_mono(ref_path)
     sr = min(sr_r, sr_f)
@@ -164,12 +228,9 @@ def main():
     n = min(len(xr), len(xf))
     xr, xf = xr[:n], xf[:n]
 
-    mr, mf = log_mel(xr, sr), log_mel(xf, sr)
-    t = min(len(mr), len(mf))
-    mr, mf = mr[:t], mf[:t]
-    d = np.abs(mr - mf)
-    thirds = np.array_split(d, 3)
+    lm = logmel_dist(xr, xf, sr, n=prof["n"], hop=prof["hop"], mels=prof["mels"], fmin=prof["fmin"])
     report = {
+        "profile": profile,
         "partial_decay_dbps": {
             "render": partial_decay(xr, sr),
             "reference": partial_decay(xf, sr),
@@ -177,16 +238,17 @@ def main():
         "sr": sr,
         "seconds": round(n / sr, 2),
         "lufs": {"render": round(l_r, 1), "reference": round(l_f, 1), "delta": round(l_r - l_f, 1)},
-        "logmel_dist": {
-            "overall": round(float(d.mean()), 4),
-            "attack": round(float(thirds[0].mean()), 4),
-            "mid": round(float(thirds[1].mean()), 4),
-            "tail": round(float(thirds[2].mean()), 4),
-        },
+        "logmel_dist": lm,
         "centroid": {"render": centroid_traj(xr, sr), "reference": centroid_traj(xf, sr)},
         "envelope": {"render": envelope_stats(xr, sr), "reference": envelope_stats(xf, sr)},
         "partials": {"render": partials(xr, sr), "reference": partials(xf, sr)},
+        "crest": {"render": crest_factor(xr), "reference": crest_factor(xf)},
     }
+    if "lf" in prof:
+        lf = prof["lf"]
+        report["logmel_lf"] = logmel_dist(xr, xf, sr, n=lf["n"], hop=lf["hop"],
+                                          mels=lf["mels"], fmin=lf["fmin"], fmax=lf["fmax"])
+        report["glide_hz"] = {"render": glide_track(xr, sr), "reference": glide_track(xf, sr)}
     print(json.dumps(report, indent=2))
 
 
