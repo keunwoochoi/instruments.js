@@ -1648,15 +1648,33 @@ impl PluckVoice {
             }
         }
         // Prime the output differencers (and radiation HP) with the true t=0
-        // signal — the FINAL carrier buffers — so sample 0 is differenced like
-        // every other sample instead of passing as a raw impulse (which the
-        // level renorm then amplifies ~1/|H(3f0)| per tap).
+        // HISTORY — the periodic extension of the final carrier (a
+        // recirculating wave's previous samples are buf[len−1], buf[len−2],
+        // …, modulo one 0.5% loss pass). Body round 2026-07-12: the earlier
+        // value-only priming (br_x1 = m0, acc_x1 = leak·m0) pretended the
+        // pre-onset history was CONSTANT, so the first differencer's output
+        // stepped from leak-only to slope+leak between samples 0→1; the
+        // second differencer turned that slope discontinuity into a
+        // one-sample impulse amplified ~×950 by the renorms — a
+        // velocity-independent onset tick on EVERY steel note (peak 0.93 at
+        // pp E2, masked in render-note.mjs by track-gain smoothing at t=0).
+        // Priming value + slope makes sample 0 differenced like every other.
+        // (History = backward linear extrapolation of the first two carrier
+        // samples: the buffer wrap is NOT time-adjacent — the fractional
+        // delay lives in the tuning allpass — so periodic indexing would
+        // manufacture its own step. The carrier is band-limited ⇒ locally
+        // linear at 48 kHz; extrapolation keeps value AND slope consistent.)
         if p.br_rho > 0.0 {
             let m0 = v.buf[0] + p.pol_mix * v.buf2[0];
-            v.br_x1 = m0;
-            v.acc_x1 = m0 * (1.0 - p.br_rho);
+            let mf = v.buf[1.min(len - 1)] + p.pol_mix * v.buf2[1.min(len2 - 1)];
+            let hist = |k: f32| -> f32 { (1.0 + k) * m0 - k * mf };
+            let (m1, m2, m3) = (hist(1.0), hist(2.0), hist(3.0));
+            let f1 = m1 - p.br_rho * m2;
+            let f2 = m2 - p.br_rho * m3;
+            v.br_x1 = m1;
+            v.acc_x1 = f1;
             if v.rad_k > 0.0 {
-                v.rad_x1 = m0 * (1.0 - p.br_rho) * (1.0 - p.acc_rho) * v.level;
+                v.rad_x1 = (f1 - p.acc_rho * f2) * v.level;
             }
         }
         v
