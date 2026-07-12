@@ -3522,6 +3522,77 @@ impl DrumVoice {
                 v.cym = CymbalVoice::splash(vel, sr, seed);
                 v.life = v.cym.life;
             }
+            41 | 43 | 45 | 47 | 48 | 50 => {
+                // Toms, kit-voiced (round 3): reuse the acoustic kick machinery
+                // (swept body + contact ramp + force click + overtone modal).
+                // Tunings follow size/genre convention (Drum Tuning Bible;
+                // Owsinski): rock 12/13/16" tuned LOW with long sustain, jazz
+                // 8/12/14" tuned a fourth-ish higher, shorter and darker, pop
+                // between. GM ladder 41→50 spans floor→high rack.
+                let idx = match gm_note {
+                    41 => 0,
+                    43 => 1,
+                    45 => 2,
+                    47 => 3,
+                    48 => 4,
+                    _ => 5,
+                } as f32;
+                // (f of GM41, per-step ratio, t60, click brightness, amp)
+                let (f_lo, step, t60, ckb, amp) = match kit {
+                    KitStyle::Pop => (70.0, 1.165f32, 0.38, 0.45, 0.85),
+                    KitStyle::Rock => (62.0, 1.170, 0.50, 0.50, 0.95),
+                    KitStyle::Jazz => (82.0, 1.160, 0.30, 0.32, 0.75),
+                };
+                let f1 = f_lo * step.powf(idx);
+                v.kind = DrumKind::Kick;
+                v.freq_end = f1;
+                // gentle head bend: much smaller and a bit slower than a kick
+                v.freq = f1 * (1.04 + 0.06 * vel);
+                v.sweep = (-1.0 / (0.020 * sr)).exp();
+                v.decay = t60_gain(t60, sr);
+                let dyn_g = 0.30 + 0.70 * vel;
+                v.amp = amp * dyn_g;
+                // stick contact: ~3 ms ramp, force-shaped click
+                v.atk_ph = 0.0;
+                v.atk_dp = 1000.0 / (3.0 * (1.35 - 0.5 * vel).max(0.5) * sr);
+                v.click = 0.10 + 0.45 * vel * vel;
+                v.hp_c = 0.06 + ckb * vel;
+                // stick "thwack": head-knock resonator tracked to the drum
+                // (~4.5×f1, clamped to the 450–950 Hz knock region) — low toms
+                // otherwise have NO energy above 400 Hz (modal tops out at
+                // 2.14×f1) and read as sine blobs
+                let sf = (4.5 * f1).clamp(450.0, 950.0);
+                let sa = match kit {
+                    KitStyle::Jazz => 1.0,
+                    _ => 1.5,
+                };
+                let r = t60_gain(0.050, sr);
+                let w = core::f32::consts::TAU * sf / sr;
+                v.sl_a1 = 2.0 * r * w.cos();
+                v.sl_r2 = r * r;
+                let a = sa * vel.powf(1.4);
+                let phi = core::f32::consts::PI * Lcg(seed ^ 0x70a9 | 1).next();
+                v.sl_y1 = a * (phi - w).sin();
+                v.sl_y2 = a * (phi - 2.0 * w).sin();
+                // membrane overtones (1.59/2.14 ideal-membrane series) + a
+                // resonant-head ring like the kick's two-stage tail
+                v.has_modal = true;
+                v.modal = ModalVoice::start(
+                    f1,
+                    vel,
+                    sr,
+                    &[
+                        ModeDef { ratio: 1.05, amp: 0.35 * dyn_g, t60: t60 * 1.3 },
+                        ModeDef { ratio: 1.59, amp: 0.5 * dyn_g, t60: t60 * 0.45 },
+                        ModeDef { ratio: 2.14, amp: 0.25 * dyn_g, t60: t60 * 0.28 },
+                    ],
+                    0.6,
+                    0.0,
+                    0.0,
+                    seed ^ 0x70e5,
+                );
+                v.life = ((t60 * 1.5).max(0.45) * sr) as u64;
+            }
             _ => {
                 // tom-ish fallback: pitched mode by GM note
                 v.has_modal = true;
