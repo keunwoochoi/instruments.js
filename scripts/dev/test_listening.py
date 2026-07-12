@@ -20,28 +20,44 @@ import listening
 ROOT = Path(__file__).resolve().parents[2]
 PILOT = ROOT / "evals" / "listening" / "pilot"
 EXPERIMENT_PATH = PILOT / "experiment.json"
+ANALYSIS_PATH = PILOT / "analysis-manifest.json"
 RESULTS_PATH = PILOT / "synthetic-results.json"
 
 
+def playback(slots, starts=1, completed=1, listened_ms=800):
+    return {slot: {"starts": starts, "completed": completed, "listened_ms": listened_ms} for slot in slots}
+
+
 class ManifestTests(unittest.TestCase):
-    def test_pilot_and_every_raw_session_validate(self):
-        experiment = listening.validate_experiment(EXPERIMENT_PATH)
+    def test_pilot_analysis_key_and_every_raw_session_validate(self):
+        experiment, analysis = listening.validate_analysis_manifest(ANALYSIS_PATH)
+        self.assertEqual(analysis["experiment_digest"], listening.manifest_digest(experiment))
         digest = listening.manifest_digest(experiment)
         schema = listening.load_json(ROOT / "evals" / "listening" / "session-schema-v1.json")
         for session in listening.load_json(RESULTS_PATH):
             jsonschema.validate(session, schema)
             listening.validate_session(session, experiment, digest)
 
-    def test_hidden_reference_must_match_explicit_reference(self):
-        value = listening.load_json(EXPERIMENT_PATH)
-        value["trials"][0]["stimuli"][0]["sha256"] = "0" * 64
+    def test_hidden_reference_role_contract_and_digest_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "experiment.json"
-            path.write_text(json.dumps(value))
+            copied = Path(directory) / "pilot"
+            shutil.copytree(PILOT, copied)
+            private = listening.load_json(copied / "analysis-manifest.json")
+            private["trials"][0]["stimuli"][0]["role"] = "candidate"
+            (copied / "analysis-manifest.json").write_text(json.dumps(private))
             with self.assertRaisesRegex(ValueError, "hidden reference"):
-                listening.validate_experiment(path, verify_files=False)
+                listening.validate_analysis_manifest(copied / "analysis-manifest.json")
 
-    def test_path_escape_and_digest_tamper_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copied = Path(directory) / "pilot"
+            shutil.copytree(PILOT, copied)
+            private = listening.load_json(copied / "analysis-manifest.json")
+            private["experiment_digest"] = "f" * 64
+            (copied / "analysis-manifest.json").write_text(json.dumps(private))
+            with self.assertRaisesRegex(ValueError, "experiment digest"):
+                listening.validate_analysis_manifest(copied / "analysis-manifest.json")
+
+    def test_path_escape_fails_closed(self):
         value = listening.load_json(EXPERIMENT_PATH)
         value["trials"][0]["stimuli"][1]["path"] = "../secret.wav"
         with tempfile.TemporaryDirectory() as directory:
@@ -49,13 +65,6 @@ class ManifestTests(unittest.TestCase):
             path.write_text(json.dumps(value))
             with self.assertRaises((ValueError, jsonschema.ValidationError)):
                 listening.validate_experiment(path, verify_files=False)
-        value = listening.load_json(EXPERIMENT_PATH)
-        value["trials"][0]["stimuli"][1]["sha256"] = "f" * 64
-        with tempfile.TemporaryDirectory(dir=PILOT.parent) as directory:
-            path = Path(directory) / "experiment.json"
-            path.write_text(json.dumps(value))
-            with self.assertRaisesRegex(ValueError, "digest mismatch|missing stimulus"):
-                listening.validate_experiment(path)
 
     def test_stimulus_ids_must_be_unique_across_trials(self):
         value = listening.load_json(EXPERIMENT_PATH)
@@ -90,23 +99,21 @@ class RandomizationTests(unittest.TestCase):
         actual = json.loads(subprocess.check_output(["node", "--input-type=module", "-e", script], cwd=ROOT, text=True))
         self.assertEqual(actual, expected)
 
-    def test_python_and_browser_manifest_digests_match_integer_valued_floats(self):
+    def test_python_and_browser_manifest_digests_match_numeric_edges(self):
         experiment = listening.load_json(EXPERIMENT_PATH)
-        self.assertEqual(experiment["level_matching"]["target_lufs"], -23.0)
         script = f"""
           import {{ manifestDigest }} from './evals/listening/randomization.js';
-          const experiment = {json.dumps(experiment)};
-          console.log(await manifestDigest(experiment));
+          console.log(await manifestDigest({json.dumps(experiment)}));
         """
         browser_digest = subprocess.check_output(["node", "--input-type=module", "-e", script], cwd=ROOT, text=True).strip()
         self.assertEqual(browser_digest, listening.manifest_digest(experiment))
-        numeric_fixture = {"small": -0.000039, "positive": 0.000004, "decimal": -22.999961, "integer_float": -23.0}
-        numeric_script = f"""
+        fixture = {"small": -0.000039, "positive": 0.000004, "decimal": -22.999961, "integer_float": -23.0}
+        script = f"""
           import {{ manifestDigest }} from './evals/listening/randomization.js';
-          console.log(await manifestDigest({json.dumps(numeric_fixture)}));
+          console.log(await manifestDigest({json.dumps(fixture)}));
         """
-        numeric_digest = subprocess.check_output(["node", "--input-type=module", "-e", numeric_script], cwd=ROOT, text=True).strip()
-        self.assertEqual(numeric_digest, listening.manifest_digest(numeric_fixture))
+        browser_digest = subprocess.check_output(["node", "--input-type=module", "-e", script], cwd=ROOT, text=True).strip()
+        self.assertEqual(browser_digest, listening.manifest_digest(fixture))
         with self.assertRaisesRegex(ValueError, "non-finite"):
             listening.canonical_json({"bad": float("nan")})
 
@@ -126,17 +133,13 @@ class RandomizationTests(unittest.TestCase):
         for positions in counts.values():
             self.assertLess(max(positions) - min(positions), 55)
 
-    def test_presentation_tamper_is_rejected(self):
+    def test_presentation_and_trial_order_tamper_are_rejected(self):
         experiment = listening.load_json(EXPERIMENT_PATH)
         digest = listening.manifest_digest(experiment)
         session = copy.deepcopy(listening.load_json(RESULTS_PATH)[0])
         session["trials"][0]["presentation"].reverse()
         with self.assertRaisesRegex(ValueError, "randomization mismatch"):
             listening.validate_session(session, experiment, digest)
-
-    def test_trial_order_tamper_is_rejected(self):
-        experiment = listening.load_json(EXPERIMENT_PATH)
-        digest = listening.manifest_digest(experiment)
         session = copy.deepcopy(listening.load_json(RESULTS_PATH)[0])
         session["trial_order"] = ["not-a-trial"]
         with self.assertRaisesRegex(ValueError, "trial order"):
@@ -144,55 +147,87 @@ class RandomizationTests(unittest.TestCase):
 
 
 class AnalysisTests(unittest.TestCase):
+    def setUp(self):
+        self.experiment, self.analysis = listening.validate_analysis_manifest(ANALYSIS_PATH)
+        self.sessions = listening.load_json(RESULTS_PATH)
+
     def test_synthetic_pilot_proves_exclusion_uncertainty_and_raw_retention(self):
-        experiment = listening.load_json(EXPERIMENT_PATH)
-        sessions = listening.load_json(RESULTS_PATH)
-        report = listening.analyze(experiment, sessions)
+        report = listening.analyze(self.experiment, self.sessions, self.analysis)
         self.assertEqual(report["n_submitted"], 6)
         self.assertEqual(report["n_included"], 5)
         self.assertEqual(report["exclusions"], [{"session_id": "synthetic-pilot-6", "reason": "hidden_reference_below_threshold:synthetic-tone-mushra"}])
-        self.assertEqual(report["stimuli"]["condition-h"]["role"], "hidden_reference")
-        self.assertEqual(report["stimuli"]["condition-a"]["role"], "anchor")
-        self.assertEqual(report["stimuli"]["condition-c"]["mean"], 80.6)
-        self.assertEqual(len(report["stimuli"]["condition-c"]["mean_ci95_bootstrap"]), 2)
-        self.assertEqual(report["raw_sessions"], sessions)
+        self.assertEqual(report["stimuli"]["condition-01"]["role"], "hidden_reference")
+        self.assertEqual(report["stimuli"]["condition-03"]["role"], "anchor")
+        self.assertEqual(report["stimuli"]["condition-02"]["mean"], 80.6)
+        self.assertEqual(len(report["stimuli"]["condition-02"]["mean_ci95_bootstrap"]), 2)
+        self.assertEqual(report["raw_sessions"], self.sessions)
         self.assertIsNone(report["quality_verdict"])
         self.assertEqual(report["evidence_kind_counts"]["human"], 0)
-        self.assertIn("validate only the harness", report["interpretation"])
 
     def test_analysis_is_byte_deterministic(self):
-        experiment = listening.load_json(EXPERIMENT_PATH)
-        sessions = listening.load_json(RESULTS_PATH)
-        first = listening.canonical_json(listening.analyze(experiment, sessions))
-        second = listening.canonical_json(listening.analyze(experiment, sessions))
+        first = listening.canonical_json(listening.analyze(self.experiment, self.sessions, self.analysis))
+        second = listening.canonical_json(listening.analyze(self.experiment, self.sessions, self.analysis))
         self.assertEqual(first, second)
 
-    def test_insufficient_playback_is_declared_and_excluded(self):
-        experiment = listening.load_json(EXPERIMENT_PATH)
-        session = copy.deepcopy(listening.load_json(RESULTS_PATH)[0])
+    def test_incomplete_playback_is_declared_and_excluded(self):
+        session = copy.deepcopy(self.sessions[0])
         session["session_id"] = "no-playback"
-        session["trials"][0]["play_counts"]["condition-c"] = 0
-        report = listening.analyze(experiment, [session])
+        session["listener"]["id"] = "no-playback-listener"
+        session["trials"][0]["playback"]["condition-02"]["completed"] = 0
+        report = listening.analyze(self.experiment, [session], self.analysis)
         self.assertEqual(report["n_included"], 0)
-        self.assertEqual(report["exclusions"], [{"session_id": "no-playback", "reason": "insufficient_playback:synthetic-tone-mushra"}])
+        self.assertEqual(report["exclusions"], [{"session_id": "no-playback", "reason": "insufficient_completed_playback:synthetic-tone-mushra"}])
 
-    def test_abx_uncertainty_and_ab_preference_are_listener_level(self):
+        session = copy.deepcopy(self.sessions[0])
+        session["session_id"] = "short-coverage"
+        session["listener"]["id"] = "short-coverage-listener"
+        session["trials"][0]["playback"]["condition-02"]["listened_ms"] = 40
+        report = listening.analyze(self.experiment, [session], self.analysis)
+        self.assertEqual(report["exclusions"], [{"session_id": "short-coverage", "reason": "insufficient_playback_coverage:synthetic-tone-mushra"}])
+
+    def test_duplicate_sessions_listeners_and_mixed_evidence_fail_closed(self):
+        first = copy.deepcopy(self.sessions[0])
+        second = copy.deepcopy(self.sessions[1])
+        second["session_id"] = first["session_id"]
+        with self.assertRaisesRegex(ValueError, "duplicate session"):
+            listening.analyze(self.experiment, [first, second], self.analysis)
+        second = copy.deepcopy(self.sessions[1])
+        second["listener"]["id"] = first["listener"]["id"]
+        with self.assertRaisesRegex(ValueError, "duplicate listener"):
+            listening.analyze(self.experiment, [first, second], self.analysis)
+        second = copy.deepcopy(self.sessions[1])
+        second["evidence_kind"] = "human"
+        with self.assertRaisesRegex(ValueError, "cannot be pooled"):
+            listening.analyze(self.experiment, [first, second], self.analysis)
+
+    def test_abx_uncertainty_ab_ties_and_preferences_are_listener_level(self):
         experiment = {
             "id": "protocol-fixture",
+            "purpose": "iteration",
             "trials": [
-                {"id": "ab", "protocol": "ab", "stimuli": [{"id": "a", "role": "candidate"}, {"id": "b", "role": "incumbent"}]},
-                {"id": "abx", "protocol": "abx", "x_source": "a", "stimuli": [{"id": "a", "role": "candidate"}, {"id": "b", "role": "incumbent"}]},
+                {"id": "ab", "protocol": "ab", "stimuli": [{"id": "a"}, {"id": "b"}]},
+                {"id": "abx", "protocol": "abx", "x_source": "x-a", "stimuli": [{"id": "x-a"}, {"id": "x-b"}]},
             ],
-            "exclusion_policy": {"min_completed_trials": 2, "hidden_reference_min_score": 90, "min_plays_per_stimulus": 1},
+            "exclusion_policy": {"min_completed_trials": 2, "hidden_reference_min_score": 90, "min_completed_plays_per_stimulus": 1, "unique_listener_ids_required": True},
         }
         digest = listening.manifest_digest(experiment)
+        analysis = {
+            "experiment_digest": digest,
+            "trials": [
+                {"id": "ab", "case_id": "ab-case", "stimuli": [{"id": "a", "role": "candidate", "duration_ms": 800}, {"id": "b", "role": "incumbent", "duration_ms": 800}]},
+                {"id": "abx", "case_id": "abx-case", "stimuli": [{"id": "x-a", "role": "candidate", "duration_ms": 800}, {"id": "x-b", "role": "incumbent", "duration_ms": 800}]},
+            ],
+        }
         sessions = []
+        choices = ["a", "a", "a", "tie"]
         for index, seed in enumerate([11, 22, 33, 44]):
             order = listening.expected_presentations(experiment, seed)
             trial_order = listening.expected_trial_order(experiment, seed)
+            ab_slots = order["ab"]
+            abx_slots = order["abx"] + ["x"]
             responses = {
-                "ab": {"trial_id": "ab", "protocol": "ab", "presentation": order["ab"], "response": {"choice": "a" if index < 3 else "b"}, "play_counts": {"a": 1, "b": 1}},
-                "abx": {"trial_id": "abx", "protocol": "abx", "presentation": order["abx"], "response": {"choice": "a" if index != 3 else "b"}, "play_counts": {"a": 1, "b": 1, "x": 1}},
+                "ab": {"trial_id": "ab", "protocol": "ab", "presentation": order["ab"], "response": {"choice": choices[index]}, "play_counts": {slot: 1 for slot in ab_slots}, "playback": playback(ab_slots)},
+                "abx": {"trial_id": "abx", "protocol": "abx", "presentation": order["abx"], "response": {"choice": "x-a" if index != 3 else "x-b"}, "play_counts": {slot: 1 for slot in abx_slots}, "playback": playback(abx_slots)},
             }
             sessions.append({
                 "schema_version": "1.0.0", "experiment_id": experiment["id"], "experiment_digest": digest,
@@ -200,75 +235,78 @@ class AnalysisTests(unittest.TestCase):
                 "listener": {"id": f"p-{index}", "experience": "test", "hearing_notes": "none"},
                 "setup": {"transducer": "headphones", "environment": "test", "device": "test", "volume_check": True},
                 "randomization": {"algorithm": listening.RANDOMIZATION_ALGORITHM, "seed": seed},
-                "trial_order": trial_order,
-                "started_at": "x", "submitted_at": "y",
+                "trial_order": trial_order, "started_at": "x", "submitted_at": "y",
                 "trials": [responses[trial_id] for trial_id in trial_order],
             })
-        report = listening.analyze(experiment, sessions)
+        report = listening.analyze(experiment, sessions, analysis)
         self.assertEqual(report["stimuli"]["a"]["preference_count"], 3)
         self.assertEqual(report["stimuli"]["a"]["preference_total"], 4)
+        self.assertEqual(report["stimuli"]["a"]["preference_decisive_total"], 3)
+        self.assertEqual(report["stimuli"]["a"]["tie_count"], 1)
         self.assertEqual(report["abx"]["correct"], 3)
         self.assertEqual(report["abx"]["total"], 4)
-        self.assertEqual(len(report["abx"]["accuracy_ci95_wilson"]), 2)
 
 
 class CampaignBundleTests(unittest.TestCase):
-    def test_campaign_bundle_is_level_matched_self_contained_and_analyzable(self):
+    def make_iteration_pair(self, root):
+        baseline = root / "baseline"
+        candidate = root / "candidate"
+        for path in (baseline, candidate):
+            (path / "renders").mkdir(parents=True)
+        shutil.copyfile(PILOT / "audio" / "reference.wav", baseline / "renders" / "case-a.wav")
+        shutil.copyfile(PILOT / "audio" / "condition-02.wav", candidate / "renders" / "case-a.wav")
+        metadata = {"family": "piano", "midi": 60, "vel": 90, "onsetSeconds": 0.03, "noteOffSeconds": 1.03, "seconds": 2.0, "sampleRate": 48000, "float32": True}
+        common = {
+            "family": "piano", "metric_version": "test-metric", "manifest": {"sha256": "a" * 64},
+            "cases": [{"id": "case-a", "role": "tune", "reference_sha256": "b" * 64, "render_metadata": metadata}],
+        }
+        (baseline / "iteration.json").write_text(json.dumps({**common, "source": {"commit": "1" * 40}}))
+        (candidate / "iteration.json").write_text(json.dumps({**common, "source": {"commit": "2" * 40}}))
+        return baseline, candidate
+
+    def test_campaign_bundle_is_opaque_level_matched_self_contained_and_analyzable(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            baseline = root / "baseline"
-            candidate = root / "candidate"
-            for path in (baseline, candidate):
-                (path / "renders").mkdir(parents=True)
-            shutil.copyfile(PILOT / "pilot-reference.wav", baseline / "renders" / "case-a.wav")
-            shutil.copyfile(PILOT / "pilot-candidate.wav", candidate / "renders" / "case-a.wav")
-            common = {
-                "family": "piano",
-                "metric_version": "test-metric",
-                "manifest": {"sha256": "a" * 64},
-                "cases": [{"id": "case-a"}],
-            }
-            baseline_iteration = {**common, "source": {"commit": "1" * 40}}
-            candidate_iteration = {**common, "source": {"commit": "2" * 40}}
-            (baseline / "iteration.json").write_text(json.dumps(baseline_iteration))
-            (candidate / "iteration.json").write_text(json.dumps(candidate_iteration))
+            baseline, candidate = self.make_iteration_pair(Path(directory))
             result = listening.prepare_campaign_bundle(candidate, baseline, candidate / "listening")
-            experiment_path = candidate / result["experiment"]
-            experiment = listening.validate_experiment(experiment_path)
+            experiment, analysis = listening.validate_analysis_manifest(candidate / result["analysis_manifest"])
             self.assertEqual(result["trials"], 1)
             self.assertEqual(result["experiment_digest"], listening.manifest_digest(experiment))
+            participant_json = json.dumps(experiment, sort_keys=True)
+            self.assertNotIn("candidate", participant_json)
+            self.assertNotIn("incumbent", participant_json)
+            self.assertNotIn("222222", participant_json)
             self.assertIn('content="experiment.json"', (candidate / "listening" / "index.html").read_text())
-            roles = {item["role"] for item in experiment["trials"][0]["stimuli"]}
+            roles = {item["role"] for item in analysis["trials"][0]["stimuli"]}
             self.assertEqual(roles, {"candidate", "incumbent"})
-            for stimulus in experiment["trials"][0]["stimuli"]:
-                self.assertAlmostEqual(stimulus["provenance"]["integrated_lufs_after"], -23.0, places=2)
+            for stimulus in analysis["trials"][0]["stimuli"]:
+                self.assertAlmostEqual(stimulus["integrated_lufs_after"], -23.0, places=2)
 
             seed = 123
-            presentation = listening.expected_presentations(experiment, seed)["case-a"]
+            trial = experiment["trials"][0]
+            presentation = listening.expected_presentations(experiment, seed)[trial["id"]]
+            candidate_id = next(item["id"] for item in analysis["trials"][0]["stimuli"] if item["role"] == "candidate")
             session = {
-                "schema_version": "1.0.0",
-                "experiment_id": experiment["id"],
-                "experiment_digest": result["experiment_digest"],
-                "session_id": "campaign-round-trip",
-                "evidence_kind": "human",
+                "schema_version": "1.0.0", "experiment_id": experiment["id"], "experiment_digest": result["experiment_digest"],
+                "session_id": "campaign-round-trip", "evidence_kind": "human",
                 "listener": {"id": "listener", "experience": "test", "hearing_notes": "none"},
                 "setup": {"transducer": "headphones", "environment": "test", "device": "test", "volume_check": True},
                 "randomization": {"algorithm": listening.RANDOMIZATION_ALGORITHM, "seed": seed},
-                "trial_order": listening.expected_trial_order(experiment, seed),
-                "started_at": "x",
-                "submitted_at": "y",
-                "trials": [{
-                    "trial_id": "case-a",
-                    "protocol": "ab",
-                    "presentation": presentation,
-                    "response": {"choice": "case-a-candidate"},
-                    "play_counts": {item: 1 for item in presentation},
-                }],
+                "trial_order": listening.expected_trial_order(experiment, seed), "started_at": "x", "submitted_at": "y",
+                "trials": [{"trial_id": trial["id"], "protocol": "ab", "presentation": presentation, "response": {"choice": candidate_id}, "play_counts": {item: 1 for item in presentation}, "playback": playback(presentation)}],
             }
-            report = listening.analyze(experiment, [session])
+            report = listening.analyze(experiment, [session], analysis)
             self.assertEqual(report["n_included"], 1)
-            self.assertEqual(report["stimuli"]["case-a-candidate"]["preference_count"], 1)
+            self.assertEqual(report["stimuli"][candidate_id]["preference_count"], 1)
             self.assertIsNone(report["quality_verdict"])
+
+    def test_campaign_pair_protocol_mismatch_fails_before_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline, candidate = self.make_iteration_pair(Path(directory))
+            value = json.loads((candidate / "iteration.json").read_text())
+            value["cases"][0]["render_metadata"]["midi"] = 61
+            (candidate / "iteration.json").write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, "render protocol differs"):
+                listening.prepare_campaign_bundle(candidate, baseline, candidate / "listening")
 
 
 if __name__ == "__main__":

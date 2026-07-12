@@ -187,6 +187,10 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(second["listening"]["trials"], 2)
             self.assertTrue((out2 / "listening" / "index.html").is_file())
             self.assertTrue((out2 / "listening" / "experiment.json").is_file())
+            self.assertTrue((out2 / "listening-analysis.json").is_file())
+            participant = json.loads((out2 / "listening" / "experiment.json").read_text())
+            self.assertNotIn("candidate", json.dumps(participant))
+            self.assertNotIn("incumbent", json.dumps(participant))
 
             with open(out2 / "summary.md", "a") as f:
                 f.write("tamper\n")

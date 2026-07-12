@@ -47,13 +47,26 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["trial_id", "protocol", "presentation", "response", "play_counts"],
+        "required": ["trial_id", "protocol", "presentation", "response", "play_counts", "playback"],
         "properties": {
           "trial_id": { "type": "string" },
           "protocol": { "enum": ["ab", "abx", "mushra"] },
           "presentation": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
           "response": { "type": "object" },
-          "play_counts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } }
+          "play_counts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+          "playback": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": ["starts", "completed", "listened_ms"],
+              "properties": {
+                "starts": { "type": "integer", "minimum": 0 },
+                "completed": { "type": "integer", "minimum": 0 },
+                "listened_ms": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            }
+          }
         },
         "additionalProperties": false
       }

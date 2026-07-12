@@ -26,13 +26,14 @@ The runner refuses missing references, absent held-out cases, corpus-axis contra
 
 ## Listening evidence
 
-When a baseline-backed campaign reaches `candidate` or `listening_required`, the runner writes a sealed `listening/` bundle inside the iteration instead of a label-revealing A/B page. The bundle copies exact baseline/candidate sources, normalizes each condition to the declared BS.1770 target, records source and prepared-audio digests plus gain provenance, randomizes condition order per listener, and stores only pseudonymous local session evidence until export.
+When a baseline-backed campaign reaches `candidate` or `listening_required`, the runner writes a sealed participant-facing `listening/` bundle inside the iteration instead of a label-revealing A/B page. The public manifest and media URLs contain only opaque condition IDs; the separately sealed `listening-analysis.json` outside that served directory owns roles, source/prepared-audio digests, gain provenance, and exact campaign identity. The runner requires identical case manifests, reference digests, render protocols, sample rates, channels, frame counts, and durations before pairing anything, then normalizes each condition to the declared BS.1770 target.
 
-Serve the iteration directory over localhost, open `listening/index.html`, keep playback volume fixed, complete the randomized trials, and export the raw session JSON. Validate and analyze exports with the experiment manifest that was sealed into the same iteration:
+Serve only the public `listening/` directory over localhost so the private role map is not participant-accessible, keep playback volume fixed, complete every condition through to the end, and export the raw session JSON. Validate and analyze exports with the private analysis manifest that was sealed into the iteration root:
 
 ```sh
-npm run listening:validate -- /path/to/iteration/listening/experiment.json
-npm run listening:analyze -- /path/to/iteration/listening/experiment.json /path/to/session-*.json --out /path/to/analysis.json --markdown /path/to/analysis.md
+cd /path/to/iteration/listening && python3 -m http.server 8175
+npm run listening:validate -- /path/to/iteration/listening-analysis.json
+npm run listening:analyze -- /path/to/iteration/listening-analysis.json /path/to/session-*.json --out /path/to/analysis.json --markdown /path/to/analysis.md
 npm run audit:listening
 ```
 

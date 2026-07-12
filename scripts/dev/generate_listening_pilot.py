@@ -49,44 +49,98 @@ def audio_set() -> dict[str, np.ndarray]:
     for index, sample in enumerate(anchor_source):
         state += coefficient * (sample - state)
         anchor[index] = round(state * 31) / 31
-    return {"pilot-reference.wav": normalize_loudness(reference), "pilot-candidate.wav": normalize_loudness(candidate), "pilot-anchor.wav": normalize_loudness(anchor)}
+    normalized_reference = normalize_loudness(reference)
+    return {
+        "audio/reference.wav": normalized_reference,
+        "audio/condition-01.wav": normalized_reference,
+        "audio/condition-02.wav": normalize_loudness(candidate),
+        "audio/condition-03.wav": normalize_loudness(anchor),
+    }
 
 
-def write_audio(out: Path) -> dict[str, str]:
+def write_audio(out: Path) -> dict[str, dict[str, float | str]]:
     out.mkdir(parents=True, exist_ok=True)
-    digests: dict[str, str] = {}
+    evidence: dict[str, dict[str, float | str]] = {}
     for name, audio in audio_set().items():
         path = out / name
+        path.parent.mkdir(parents=True, exist_ok=True)
         sf.write(path, audio, SR, subtype="PCM_16")
-        digests[name] = listening.sha256_bytes(path.read_bytes())
-    return digests
+        written, rate = sf.read(path, dtype="float64", always_2d=True)
+        loudness = float(pyloudnorm.Meter(rate).integrated_loudness(written))
+        evidence[name] = {"sha256": listening.sha256_bytes(path.read_bytes()), "loudness": round(loudness, 6)}
+    return evidence
 
 
-def experiment(digests: dict[str, str]) -> dict:
+def experiment() -> dict:
     return {
         "schema_version": listening.SCHEMA_VERSION,
         "id": "hidden-reference-anchor-pilot",
-        "title": "Hidden-reference and anchor harness pilot",
+        "title": "Blind listening harness pilot",
         "purpose": "harness_validation",
         "instructions": "Rate the fidelity of every anonymous condition against the explicit reference. These synthetic tones validate only the listening harness, not an instrument or release.",
         "sample_rate": SR,
-        "level_matching": {"method": "bs1770_integrated", "target_lufs": TARGET_LUFS, "tolerance_lu": 0.1},
+        "level_matching": {"method": "bs1770_integrated", "target_lufs": TARGET_LUFS, "tolerance_lu": 0.1, "window": "full_file"},
         "randomization": {"algorithm": listening.RANDOMIZATION_ALGORITHM, "seed_policy": "fixed_pilot"},
-        "exclusion_policy": {"min_completed_trials": 1, "hidden_reference_min_score": 90, "min_plays_per_stimulus": 1},
-        "trials": [
-            {
-                "id": "synthetic-tone-mushra",
-                "protocol": "mushra",
-                "prompt": "Rate fidelity to the explicit reference.",
-                "reference": {"id": "explicit-reference", "path": "pilot-reference.wav", "sha256": digests["pilot-reference.wav"]},
-                "stimuli": [
-                    {"id": "condition-h", "path": "pilot-reference.wav", "sha256": digests["pilot-reference.wav"], "role": "hidden_reference"},
-                    {"id": "condition-c", "path": "pilot-candidate.wav", "sha256": digests["pilot-candidate.wav"], "role": "candidate"},
-                    {"id": "condition-a", "path": "pilot-anchor.wav", "sha256": digests["pilot-anchor.wav"], "role": "anchor"}
-                ]
-            }
-        ]
+        "exclusion_policy": {
+            "min_completed_trials": 1,
+            "hidden_reference_min_score": 90,
+            "min_completed_plays_per_stimulus": 1,
+            "unique_listener_ids_required": True,
+        },
+        "trials": [{
+            "id": "synthetic-tone-mushra",
+            "protocol": "mushra",
+            "prompt": "Rate fidelity to the explicit reference.",
+            "reference": {"id": "explicit-reference", "path": "audio/reference.wav"},
+            "stimuli": [
+                {"id": "condition-01", "path": "audio/condition-01.wav"},
+                {"id": "condition-02", "path": "audio/condition-02.wav"},
+                {"id": "condition-03", "path": "audio/condition-03.wav"},
+            ],
+        }],
     }
+
+
+def analysis_manifest(value: dict, evidence: dict[str, dict[str, float | str]]) -> dict:
+    def condition(condition_id: str, path: str, role: str) -> dict:
+        row = evidence[path]
+        return {
+            "id": condition_id,
+            "role": role,
+            "sha256": row["sha256"],
+            "source_sha256": row["sha256"],
+            "gain_db": 0.0,
+            "integrated_lufs_before": row["loudness"],
+            "integrated_lufs_after": row["loudness"],
+            "duration_ms": 800,
+        }
+
+    return {
+        "schema_version": listening.SCHEMA_VERSION,
+        "experiment": "experiment.json",
+        "experiment_digest": listening.manifest_digest(value),
+        "provenance": {
+            "generator": listening.CAMPAIGN_BUNDLE_VERSION,
+            "candidate_commit": "0" * 40,
+            "baseline_commit": "0" * 40,
+            "metric_version": "synthetic-harness-v1",
+            "case_manifest_sha256": "0" * 64,
+        },
+        "trials": [{
+            "id": "synthetic-tone-mushra",
+            "case_id": "synthetic-tone",
+            "reference_sha256": evidence["audio/reference.wav"]["sha256"],
+            "stimuli": [
+                condition("condition-01", "audio/condition-01.wav", "hidden_reference"),
+                condition("condition-02", "audio/condition-02.wav", "candidate"),
+                condition("condition-03", "audio/condition-03.wav", "anchor"),
+            ],
+        }],
+    }
+
+
+def playback(count: int = 2) -> dict:
+    return {"starts": count, "completed": count, "listened_ms": 800 * count}
 
 
 def sessions(value: dict) -> list[dict]:
@@ -102,6 +156,7 @@ def sessions(value: dict) -> list[dict]:
     out = []
     for index, (seed, hidden, candidate, anchor) in enumerate(rows, 1):
         presentation = listening.expected_presentations(value, seed)["synthetic-tone-mushra"]
+        slots = ["condition-01", "condition-02", "condition-03", "reference"]
         out.append({
             "schema_version": listening.SCHEMA_VERSION,
             "experiment_id": value["id"],
@@ -118,23 +173,25 @@ def sessions(value: dict) -> list[dict]:
                 "trial_id": "synthetic-tone-mushra",
                 "protocol": "mushra",
                 "presentation": presentation,
-                "response": {"ratings": {"condition-h": hidden, "condition-c": candidate, "condition-a": anchor}},
-                "play_counts": {"condition-h": 2, "condition-c": 2, "condition-a": 2, "reference": 2}
-            }]
+                "response": {"ratings": {"condition-01": hidden, "condition-02": candidate, "condition-03": anchor}},
+                "play_counts": {slot: 2 for slot in slots},
+                "playback": {slot: playback() for slot in slots},
+            }],
         })
     return out
 
 
 def generate(out: Path) -> None:
-    digests = write_audio(out)
-    value = experiment(digests)
+    evidence = write_audio(out)
+    value = experiment()
+    private = analysis_manifest(value, evidence)
     (out / "experiment.json").write_text(json.dumps(value, indent=2) + "\n")
+    (out / "analysis-manifest.json").write_text(json.dumps(private, indent=2) + "\n")
     result = sessions(value)
     (out / "synthetic-results.json").write_text(json.dumps(result, indent=2) + "\n")
-    report = listening.analyze(value, result)
+    report = listening.analyze(value, result, private)
     (out / "synthetic-analysis.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     (out / "synthetic-analysis.md").write_text(listening.render_markdown(report))
-
 
 def check() -> None:
     with tempfile.TemporaryDirectory() as directory:

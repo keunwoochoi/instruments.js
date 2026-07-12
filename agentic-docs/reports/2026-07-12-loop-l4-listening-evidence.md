@@ -8,9 +8,11 @@ Status: validation evidence for issue #23 and PR #31; synthetic sessions validat
 - Experiment and session JSON are schema-validated, reject unknown fields, and bind every session to the exact experiment digest.
 - Python and browser canonicalization use the same finite IEEE-double representation, reject unsafe integers and non-finite values, and are regression-tested on integer-valued, ordinary decimal, and small scientific-notation values.
 - The seeded randomization records both condition presentation and trial order. The analyzer independently reconstructs both and rejects tampering.
-- Campaign listening bundles are self-contained inside the sealed iteration. Every baseline and candidate source is SHA-256 identified, independently normalized to the declared BS.1770 integrated-loudness target, verified after writing, and recorded with gain/loudness provenance.
-- The browser requires at least the experiment-declared playback count for every visible condition before submission. The analyzer also excludes insufficient-playback sessions so edited or externally produced evidence cannot bypass the rule.
-- Raw listener responses, pseudonymous listener/setup metadata, play counts, seed, randomized order, exclusions, and uncertainty remain in the JSON analysis. `quality_verdict` is always null.
+- Campaign listening bundles separate an opaque participant manifest/media directory from a sealed analysis key that owns roles and provenance. Every baseline and candidate source is SHA-256 identified, independently normalized to the declared BS.1770 integrated-loudness target, verified after writing, and recorded with gain/loudness provenance.
+- The runner refuses a listening pair unless its case-manifest digest, reference digest, role, render metadata, sample rate, channels, frame count, and duration match. The full-file level-matching window is explicit rather than inferred.
+- The browser uses exclusive start-from-zero playback without native per-player volume, seeking, or overlap controls. Submission requires the experiment-declared number of completed plays for every visible condition, and the analyzer independently excludes incomplete playback.
+- Raw listener responses, pseudonymous listener/setup metadata, starts, completed plays, listened duration, seed, randomized order, exclusions, and uncertainty remain in the JSON analysis. Duplicate session IDs, duplicate listener IDs, and mixed human/synthetic pools fail closed; A/B ties remain explicit. `quality_verdict` is always null.
+- Interrupted sessions recover completed trials from local storage. Storage failures do not strand evidence: the in-memory session continues and the completed JSON is always exposed for manual copy as well as download.
 
 ## Hidden-reference and anchor pilot
 
@@ -18,7 +20,7 @@ The committed equation-generated MUSHRA pilot contains one explicit reference, o
 
 ## Campaign round trip
 
-The L2 campaign runner now replaces its label-revealing A/B page with a sealed `listening/` experiment whenever a baseline-backed run reaches `candidate` or `listening_required`. The audit creates a temporary baseline/candidate campaign, prepares its level-matched bundle, loads the bundle without an experiment query override, verifies no role or filename leaks into visible text, plays every condition, exports a browser session, and passes that exact export through the Python analyzer. Browser and Python experiment digests, presentation order, trial order, raw choice, raw-session retention, and null verdict all agree.
+The L2 campaign runner now replaces its label-revealing A/B page with a sealed public `listening/` experiment and a private `listening-analysis.json` key whenever a baseline-backed run reaches `candidate` or `listening_required`. The audit creates a temporary two-trial campaign, prepares its level-matched bundle, verifies that the participant JSON, media IDs, filenames, URLs, and visible text contain no condition role, plays every condition to completion with exclusive controls, reloads after trial one, resumes trial two, exports a browser session, and passes that exact export through the Python analyzer. A second run blocks local-storage writes and still completes through the in-memory/manual-copy fallback. Chromium and WebKit are both exercised; browser and Python experiment digests, presentation order, trial order, playback evidence, raw choice, raw-session retention, and null verdict all agree.
 
 ## Deliberate limits
 
@@ -32,6 +34,6 @@ The L2 campaign runner now replaces its label-revealing A/B page with a sealed `
 ```sh
 python3 -m pip install -r scripts/dev/requirements-loop.txt
 npm install
-npx playwright install chromium
+npx playwright install chromium webkit
 npm run audit:listening
 ```

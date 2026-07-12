@@ -4,6 +4,7 @@
     "correct": 0,
     "total": 0
   },
+  "analysis_manifest_digest": "c4607bb07aadd6557b640fd0cc8b2df29ee8cd0f604f255d7c08b956406af9e9",
   "evidence_kind_counts": {
     "human": 0,
     "synthetic_harness_pilot": 6
@@ -14,7 +15,7 @@
       "session_id": "synthetic-pilot-6"
     }
   ],
-  "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+  "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
   "experiment_id": "hidden-reference-anchor-pilot",
   "interpretation": "Listening evidence with uncertainty; a human owner applies the declared gate. Synthetic pilot sessions validate only the harness.",
   "n_included": 5,
@@ -23,7 +24,7 @@
   "raw_sessions": [
     {
       "evidence_kind": "synthetic_harness_pilot",
-      "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+      "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
       "experiment_id": "hidden-reference-anchor-pilot",
       "listener": {
         "experience": "synthetic fixture",
@@ -50,22 +51,44 @@
       "trials": [
         {
           "play_counts": {
-            "condition-a": 2,
-            "condition-c": 2,
-            "condition-h": 2,
+            "condition-01": 2,
+            "condition-02": 2,
+            "condition-03": 2,
             "reference": 2
           },
+          "playback": {
+            "condition-01": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "condition-02": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "condition-03": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "reference": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            }
+          },
           "presentation": [
-            "condition-c",
-            "condition-a",
-            "condition-h"
+            "condition-02",
+            "condition-03",
+            "condition-01"
           ],
           "protocol": "mushra",
           "response": {
             "ratings": {
-              "condition-a": 21,
-              "condition-c": 82,
-              "condition-h": 98
+              "condition-01": 98,
+              "condition-02": 82,
+              "condition-03": 21
             }
           },
           "trial_id": "synthetic-tone-mushra"
@@ -74,7 +97,7 @@
     },
     {
       "evidence_kind": "synthetic_harness_pilot",
-      "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+      "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
       "experiment_id": "hidden-reference-anchor-pilot",
       "listener": {
         "experience": "synthetic fixture",
@@ -101,22 +124,44 @@
       "trials": [
         {
           "play_counts": {
-            "condition-a": 2,
-            "condition-c": 2,
-            "condition-h": 2,
+            "condition-01": 2,
+            "condition-02": 2,
+            "condition-03": 2,
             "reference": 2
           },
+          "playback": {
+            "condition-01": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "condition-02": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "condition-03": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "reference": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            }
+          },
           "presentation": [
-            "condition-a",
-            "condition-c",
-            "condition-h"
+            "condition-03",
+            "condition-02",
+            "condition-01"
           ],
           "protocol": "mushra",
           "response": {
             "ratings": {
-              "condition-a": 18,
-              "condition-c": 79,
-              "condition-h": 96
+              "condition-01": 96,
+              "condition-02": 79,
+              "condition-03": 18
             }
           },
           "trial_id": "synthetic-tone-mushra"
@@ -125,7 +170,7 @@
     },
     {
       "evidence_kind": "synthetic_harness_pilot",
-      "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+      "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
       "experiment_id": "hidden-reference-anchor-pilot",
       "listener": {
         "experience": "synthetic fixture",
@@ -152,22 +197,44 @@
       "trials": [
         {
           "play_counts": {
-            "condition-a": 2,
-            "condition-c": 2,
-            "condition-h": 2,
+            "condition-01": 2,
+            "condition-02": 2,
+            "condition-03": 2,
             "reference": 2
           },
+          "playback": {
+            "condition-01": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "condition-02": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "condition-03": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "reference": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            }
+          },
           "presentation": [
-            "condition-h",
-            "condition-c",
-            "condition-a"
+            "condition-01",
+            "condition-02",
+            "condition-03"
           ],
           "protocol": "mushra",
           "response": {
             "ratings": {
-              "condition-a": 24,
-              "condition-c": 85,
-              "condition-h": 100
+              "condition-01": 100,
+              "condition-02": 85,
+              "condition-03": 24
             }
           },
           "trial_id": "synthetic-tone-mushra"
@@ -176,7 +243,7 @@
     },
     {
       "evidence_kind": "synthetic_harness_pilot",
-      "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+      "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
       "experiment_id": "hidden-reference-anchor-pilot",
       "listener": {
         "experience": "synthetic fixture",
@@ -203,22 +270,44 @@
       "trials": [
         {
           "play_counts": {
-            "condition-a": 2,
-            "condition-c": 2,
-            "condition-h": 2,
+            "condition-01": 2,
+            "condition-02": 2,
+            "condition-03": 2,
             "reference": 2
           },
+          "playback": {
+            "condition-01": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "condition-02": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "condition-03": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "reference": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            }
+          },
           "presentation": [
-            "condition-c",
-            "condition-h",
-            "condition-a"
+            "condition-02",
+            "condition-01",
+            "condition-03"
           ],
           "protocol": "mushra",
           "response": {
             "ratings": {
-              "condition-a": 27,
-              "condition-c": 76,
-              "condition-h": 95
+              "condition-01": 95,
+              "condition-02": 76,
+              "condition-03": 27
             }
           },
           "trial_id": "synthetic-tone-mushra"
@@ -227,7 +316,7 @@
     },
     {
       "evidence_kind": "synthetic_harness_pilot",
-      "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+      "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
       "experiment_id": "hidden-reference-anchor-pilot",
       "listener": {
         "experience": "synthetic fixture",
@@ -254,22 +343,44 @@
       "trials": [
         {
           "play_counts": {
-            "condition-a": 2,
-            "condition-c": 2,
-            "condition-h": 2,
+            "condition-01": 2,
+            "condition-02": 2,
+            "condition-03": 2,
             "reference": 2
           },
+          "playback": {
+            "condition-01": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "condition-02": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "condition-03": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "reference": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            }
+          },
           "presentation": [
-            "condition-a",
-            "condition-h",
-            "condition-c"
+            "condition-03",
+            "condition-01",
+            "condition-02"
           ],
           "protocol": "mushra",
           "response": {
             "ratings": {
-              "condition-a": 20,
-              "condition-c": 81,
-              "condition-h": 97
+              "condition-01": 97,
+              "condition-02": 81,
+              "condition-03": 20
             }
           },
           "trial_id": "synthetic-tone-mushra"
@@ -278,7 +389,7 @@
     },
     {
       "evidence_kind": "synthetic_harness_pilot",
-      "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+      "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
       "experiment_id": "hidden-reference-anchor-pilot",
       "listener": {
         "experience": "synthetic fixture",
@@ -305,22 +416,44 @@
       "trials": [
         {
           "play_counts": {
-            "condition-a": 2,
-            "condition-c": 2,
-            "condition-h": 2,
+            "condition-01": 2,
+            "condition-02": 2,
+            "condition-03": 2,
             "reference": 2
           },
+          "playback": {
+            "condition-01": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "condition-02": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "condition-03": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            },
+            "reference": {
+              "completed": 2,
+              "listened_ms": 1600,
+              "starts": 2
+            }
+          },
           "presentation": [
-            "condition-h",
-            "condition-a",
-            "condition-c"
+            "condition-01",
+            "condition-03",
+            "condition-02"
           ],
           "protocol": "mushra",
           "response": {
             "ratings": {
-              "condition-a": 12,
-              "condition-c": 88,
-              "condition-h": 65
+              "condition-01": 65,
+              "condition-02": 88,
+              "condition-03": 12
             }
           },
           "trial_id": "synthetic-tone-mushra"
@@ -330,18 +463,20 @@
   ],
   "schema_version": "1.0.0",
   "stimuli": {
-    "condition-a": {
-      "mean": 22.0,
+    "condition-01": {
+      "case_id": "synthetic-tone",
+      "mean": 97.2,
       "mean_ci95_bootstrap": [
-        19.2,
-        24.6
+        95.8,
+        98.8
       ],
-      "median": 21.0,
+      "median": 97.0,
       "n": 5,
-      "role": "anchor",
+      "role": "hidden_reference",
       "trial_id": "synthetic-tone-mushra"
     },
-    "condition-c": {
+    "condition-02": {
+      "case_id": "synthetic-tone",
       "mean": 80.6,
       "mean_ci95_bootstrap": [
         77.8,
@@ -352,15 +487,16 @@
       "role": "candidate",
       "trial_id": "synthetic-tone-mushra"
     },
-    "condition-h": {
-      "mean": 97.2,
+    "condition-03": {
+      "case_id": "synthetic-tone",
+      "mean": 22.0,
       "mean_ci95_bootstrap": [
-        95.8,
-        98.8
+        19.4,
+        24.6
       ],
-      "median": 97.0,
+      "median": 21.0,
       "n": 5,
-      "role": "hidden_reference",
+      "role": "anchor",
       "trial_id": "synthetic-tone-mushra"
     }
   }

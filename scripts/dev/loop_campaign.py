@@ -236,12 +236,14 @@ def verify_iteration(out):
     for case in iteration["cases"]:
         loop_metrics.validate_report(read_json(out / case["report"]))
     if "listening" in iteration:
-        experiment_path = (out / iteration["listening"]["experiment"]).resolve()
+        analysis_path = (out / iteration["listening"]["analysis_manifest"]).resolve()
         try:
-            experiment_path.relative_to(out)
+            analysis_path.relative_to(out)
         except ValueError as exc:
-            raise ValueError("unsafe listening experiment path") from exc
-        experiment = listening.validate_experiment(experiment_path)
+            raise ValueError("unsafe listening analysis-manifest path") from exc
+        if sha256(analysis_path) != iteration["listening"]["analysis_manifest_sha256"]:
+            raise ValueError("listening analysis-manifest file digest mismatch")
+        experiment, _ = listening.validate_analysis_manifest(analysis_path)
         if listening.manifest_digest(experiment) != iteration["listening"]["experiment_digest"]:
             raise ValueError("listening experiment digest mismatch")
         audition_path = (out / iteration["audition"]).resolve()

@@ -2,7 +2,7 @@
   {
     "schema_version": "1.0.0",
     "experiment_id": "hidden-reference-anchor-pilot",
-    "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+    "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
     "session_id": "synthetic-pilot-1",
     "evidence_kind": "synthetic_harness_pilot",
     "listener": {
@@ -30,22 +30,44 @@
         "trial_id": "synthetic-tone-mushra",
         "protocol": "mushra",
         "presentation": [
-          "condition-c",
-          "condition-a",
-          "condition-h"
+          "condition-02",
+          "condition-03",
+          "condition-01"
         ],
         "response": {
           "ratings": {
-            "condition-h": 98,
-            "condition-c": 82,
-            "condition-a": 21
+            "condition-01": 98,
+            "condition-02": 82,
+            "condition-03": 21
           }
         },
         "play_counts": {
-          "condition-h": 2,
-          "condition-c": 2,
-          "condition-a": 2,
+          "condition-01": 2,
+          "condition-02": 2,
+          "condition-03": 2,
           "reference": 2
+        },
+        "playback": {
+          "condition-01": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "condition-02": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "condition-03": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "reference": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          }
         }
       }
     ]
@@ -53,7 +75,7 @@
   {
     "schema_version": "1.0.0",
     "experiment_id": "hidden-reference-anchor-pilot",
-    "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+    "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
     "session_id": "synthetic-pilot-2",
     "evidence_kind": "synthetic_harness_pilot",
     "listener": {
@@ -81,22 +103,44 @@
         "trial_id": "synthetic-tone-mushra",
         "protocol": "mushra",
         "presentation": [
-          "condition-a",
-          "condition-c",
-          "condition-h"
+          "condition-03",
+          "condition-02",
+          "condition-01"
         ],
         "response": {
           "ratings": {
-            "condition-h": 96,
-            "condition-c": 79,
-            "condition-a": 18
+            "condition-01": 96,
+            "condition-02": 79,
+            "condition-03": 18
           }
         },
         "play_counts": {
-          "condition-h": 2,
-          "condition-c": 2,
-          "condition-a": 2,
+          "condition-01": 2,
+          "condition-02": 2,
+          "condition-03": 2,
           "reference": 2
+        },
+        "playback": {
+          "condition-01": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "condition-02": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "condition-03": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "reference": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          }
         }
       }
     ]
@@ -104,7 +148,7 @@
   {
     "schema_version": "1.0.0",
     "experiment_id": "hidden-reference-anchor-pilot",
-    "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+    "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
     "session_id": "synthetic-pilot-3",
     "evidence_kind": "synthetic_harness_pilot",
     "listener": {
@@ -132,22 +176,44 @@
         "trial_id": "synthetic-tone-mushra",
         "protocol": "mushra",
         "presentation": [
-          "condition-h",
-          "condition-c",
-          "condition-a"
+          "condition-01",
+          "condition-02",
+          "condition-03"
         ],
         "response": {
           "ratings": {
-            "condition-h": 100,
-            "condition-c": 85,
-            "condition-a": 24
+            "condition-01": 100,
+            "condition-02": 85,
+            "condition-03": 24
           }
         },
         "play_counts": {
-          "condition-h": 2,
-          "condition-c": 2,
-          "condition-a": 2,
+          "condition-01": 2,
+          "condition-02": 2,
+          "condition-03": 2,
           "reference": 2
+        },
+        "playback": {
+          "condition-01": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "condition-02": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "condition-03": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "reference": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          }
         }
       }
     ]
@@ -155,7 +221,7 @@
   {
     "schema_version": "1.0.0",
     "experiment_id": "hidden-reference-anchor-pilot",
-    "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+    "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
     "session_id": "synthetic-pilot-4",
     "evidence_kind": "synthetic_harness_pilot",
     "listener": {
@@ -183,22 +249,44 @@
         "trial_id": "synthetic-tone-mushra",
         "protocol": "mushra",
         "presentation": [
-          "condition-c",
-          "condition-h",
-          "condition-a"
+          "condition-02",
+          "condition-01",
+          "condition-03"
         ],
         "response": {
           "ratings": {
-            "condition-h": 95,
-            "condition-c": 76,
-            "condition-a": 27
+            "condition-01": 95,
+            "condition-02": 76,
+            "condition-03": 27
           }
         },
         "play_counts": {
-          "condition-h": 2,
-          "condition-c": 2,
-          "condition-a": 2,
+          "condition-01": 2,
+          "condition-02": 2,
+          "condition-03": 2,
           "reference": 2
+        },
+        "playback": {
+          "condition-01": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "condition-02": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "condition-03": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "reference": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          }
         }
       }
     ]
@@ -206,7 +294,7 @@
   {
     "schema_version": "1.0.0",
     "experiment_id": "hidden-reference-anchor-pilot",
-    "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+    "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
     "session_id": "synthetic-pilot-5",
     "evidence_kind": "synthetic_harness_pilot",
     "listener": {
@@ -234,22 +322,44 @@
         "trial_id": "synthetic-tone-mushra",
         "protocol": "mushra",
         "presentation": [
-          "condition-a",
-          "condition-h",
-          "condition-c"
+          "condition-03",
+          "condition-01",
+          "condition-02"
         ],
         "response": {
           "ratings": {
-            "condition-h": 97,
-            "condition-c": 81,
-            "condition-a": 20
+            "condition-01": 97,
+            "condition-02": 81,
+            "condition-03": 20
           }
         },
         "play_counts": {
-          "condition-h": 2,
-          "condition-c": 2,
-          "condition-a": 2,
+          "condition-01": 2,
+          "condition-02": 2,
+          "condition-03": 2,
           "reference": 2
+        },
+        "playback": {
+          "condition-01": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "condition-02": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "condition-03": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "reference": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          }
         }
       }
     ]
@@ -257,7 +367,7 @@
   {
     "schema_version": "1.0.0",
     "experiment_id": "hidden-reference-anchor-pilot",
-    "experiment_digest": "cb0039dcec8c55d34e5ed63ceeaf114e7b017e5b368d2c9245219bb58a648e78",
+    "experiment_digest": "ed890e7bdfc129cbbbb8b3447665cffb47846d2c9cddbd9dc069681aaa55656e",
     "session_id": "synthetic-pilot-6",
     "evidence_kind": "synthetic_harness_pilot",
     "listener": {
@@ -285,22 +395,44 @@
         "trial_id": "synthetic-tone-mushra",
         "protocol": "mushra",
         "presentation": [
-          "condition-h",
-          "condition-a",
-          "condition-c"
+          "condition-01",
+          "condition-03",
+          "condition-02"
         ],
         "response": {
           "ratings": {
-            "condition-h": 65,
-            "condition-c": 88,
-            "condition-a": 12
+            "condition-01": 65,
+            "condition-02": 88,
+            "condition-03": 12
           }
         },
         "play_counts": {
-          "condition-h": 2,
-          "condition-c": 2,
-          "condition-a": 2,
+          "condition-01": 2,
+          "condition-02": 2,
+          "condition-03": 2,
           "reference": 2
+        },
+        "playback": {
+          "condition-01": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "condition-02": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "condition-03": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          },
+          "reference": {
+            "starts": 2,
+            "completed": 2,
+            "listened_ms": 1600
+          }
         }
       }
     ]

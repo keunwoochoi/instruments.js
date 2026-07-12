@@ -11,7 +11,10 @@ const digest = await manifestDigest(experiment);
 const base = new URL(manifestUrl, location.href);
 const byTrial = Object.fromEntries(experiment.trials.map((trial) => [trial.id, trial]));
 let session = null;
+let recoverableSession = null;
 let trialIndex = 0;
+let activeAudio = null;
+let storageAvailable = true;
 
 $("#title").textContent = experiment.title;
 $("#instructions").textContent = experiment.instructions;
@@ -24,32 +27,115 @@ function playCounts(order) {
   return Object.fromEntries(order.map((id) => [id, 0]));
 }
 
+function playbackEvidence(order) {
+  return Object.fromEntries(order.map((id) => [id, { starts: 0, completed: 0, listened_ms: 0 }]));
+}
+
+function setStatus(message) {
+  $("#status").textContent = message;
+}
+
+function sessionJson() {
+  return session ? `${JSON.stringify(session, null, 2)}\n` : "";
+}
+
+function refreshManualExport() {
+  $("#manual-export").value = sessionJson();
+}
+
 function persist() {
-  if (session) localStorage.setItem(`ij-listening:${session.session_id}`, JSON.stringify(session));
+  if (!session || !storageAvailable) return;
+  try {
+    localStorage.setItem(`ij-listening:${session.session_id}`, JSON.stringify(session));
+  } catch (error) {
+    storageAvailable = false;
+    setStatus(`Browser storage is unavailable (${error.name}). The session remains in memory; use export or manual copy before leaving.`);
+  }
+}
+
+function recoverStoredSession() {
+  try {
+    const matches = [];
+    for (let index = 0; index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith("ij-listening:")) continue;
+      try {
+        const value = JSON.parse(localStorage.getItem(key));
+        if (value.experiment_id === experiment.id && value.experiment_digest === digest) matches.push(value);
+      } catch {}
+    }
+    matches.sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)));
+    return matches[0] ?? null;
+  } catch (error) {
+    storageAvailable = false;
+    setStatus(`Browser storage cannot be read (${error.name}). New sessions still work in memory and can be copied manually.`);
+    return null;
+  }
+}
+
+function stopActiveAudio(except = null) {
+  if (activeAudio && activeAudio !== except) {
+    activeAudio.pause();
+    activeAudio.currentTime = 0;
+  }
+  if (activeAudio !== except) activeAudio = null;
 }
 
 function player(label, id, path, response) {
   const wrapper = document.createElement("div");
   wrapper.className = "sample";
-  wrapper.innerHTML = `<header><strong>${label}</strong><span class="plays">0 plays</span></header><audio controls preload="metadata"></audio>`;
+  wrapper.innerHTML = `<header><strong>${label}</strong><span class="plays">0 complete plays</span></header><audio preload="metadata"></audio><button type="button" class="play">Play from start</button>`;
   const audio = wrapper.querySelector("audio");
+  const button = wrapper.querySelector("button.play");
   audio.src = audioUrl(path);
+  audio.volume = 1;
+  button.setAttribute("aria-label", `Play ${label} from start`);
+  button.addEventListener("click", async () => {
+    stopActiveAudio(audio);
+    audio.pause();
+    audio.currentTime = 0;
+    audio.volume = 1;
+    activeAudio = audio;
+    try {
+      await audio.play();
+    } catch (error) {
+      setStatus(`Playback failed: ${error.message}`);
+    }
+  });
   audio.addEventListener("play", () => {
     response.play_counts[id] += 1;
-    wrapper.querySelector(".plays").textContent = `${response.play_counts[id]} plays`;
+    response.playback[id].starts += 1;
+    persist();
+  });
+  audio.addEventListener("ended", () => {
+    response.playback[id].completed += 1;
+    response.playback[id].listened_ms += Math.round(audio.duration * 1000);
+    wrapper.querySelector(".plays").textContent = `${response.playback[id].completed} complete plays`;
+    if (activeAudio === audio) activeAudio = null;
     persist();
   });
   return wrapper;
 }
 
 function baseResponse(trial, order) {
-  return { trial_id: trial.id, protocol: trial.protocol, presentation: order, response: {}, play_counts: playCounts(order) };
+  const slots = [...order];
+  if (trial.protocol === "mushra") slots.push("reference");
+  if (trial.protocol === "abx") slots.push("x");
+  return {
+    trial_id: trial.id,
+    protocol: trial.protocol,
+    presentation: order,
+    response: {},
+    play_counts: playCounts(slots),
+    playback: playbackEvidence(slots),
+  };
 }
 
 function showTrial() {
+  stopActiveAudio();
   if (trialIndex >= experiment.trials.length) return finish();
   const trial = byTrial[session.trial_order[trialIndex]];
-  const order = session.randomized_presentations[trial.id];
+  const order = presentations(experiment, session.randomization.seed)[trial.id];
   const response = baseResponse(trial, order);
   const section = $("#trial");
   section.replaceChildren();
@@ -60,10 +146,7 @@ function showTrial() {
   const players = document.createElement("div");
   players.className = "players";
   const stimulus = Object.fromEntries(trial.stimuli.map((item) => [item.id, item]));
-  if (trial.protocol === "mushra") {
-    response.play_counts.reference = 0;
-    players.append(player("Explicit reference", "reference", trial.reference.path, response));
-  }
+  if (trial.protocol === "mushra") players.append(player("Explicit reference", "reference", trial.reference.path, response));
   order.forEach((id, index) => {
     const item = stimulus[id];
     const sample = player(`Sample ${index + 1}`, id, item.path, response);
@@ -83,7 +166,6 @@ function showTrial() {
     players.append(sample);
   });
   if (trial.protocol === "abx") {
-    response.play_counts.x = 0;
     const xItem = stimulus[trial.x_source];
     players.append(player("X", "x", xItem.path, response));
   }
@@ -110,11 +192,13 @@ function showTrial() {
   const next = document.createElement("button");
   next.textContent = trialIndex + 1 === experiment.trials.length ? "Submit session" : "Save and continue";
   next.addEventListener("click", () => {
-    const complete = trial.protocol === "mushra"
+    const answered = trial.protocol === "mushra"
       ? Object.keys(response.response.ratings ?? {}).length === order.length
       : Boolean(response.response.choice);
-    const played = Object.values(response.play_counts).every((count) => count >= experiment.exclusion_policy.min_plays_per_stimulus);
-    if (!complete || !played) return setStatus("Play every sample and complete every rating or choice before continuing.");
+    const listened = Object.values(response.playback).every(
+      (evidence) => evidence.completed >= experiment.exclusion_policy.min_completed_plays_per_stimulus,
+    );
+    if (!answered || !listened) return setStatus("Play every sample through to completion and complete every rating or choice before continuing.");
     session.trials.push(response);
     trialIndex += 1;
     persist();
@@ -123,17 +207,24 @@ function showTrial() {
   section.append(next);
 }
 
-function setStatus(message) {
-  $("#status").textContent = message;
-}
-
 function finish() {
-  session.submitted_at = new Date().toISOString();
-  delete session.randomized_presentations;
+  stopActiveAudio();
+  if (!session.submitted_at) session.submitted_at = new Date().toISOString();
   persist();
   $("#trial").hidden = true;
   $("#complete").hidden = false;
-  setStatus("Session stored locally. Export the raw JSON to preserve it.");
+  refreshManualExport();
+  setStatus(storageAvailable
+    ? "Session stored locally. Export the raw JSON to preserve it outside this browser."
+    : "Session is complete in memory. Browser storage is unavailable; export or copy the raw JSON before leaving.");
+}
+
+function beginSession(value) {
+  session = value;
+  trialIndex = session.trials.length;
+  $("#setup").hidden = true;
+  $("#resume").hidden = true;
+  if (session.submitted_at) finish(); else showTrial();
 }
 
 $("#start").addEventListener("click", () => {
@@ -144,7 +235,7 @@ $("#start").addEventListener("click", () => {
   if (!listener || !experience || !environment || !device || !$("#volume").checked) return setStatus("Complete the setup and fixed-volume check first.");
   const forcedSeed = new URLSearchParams(location.search).get("seed");
   const seed = forcedSeed === null ? crypto.getRandomValues(new Uint32Array(1))[0] : Number(forcedSeed) >>> 0;
-  session = {
+  beginSession({
     schema_version: "1.0.0",
     experiment_id: experiment.id,
     experiment_digest: digest,
@@ -154,25 +245,53 @@ $("#start").addEventListener("click", () => {
     setup: { transducer: $("#transducer").value, environment, device, volume_check: true },
     randomization: { algorithm: RANDOMIZATION_ALGORITHM, seed },
     trial_order: trialOrder(experiment, seed),
-    randomized_presentations: presentations(experiment, seed),
     started_at: new Date().toISOString(),
     submitted_at: "",
     trials: [],
-  };
-  $("#setup").hidden = true;
-  showTrial();
+  });
 });
 
+$("#resume").addEventListener("click", () => beginSession(recoverableSession));
+
 $("#download").addEventListener("click", () => {
-  const blob = new Blob([`${JSON.stringify(session, null, 2)}\n`], { type: "application/json" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = `${session.session_id}.json`;
-  link.click();
-  URL.revokeObjectURL(link.href);
+  refreshManualExport();
+  try {
+    const blob = new Blob([sessionJson()], { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${session.session_id}.json`;
+    document.body.append(link);
+    link.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(link.href);
+      link.remove();
+    }, 1000);
+  } catch (error) {
+    setStatus(`Automatic download failed (${error.message}). Copy the raw JSON shown below.`);
+  }
+});
+
+$("#copy").addEventListener("click", async () => {
+  refreshManualExport();
+  try {
+    await navigator.clipboard.writeText($("#manual-export").value);
+    setStatus("Raw session JSON copied to the clipboard.");
+  } catch {
+    $("#manual-export").focus();
+    $("#manual-export").select();
+    setStatus("Clipboard access is unavailable. The raw JSON is selected for manual copy.");
+  }
 });
 
 $("#clear").addEventListener("click", () => {
-  localStorage.removeItem(`ij-listening:${session.session_id}`);
+  if (session && storageAvailable) {
+    try { localStorage.removeItem(`ij-listening:${session.session_id}`); } catch {}
+  }
   location.reload();
 });
+
+recoverableSession = recoverStoredSession();
+if (recoverableSession) {
+  $("#resume").hidden = false;
+  $("#resume").textContent = recoverableSession.submitted_at ? "Recover completed session" : `Resume saved session (${recoverableSession.trials.length}/${experiment.trials.length})`;
+}

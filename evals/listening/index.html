@@ -18,7 +18,7 @@
     <section id="setup" class="card">
       <h2>Listener and setup</h2>
       <div class="grid">
-        <label>Pseudonymous listener ID<input id="listener" autocomplete="off" required></label>
+        <label>Pseudonymous listener ID (unique per person)<input id="listener" autocomplete="off" required></label>
         <label>Listening experience<input id="experience" placeholder="e.g. producer, musician, general listener" required></label>
         <label>Output<select id="transducer"><option value="headphones">Headphones</option><option value="studio_monitors">Studio monitors</option><option value="speakers">Speakers</option><option value="other">Other</option></select></label>
         <label>Environment<input id="environment" placeholder="quiet room, studio…" required></label>
@@ -27,13 +27,16 @@
       </div>
       <label class="check"><input id="volume" type="checkbox"> I set a comfortable fixed volume and will not change it during the session.</label>
       <button id="start">Start randomized session</button>
+      <button id="resume" class="secondary" hidden>Resume saved session</button>
     </section>
     <section id="trial" class="card" hidden></section>
     <section id="complete" class="card" hidden>
       <h2>Session complete</h2>
       <p>Your raw responses are stored only in this browser until you export them. Send the exported JSON to the experiment owner without editing it.</p>
       <button id="download">Export raw session JSON</button>
+      <button id="copy" class="secondary">Copy raw JSON</button>
       <button id="clear" class="secondary">Clear local copy</button>
+      <label>Manual export fallback<textarea id="manual-export" rows="12" readonly></textarea></label>
     </section>
     <p id="status" role="status"></p>
   </main>
