@@ -12,11 +12,13 @@
 #![deny(unsafe_code)]
 
 pub mod kernels;
+pub mod wdf;
 
 use kernels::{
     amp_defaults, body_defaults, makeup_gain, pickup_defaults, start_voice, voice_pan, Instrument,
     Kernel, SympBank, Voice, MAX_BLOCK, MAX_BODY_MODES,
 };
+use wdf::WdfAmp;
 
 pub const MAX_VOICES: usize = 64;
 pub const MAX_TRACKS: usize = 16;
@@ -64,10 +66,18 @@ pub struct TrackBus {
     // post-drive cab/presence EQ (kernels::amp_post_eq_defaults): two RBJ
     // peaking biquads after the drive + tone lowpass (clip-generated presence
     // and the cab's LF chug bump cannot come from pre-clip EQ — r3 rec #1).
+    // Shared by both amp paths (the WDF "cab" is still these biquads in P1).
     pe_on: bool,
     pe_b: [[f32; 3]; 2],
     pe_a: [[f32; 2]; 2],
     pe_z: [[f32; 2]; 2],
+    // WDF circuit-sim amp (wdf::WdfAmp): 12AX7 triode root + Fender TMB tone
+    // stack + supply-rail sag. An ALTERNATIVE to the behavioral drive/ride
+    // chain above, selected per-track by `wdf_on`. `wdf_voiced` = this
+    // instrument has a WDF voicing; behavioral chain stays default (P1).
+    wdf_on: bool,
+    wdf_voiced: bool,
+    wdf_amp: WdfAmp,
     // body resonator bank (acoustic instruments): parallel modes + dry path
     body_n: usize,
     body_dry: f32,
@@ -458,6 +468,9 @@ impl Engine {
                 pe_b: [[0.0; 3]; 2],
                 pe_a: [[0.0; 2]; 2],
                 pe_z: [[0.0; 2]; 2],
+                wdf_on: false,
+                wdf_voiced: false,
+                wdf_amp: WdfAmp::new(),
                 body_n: 0,
                 body_dry: 1.0,
                 body_a1: [0.0; MAX_BODY_MODES],
@@ -536,6 +549,22 @@ impl Engine {
                 t.pe_b[k] = [(1.0 + alpha * a) / a0, (-2.0 * cw) / a0, (1.0 - alpha * a) / a0];
                 t.pe_a[k] = [(-2.0 * cw) / a0, (1.0 - alpha / a) / a0];
             }
+            // WDF circuit-sim amp (alternative path — behavioral stays default).
+            // Prepare the 12AX7 stage + TMB tone stack + supply sag for this
+            // instrument's voicing; `wdf_on` gates whether it's used at runtime.
+            match kernels::amp_wdf_voicing(instrument) {
+                Some(lead) => {
+                    t.wdf_voiced = true;
+                    let cfg = if lead {
+                        wdf::lead_config()
+                    } else {
+                        wdf::clean_config()
+                    };
+                    t.wdf_amp.prepare(cfg, self.sample_rate);
+                }
+                None => t.wdf_voiced = false,
+            }
+            t.wdf_on = kernels::WDF_AMP_DEFAULT && t.wdf_voiced;
             // body resonator bank (acoustics)
             let sr = self.sample_rate;
             let (dry, modes) = body_defaults(instrument);
@@ -858,44 +887,55 @@ impl Engine {
                     bus.pk_z1 = flush_denormal(bus.pk_z1);
                     bus.pk_z2 = flush_denormal(bus.pk_z2);
                 }
-                // amp gain-ride: supply-rail recovery / bias-shift compression
-                // (see TrackBus fields). Pre-drive so the rising gain re-feeds
-                // the tanh limiter — drive-sustain, the "amplifier factor".
-                if bus.ride_thr > 0.0 {
-                    for i in 0..frames {
-                        let x = self.track_l[i];
-                        let a = x.abs();
-                        let c = if a > bus.ride_env { bus.ride_env_a } else { bus.ride_env_r };
-                        bus.ride_env += c * (a - bus.ride_env);
-                        let t = bus.ride_thr / bus.ride_env.max(1e-5);
-                        let gt = if t > 1.0 { t.powf(bus.ride_p).min(bus.ride_cap) } else { 1.0 };
-                        let cg = if gt < bus.ride_g { bus.ride_dn } else { bus.ride_up };
-                        bus.ride_g += cg * (gt - bus.ride_g);
-                        self.track_l[i] = x * bus.ride_g;
+                if bus.wdf_on {
+                    // WDF circuit-sim amp: 12AX7 triode root (bounded Newton) +
+                    // Fender TMB tone stack + supply-rail sag. Replaces the
+                    // gain-ride + ADAA-tanh + tone lowpass below; the post cab
+                    // EQ is still applied. Sag/bias-shift emerge from the
+                    // rectifier/RC supply and cathode self-bias, not an envelope
+                    // follower (design doc 2026-07-13).
+                    bus.wdf_amp.process(&mut self.track_l[..frames]);
+                } else {
+                    // --- behavioral chain (DEFAULT) ---
+                    // amp gain-ride: supply-rail recovery / bias-shift compression
+                    // (see TrackBus fields). Pre-drive so the rising gain re-feeds
+                    // the tanh limiter — drive-sustain, the "amplifier factor".
+                    if bus.ride_thr > 0.0 {
+                        for i in 0..frames {
+                            let x = self.track_l[i];
+                            let a = x.abs();
+                            let c = if a > bus.ride_env { bus.ride_env_a } else { bus.ride_env_r };
+                            bus.ride_env += c * (a - bus.ride_env);
+                            let t = bus.ride_thr / bus.ride_env.max(1e-5);
+                            let gt = if t > 1.0 { t.powf(bus.ride_p).min(bus.ride_cap) } else { 1.0 };
+                            let cg = if gt < bus.ride_g { bus.ride_dn } else { bus.ride_up };
+                            bus.ride_g += cg * (gt - bus.ride_g);
+                            self.track_l[i] = x * bus.ride_g;
+                        }
+                        bus.ride_env = flush_denormal(bus.ride_env);
+                        // ride_g rests at cap (>= 1), never denormal
                     }
-                    bus.ride_env = flush_denormal(bus.ride_env);
-                    // ride_g rests at cap (>= 1), never denormal
-                }
-                // amp stage: ADAA tanh + tone/cab lowpass
-                if bus.drive > 0.0 {
-                    let d = bus.drive;
-                    let inv_d = 1.0 / d;
-                    for i in 0..frames {
-                        let x = self.track_l[i] * d;
-                        let dx = x - bus.amp_x1;
-                        let fx = ln_cosh(x);
-                        let y = if dx.abs() > 1e-4 {
-                            (fx - bus.amp_f1) / dx
-                        } else {
-                            (0.5 * (x + bus.amp_x1)).tanh()
-                        };
-                        bus.amp_x1 = x;
-                        bus.amp_f1 = fx;
-                        bus.tone_lp += bus.tone_c * (y - bus.tone_lp);
-                        self.track_l[i] = bus.tone_lp * inv_d.max(0.35);
+                    // amp stage: ADAA tanh + tone/cab lowpass
+                    if bus.drive > 0.0 {
+                        let d = bus.drive;
+                        let inv_d = 1.0 / d;
+                        for i in 0..frames {
+                            let x = self.track_l[i] * d;
+                            let dx = x - bus.amp_x1;
+                            let fx = ln_cosh(x);
+                            let y = if dx.abs() > 1e-4 {
+                                (fx - bus.amp_f1) / dx
+                            } else {
+                                (0.5 * (x + bus.amp_x1)).tanh()
+                            };
+                            bus.amp_x1 = x;
+                            bus.amp_f1 = fx;
+                            bus.tone_lp += bus.tone_c * (y - bus.tone_lp);
+                            self.track_l[i] = bus.tone_lp * inv_d.max(0.35);
+                        }
+                        bus.amp_x1 = flush_denormal(bus.amp_x1);
+                        bus.tone_lp = flush_denormal(bus.tone_lp);
                     }
-                    bus.amp_x1 = flush_denormal(bus.amp_x1);
-                    bus.tone_lp = flush_denormal(bus.tone_lp);
                 }
                 // post-drive cab/presence EQ (see TrackBus fields): transposed
                 // DF2 peaking sections — clip-generated presence + LF cab bump
@@ -1016,6 +1056,53 @@ pub mod ffi {
     pub extern "C" fn ij_set_room(p: *mut Engine, track: u32, send: f32) {
         if let Some(e) = engine(p) {
             e.set_room(track as usize, send);
+        }
+    }
+
+    /// Engine-internal selector for the WDF circuit-sim amp path (design doc
+    /// 2026-07-13). Default is the behavioral chain (kernels::WDF_AMP_DEFAULT =
+    /// false); this override lets the audition/A-B renders flip a track to the
+    /// WDF path without changing the default. No-op on non-voiced instruments.
+    /// Call after ij_set_track (which resets the flag).
+    #[no_mangle]
+    pub extern "C" fn ij_set_amp_wdf(p: *mut Engine, track: u32, on: u32) {
+        if let Some(e) = engine(p) {
+            let t = track as usize;
+            if t < MAX_TRACKS {
+                e.tracks[t].wdf_on = on != 0 && e.tracks[t].wdf_voiced;
+            }
+        }
+    }
+
+    /// WDF amp tuning FFI (scratchpad loop only — lets the render harness sweep
+    /// the voicing without recompiling). Patches the current track's WDF config
+    /// and re-prepares. Not used by the shipped presets.
+    #[no_mangle]
+    #[allow(clippy::too_many_arguments)]
+    pub extern "C" fn ij_wdf_tune(
+        p: *mut Engine,
+        track: u32,
+        drive: f32,
+        out_scale: f32,
+        load_k: f32,
+        rsup: f32,
+        csup_uf: f32,
+        tone_t: f32,
+        tone_l: f32,
+        tone_m: f32,
+    ) {
+        if let Some(e) = engine(p) {
+            let t = track as usize;
+            if t < MAX_TRACKS && e.tracks[t].wdf_voiced {
+                let sr = e.sample_rate;
+                let mut cfg = e.tracks[t].wdf_amp.config();
+                cfg.drive_v = drive as f64;
+                cfg.out_scale = out_scale as f64;
+                cfg.load_k = load_k as f64;
+                cfg.supply_rc = (rsup as f64, csup_uf as f64 * 1e-6);
+                cfg.tone = (tone_t as f64, tone_l as f64, tone_m as f64);
+                e.tracks[t].wdf_amp.set_config(cfg, sr);
+            }
         }
     }
 
