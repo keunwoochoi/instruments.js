@@ -10,9 +10,14 @@
   ],
   "scripts": {
     "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "demo": "npm run build --workspaces --if-present && scripts/dev/serve.sh",
+    "render": "node scripts/dev/render-demo.mjs",
+    "bench": "node scripts/dev/render-demo.mjs --bench",
     "audit:harness": "scripts/audit/harness-audit.sh"
   },
   "devDependencies": {
+    "playwright": "^1.61.1",
     "typescript": "^5.5.0"
   }
 }
