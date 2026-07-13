@@ -16,6 +16,7 @@ Use this when the owner says to wrap up, debrief, stop after the current iterati
 ## 2. Inventory from fresh repository state
 
 - Fetch remotes, then record every in-scope branch, upstream, exact head SHA, base branch, ahead/behind count, clean/dirty state, PR URL, draft state, checks, review decision, and unresolved review-thread count.
+- Derive every full SHA from `git rev-parse` or the GitHub API; never hand-transcribe or expand an abbreviated hash. Before posting, verify local `HEAD`, upstream, PR `headRefOid`, and every current-head SHA in the final body agree exactly.
 - Read the source issues and PR bodies fresh. Treat the repository and GitHub as authoritative; do not reconstruct live state from a local status document or memory.
 - For stacked work, record dependency order and which parent head each child actually contains.
 

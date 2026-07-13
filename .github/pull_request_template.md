@@ -15,7 +15,7 @@ Closes #
 <!-- What was driven for real at the exact current head (playground listen, offline render, dsp-bench numbers), not just green tests -->
 
 ## Evidence freshness
-<!-- Exact current head SHA; current CI/test/build/bench/panel/campaign/listening evidence; predecessor evidence explicitly labeled historical; skipped or unavailable gates stated as missing, never implied pass. -->
+<!-- Exact current head SHA derived with `git rev-parse HEAD` and verified against the PR `headRefOid`; current CI/test/build/bench/panel/campaign/listening evidence; predecessor evidence explicitly labeled historical; skipped or unavailable gates stated as missing, never implied pass. -->
 
 ## Review focus
 <!-- Files, assumptions, risks, listening timestamps, or evidence that deserve concentrated review. -->
