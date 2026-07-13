@@ -120,7 +120,7 @@ def analysis_manifest(value: dict, evidence: dict[str, dict[str, float | str]]) 
         "experiment": "experiment.json",
         "experiment_digest": listening.manifest_digest(value),
         "provenance": {
-            "generator": listening.CAMPAIGN_BUNDLE_VERSION,
+            "generator": "campaign-ab-v1",
             "candidate_commit": "0" * 40,
             "baseline_commit": "0" * 40,
             "metric_version": "synthetic-harness-v1",

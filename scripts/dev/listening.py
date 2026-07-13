@@ -29,7 +29,7 @@ LISTENING_ROOT = ROOT / "evals" / "listening"
 ANALYSIS_SCHEMA = LISTENING_ROOT / "analysis-manifest-schema-v1.json"
 SCHEMA_VERSION = "1.0.0"
 RANDOMIZATION_ALGORITHM = "xorshift32-fisher-yates-v1"
-CAMPAIGN_BUNDLE_VERSION = "campaign-ab-v1"
+CAMPAIGN_BUNDLE_VERSION = "campaign-ab-v2"
 CAMPAIGN_TARGET_LUFS = -23.0
 CAMPAIGN_TOLERANCE_LU = 0.1
 
@@ -132,8 +132,10 @@ def prepare_campaign_bundle(iteration_dir: Path | str, baseline_dir: Path | str,
     baseline = load_json(baseline_dir / "iteration.json")
     if candidate["family"] != baseline["family"]:
         raise ValueError("candidate and baseline listening families differ")
-    if candidate["manifest"]["sha256"] != baseline["manifest"]["sha256"]:
+    if candidate["manifest"] != baseline["manifest"]:
         raise ValueError("candidate and baseline case manifests differ")
+    if candidate.get("reference_registry") != baseline.get("reference_registry"):
+        raise ValueError("candidate and baseline reference registries differ")
     if candidate["metric_version"] != baseline["metric_version"]:
         raise ValueError("candidate and baseline metric versions differ")
     baseline_cases = {item["id"]: item for item in baseline["cases"]}
@@ -143,7 +145,9 @@ def prepare_campaign_bundle(iteration_dir: Path | str, baseline_dir: Path | str,
 
     for case in candidate["cases"]:
         previous = baseline_cases[case["id"]]
-        if case.get("role") != previous.get("role") or case.get("reference_sha256") != previous.get("reference_sha256"):
+        if (case.get("role") != previous.get("role")
+                or case.get("reference_sha256") != previous.get("reference_sha256")
+                or case.get("reference_contract") != previous.get("reference_contract")):
             raise ValueError(f"{case['id']}: baseline role/reference contract differs")
         ignored_metadata = {"out", "peak"}
         current_protocol = {key: value for key, value in case.get("render_metadata", {}).items() if key not in ignored_metadata}
@@ -203,7 +207,7 @@ def prepare_campaign_bundle(iteration_dir: Path | str, baseline_dir: Path | str,
             "prompt": f"Which rendering better matches the intended {candidate['family']} sound for case {case_index}?",
             "stimuli": public_stimuli,
         })
-        private_trials.append({"id": trial_id, "case_id": case_id, "reference_sha256": case["reference_sha256"], "stimuli": private_stimuli})
+        private_trials.append({"id": trial_id, "case_id": case_id, "reference_sha256": case["reference_sha256"], "reference_contract": case["reference_contract"], "stimuli": private_stimuli})
     if len(sample_rates) != 1 or next(iter(sample_rates)) not in {44100, 48000}:
         raise ValueError(f"campaign listening bundle requires one browser sample rate, got {sorted(sample_rates)}")
 
@@ -245,6 +249,9 @@ def prepare_campaign_bundle(iteration_dir: Path | str, baseline_dir: Path | str,
             "baseline_commit": baseline["source"]["commit"],
             "metric_version": candidate["metric_version"],
             "case_manifest_sha256": candidate["manifest"]["sha256"],
+            "case_schema_sha256": candidate["manifest"]["schema_sha256"],
+            "reference_registry_sha256": candidate["reference_registry"]["sha256"],
+            "reference_registry_schema_sha256": candidate["reference_registry"]["schema_sha256"],
         },
         "trials": private_trials,
     }
@@ -382,12 +389,23 @@ def validate_analysis_manifest(path: Path | str, verify_files: bool = True) -> t
     if manifest_digest(experiment) != value["experiment_digest"]:
         raise ValueError("participant experiment digest mismatch")
     public_trials = {trial["id"]: trial for trial in experiment["trials"]}
+    if value["provenance"]["generator"] == "campaign-ab-v2":
+        _require_keys(
+            value["provenance"],
+            {"generator", "candidate_commit", "baseline_commit", "metric_version", "case_manifest_sha256", "case_schema_sha256", "reference_registry_sha256", "reference_registry_schema_sha256"},
+            {"generator", "candidate_commit", "baseline_commit", "metric_version", "case_manifest_sha256", "case_schema_sha256", "reference_registry_sha256", "reference_registry_schema_sha256"},
+            "campaign provenance",
+        )
     private_trials = {trial["id"]: trial for trial in value["trials"]}
     if len(private_trials) != len(value["trials"]) or set(private_trials) != set(public_trials):
         raise ValueError("analysis key trial matrix differs from participant experiment")
     case_ids: set[str] = set()
     for trial_id, trial in public_trials.items():
         private = private_trials[trial_id]
+        if value["provenance"]["generator"] == "campaign-ab-v2":
+            _require_keys(private, {"id", "case_id", "reference_sha256", "reference_contract", "stimuli"}, {"id", "case_id", "reference_sha256", "reference_contract", "stimuli", "x_source"}, f"{trial_id} private trial")
+            if private["reference_sha256"] != private["reference_contract"]["reference_sha256"]:
+                raise ValueError(f"{trial_id}: reference contract digest mismatch")
         if private["case_id"] in case_ids:
             raise ValueError(f"duplicate analysis case id: {private['case_id']}")
         case_ids.add(private["case_id"])

@@ -63,12 +63,18 @@ function iteration(commit, cases, sampleRate) {
   return {
     family: "piano",
     metric_version: "browser-round-trip",
-    manifest: { sha256: "a".repeat(64) },
+    manifest: { path: "case-manifest.json", sha256: "a".repeat(64), schema_path: "case-schema.json", schema_sha256: "b".repeat(64) },
+    reference_registry: { path: "reference-registry.json", sha256: "c".repeat(64), schema_path: "reference-registry-schema.json", schema_sha256: "d".repeat(64) },
     source: { commit },
     cases: cases.map((id, index) => ({
       id,
       role: index === 0 ? "tune" : "held_out",
       reference_sha256: `${index + 1}`.repeat(64),
+      reference_contract: {
+        id: `ref.test.${id}`, corpus_id: "corpus.test", status: "verified", declared_path: `references/test/${id}.wav`,
+        reference_sha256: `${index + 1}`.repeat(64), contract_sha256: `${index + 3}`.repeat(64),
+        registry_sha256: "c".repeat(64), registry_schema_sha256: "d".repeat(64),
+      },
       render_metadata: {
         family: "piano", midi: 60 + index, vel: 90, onsetSeconds: 0.03,
         noteOffSeconds: 1.03, seconds: 2, sampleRate, float32: true,

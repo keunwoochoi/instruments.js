@@ -256,9 +256,15 @@ class CampaignBundleTests(unittest.TestCase):
         shutil.copyfile(PILOT / "audio" / "reference.wav", baseline / "renders" / "case-a.wav")
         shutil.copyfile(PILOT / "audio" / "condition-02.wav", candidate / "renders" / "case-a.wav")
         metadata = {"family": "piano", "midi": 60, "vel": 90, "onsetSeconds": 0.03, "noteOffSeconds": 1.03, "seconds": 2.0, "sampleRate": 48000, "float32": True}
+        reference_contract = {
+            "id": "ref.test.case-a", "corpus_id": "corpus.test", "status": "verified", "declared_path": "references/test/case-a.wav",
+            "reference_sha256": "b" * 64, "contract_sha256": "c" * 64, "registry_sha256": "d" * 64, "registry_schema_sha256": "e" * 64,
+        }
         common = {
-            "family": "piano", "metric_version": "test-metric", "manifest": {"sha256": "a" * 64},
-            "cases": [{"id": "case-a", "role": "tune", "reference_sha256": "b" * 64, "render_metadata": metadata}],
+            "family": "piano", "metric_version": "test-metric",
+            "manifest": {"path": "case-manifest.json", "sha256": "a" * 64, "schema_path": "case-schema.json", "schema_sha256": "f" * 64},
+            "reference_registry": {"path": "reference-registry.json", "sha256": "d" * 64, "schema_path": "reference-registry-schema.json", "schema_sha256": "e" * 64},
+            "cases": [{"id": "case-a", "role": "tune", "reference_sha256": "b" * 64, "reference_contract": reference_contract, "render_metadata": metadata}],
         }
         (baseline / "iteration.json").write_text(json.dumps({**common, "source": {"commit": "1" * 40}}))
         (candidate / "iteration.json").write_text(json.dumps({**common, "source": {"commit": "2" * 40}}))
@@ -278,6 +284,8 @@ class CampaignBundleTests(unittest.TestCase):
             self.assertIn('content="experiment.json"', (candidate / "listening" / "index.html").read_text())
             roles = {item["role"] for item in analysis["trials"][0]["stimuli"]}
             self.assertEqual(roles, {"candidate", "incumbent"})
+            self.assertEqual(analysis["trials"][0]["reference_contract"]["id"], "ref.test.case-a")
+            self.assertEqual(analysis["provenance"]["reference_registry_sha256"], "d" * 64)
             for stimulus in analysis["trials"][0]["stimuli"]:
                 self.assertAlmostEqual(stimulus["integrated_lufs_after"], -23.0, places=2)
 
@@ -307,6 +315,16 @@ class CampaignBundleTests(unittest.TestCase):
             (candidate / "iteration.json").write_text(json.dumps(value))
             with self.assertRaisesRegex(ValueError, "render protocol differs"):
                 listening.prepare_campaign_bundle(candidate, baseline, candidate / "listening")
+
+    def test_campaign_reference_contract_mismatch_fails_before_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline, candidate = self.make_iteration_pair(Path(directory))
+            value = json.loads((candidate / "iteration.json").read_text())
+            value["cases"][0]["reference_contract"]["contract_sha256"] = "0" * 64
+            (candidate / "iteration.json").write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, "reference contract differs"):
+                listening.prepare_campaign_bundle(candidate, baseline, candidate / "listening")
+            self.assertFalse((candidate / "listening").exists())
 
 
 if __name__ == "__main__":
