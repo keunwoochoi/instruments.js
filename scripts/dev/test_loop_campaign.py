@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -53,7 +54,7 @@ def manifest():
 class ManifestTests(unittest.TestCase):
     def write_manifest(self, directory, value):
         path = Path(directory) / "cases.json"
-        path.write_text(json.dumps(value))
+        path.write_text(json.dumps(value), encoding="utf-8")
         return path
 
     def test_all_committed_family_manifests_validate(self):
@@ -123,6 +124,43 @@ class BaselineTests(unittest.TestCase):
             loop_campaign.compare_baseline(a, b)
 
 
+class RunnerFailureTests(unittest.TestCase):
+    def test_json_helpers_round_trip_non_ascii_as_utf8(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "evidence.json"
+            value = {"hypothesis": "diffuse snare — écoute"}
+            loop_campaign.write_json(path, value)
+            self.assertEqual(loop_campaign.read_json(path), value)
+            self.assertIn("écoute".encode("utf-8"), path.read_bytes())
+
+    def test_renderer_failure_surfaces_stderr(self):
+        failure = subprocess.CalledProcessError(3, ["node"], output="", stderr="WASM rejected the note")
+        with mock.patch.object(loop_campaign.subprocess, "run", side_effect=failure):
+            with self.assertRaisesRegex(RuntimeError, "WASM rejected the note"):
+                loop_campaign.render_case(case("broken", "tune"), Path("render.wav"))
+
+    def test_renderer_invalid_metadata_surfaces_both_streams(self):
+        completed = subprocess.CompletedProcess(["node"], 0, stdout="not-json\n", stderr="renderer warning\n")
+        with mock.patch.object(loop_campaign.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(RuntimeError, "not-json"):
+                loop_campaign.render_case(case("broken", "tune"), Path("render.wav"))
+
+    def test_output_file_is_rejected_cleanly(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "iteration"
+            out.write_text("not a directory", encoding="utf-8")
+            with self.assertRaisesRegex(FileExistsError, "not an empty directory"):
+                loop_campaign.prepare_output_dir(out)
+
+    def test_nonempty_output_directory_is_rejected_cleanly(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "iteration"
+            out.mkdir()
+            (out / "existing").write_text("evidence", encoding="utf-8")
+            with self.assertRaisesRegex(FileExistsError, "not an empty directory"):
+                loop_campaign.prepare_output_dir(out)
+
+
 class EndToEndTests(unittest.TestCase):
     def test_four_family_pilot_staging_is_complete_and_corpus_rate_correct(self):
         with tempfile.TemporaryDirectory() as d:
@@ -164,7 +202,7 @@ class EndToEndTests(unittest.TestCase):
                 self.assertEqual(report["metric_version"], loop_campaign.loop_metrics.METRIC_VERSION)
                 self.assertEqual(report["inputs"]["render"]["sha256"], item["render_sha256"])
                 self.assertEqual(report["configuration"]["expected_onset_s"], 0.05)
-            with self.assertRaisesRegex(FileExistsError, "not empty"):
+            with self.assertRaisesRegex(FileExistsError, "not an empty directory"):
                 with contextlib.redirect_stdout(io.StringIO()):
                     loop_campaign.run_campaign(args)
 
