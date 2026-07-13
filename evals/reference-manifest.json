@@ -1,5 +1,5 @@
 {
-  "_doc": "Reference-corpus metadata (audit 2026-07-12). The corpora themselves are scratchpad-only (see agentic-docs/licensing.md); this file owns their KNOWN LIMITATIONS so the metric can compensate. compare.py matches the reference path against `match` substrings and applies: mask_after_s (truncate both signals — hard release gates tax physically-correct tails), and surfaces the flags in its report so agents fit with eyes open.",
+  "_doc": "Reference-corpus analysis constraints (audit 2026-07-12). Corpus provenance and license decisions are owned by agentic-docs/licensing.md; audio remains scratchpad-only. This file owns known limitations: compare.py applies mask_after_s and fail-closed invalid_axes, then surfaces the resolved contract in its report.",
   "corpora": [
     {
       "match": "references/piano-salamander",
@@ -16,6 +16,11 @@
       "sr": 16000,
       "level_normalized": true,
       "mask_after_s": 3.3,
+      "invalid_axes": {
+        "lufs": "Corpus files are level-normalized; absolute loudness is not preserved.",
+        "velocity_loudness": "Level normalization destroys the recorded velocity-to-loudness curve.",
+        "release": "A hard release gate follows note-off; release behavior is not natural."
+      },
       "notes": "BLIND >8 kHz (ultrasonic gate is the only guard). Level-normalized: velocity->loudness curves are FAKE here, fit velocity->timbre only. Hard release gate ~0.3 s after the 3 s note-off: masked."
     },
     {
@@ -25,6 +30,11 @@
       "sr": 16000,
       "level_normalized": true,
       "mask_after_s": 3.3,
+      "invalid_axes": {
+        "lufs": "Corpus files are level-normalized; absolute loudness is not preserved.",
+        "velocity_loudness": "Level normalization destroys the recorded velocity-to-loudness curve.",
+        "release": "A hard release gate follows note-off; release behavior is not natural."
+      },
       "notes": "Same NSynth caveats as guitar-acoustic."
     },
     {
@@ -34,6 +44,11 @@
       "sr": 16000,
       "level_normalized": true,
       "mask_after_s": 3.3,
+      "invalid_axes": {
+        "lufs": "Corpus files are level-normalized; absolute loudness is not preserved.",
+        "velocity_loudness": "Level normalization destroys the recorded velocity-to-loudness curve.",
+        "release": "A hard release gate follows note-off; release behavior is not natural."
+      },
       "notes": "Same NSynth caveats."
     },
     {
@@ -43,6 +58,11 @@
       "sr": 16000,
       "level_normalized": true,
       "mask_after_s": 3.3,
+      "invalid_axes": {
+        "lufs": "Corpus files are level-normalized; absolute loudness is not preserved.",
+        "velocity_loudness": "Level normalization destroys the recorded velocity-to-loudness curve.",
+        "release": "A hard release gate follows note-off; release behavior is not natural."
+      },
       "notes": "Same NSynth caveats."
     },
     {
@@ -51,6 +71,12 @@
       "license": "CC-BY-3.0",
       "sr": 44100,
       "level_normalized": true,
+      "invalid_axes": {
+        "lufs": "Corpus files are peak-normalized; absolute loudness is not preserved.",
+        "velocity_loudness": "Peak normalization destroys the recorded velocity-to-loudness curve.",
+        "decay": "Tails are hard-trimmed while ringing.",
+        "release": "Tails are hard-trimmed while ringing."
+      },
       "notes": "4 velocity layers (pp/mp/f/ff), full-band, trustworthy attack + harmonic balance. Peak-normalized: velocity->loudness FAKE, fit velocity->timbre only. Tails hard-trimmed while ringing (pp files down to 0.36 s): decay/t60/release axes untrustworthy. ~5 Hz AM on low notes is the built-in amp tremolo (preset effect, not a fit target)."
     },
     {
@@ -59,6 +85,10 @@
       "license": "CC-BY-3.0",
       "sr": 44100,
       "level_normalized": true,
+      "invalid_axes": {
+        "attack": "Pianet sticky-pad excitation is not an electric-piano hammer reference.",
+        "velocity_loudness": "Only two layers are available; do not infer a velocity curve."
+      },
       "notes": "2 layers only; long natural decays (~35 s low). Sticky-pad excitation, no hammer: decay-shape sanity only, never attack fitting."
     },
     {
@@ -68,6 +98,11 @@
       "sr": 16000,
       "level_normalized": true,
       "mask_after_s": 3.3,
+      "invalid_axes": {
+        "lufs": "Corpus files are level-normalized; absolute loudness is not preserved.",
+        "velocity_loudness": "Level normalization destroys the recorded velocity-to-loudness curve.",
+        "release": "A hard release gate follows note-off; release behavior is not natural."
+      },
       "notes": "Same NSynth caveats as guitar-acoustic. Sources triaged for tine/reed-EP character (SOURCES.txt): 098/002/001 bark ladders, 069 two-stage decay; 003 has 5.4 Hz tremolo (held out)."
     },
     {
@@ -84,6 +119,9 @@
       "license": "CC0-1.0",
       "sr": 44100,
       "level_normalized": false,
+      "invalid_axes": {
+        "tail": "Overhead references contain room bleed; tail similarity is not an isolated cymbal-decay measure."
+      },
       "notes": "Overhead mics carry room bleed; attack-window axes are more trustworthy than tails."
     },
     {
@@ -92,6 +130,9 @@
       "license": "CC0-1.0",
       "sr": 44100,
       "level_normalized": false,
+      "invalid_axes": {
+        "tail": "Overhead references contain room bleed; tail similarity is not an isolated instrument-decay measure."
+      },
       "notes": "Room bleed in overheads (see cymbals)."
     }
   ]
