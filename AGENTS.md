@@ -25,6 +25,8 @@
 - The issue is the live control plane: assignment records ownership; comments record material decisions and blockers; checkboxes record acceptance. Do not create local TODO, backlog, plan-status, or per-PR decision-log files.
 - Open implementation PRs as drafts. The PR body links the source issue with `Closes #N`, states impact and validation, names review focus, and routes every separable follow-up to an issue. Use `.github/pull_request_template.md`.
 - Keep durable architecture and policy in their owner docs. Keep changing plans, status, review evidence, and completion state in GitHub.
+- Keep filling in the PR body's "Agentic process trace" table. The **abandoned/wasted routes** row is not a formality — it is the primary record of what did not work, and it is unrecoverable from the diff.
+- **Append to the engineering journey log (issue #51) at the end of any substantial session or campaign.** One comment, never an edit to the issue body, never a local journal file. Record what was abandoned, what caught the error, verbatim owner quotes (marked as such — the agent operates the owner's GitHub account, so authorship is not evidence of voice), decisive numbers, and any harness rule you added because of a failure. The log exists so the project's process can be written up; failures are the contribution.
 
 ## Routes
 
@@ -37,6 +39,9 @@
 | Porting third-party code | `skills/port-audit/SKILL.md` | — |
 | New feature > 1 PR | `skills/new-design-doc/SKILL.md` | `agentic-docs/design/TEMPLATE.md` |
 | Any issue or PR | `.github/ISSUE_TEMPLATE/` | `.github/pull_request_template.md` when opening or finalizing a PR |
+| Piano (issue #49) | `agentic-docs/design/2026-07-13-higher-capacity-piano.md` | the earlier pianoteq-class piano doc, on the product stack, for phase history |
+| Strings / horns (issue #50) | `agentic-docs/design/2026-07-13-string-and-horn-families.md` | `skills/port-audit/SKILL.md` before touching STK |
+| Ending a session or campaign | journey log — issue #51 (append one comment; never edit the body) | — |
 
 ## Repo map
 
