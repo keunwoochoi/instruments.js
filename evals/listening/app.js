@@ -3,13 +3,23 @@ import { RANDOMIZATION_ALGORITHM, manifestDigest, presentations, trialOrder } fr
 const $ = (selector) => document.querySelector(selector);
 const configuredExperiment = document.querySelector('meta[name="ij-listening-experiment"]')?.content;
 const manifestUrl = new URLSearchParams(location.search).get("experiment") ?? configuredExperiment ?? "pilot/experiment.json";
-const experiment = await fetch(manifestUrl).then((response) => {
-  if (!response.ok) throw new Error(`experiment load failed: ${response.status}`);
-  return response.json();
-});
-const digest = await manifestDigest(experiment);
-const base = new URL(manifestUrl, location.href);
-const byTrial = Object.fromEntries(experiment.trials.map((trial) => [trial.id, trial]));
+let experiment = null, digest = null, base = null, byTrial = null;
+try {
+  experiment = await fetch(manifestUrl).then((response) => {
+    if (!response.ok) throw new Error(`experiment load failed: ${response.status}`);
+    return response.json();
+  });
+  digest = await manifestDigest(experiment);
+  base = new URL(manifestUrl, location.href);
+  byTrial = Object.fromEntries(experiment.trials.map((trial) => [trial.id, trial]));
+} catch (error) {
+  $("#title").textContent = "Listening experiment unavailable";
+  $("#instructions").textContent = `The experiment could not be loaded or validated (${error.message}). Check the experiment link and ask the owner for a fresh bundle.`;
+  $("#setup").hidden = true;
+  $("#status").textContent = "No response data was collected.";
+}
+
+if (experiment) {
 let session = null;
 let recoverableSession = null;
 let trialIndex = 0;
@@ -171,7 +181,12 @@ function showTrial() {
   section.replaceChildren();
   section.hidden = false;
   const heading = document.createElement("div");
-  heading.innerHTML = `<p class="progress">Trial ${trialIndex + 1} of ${experiment.trials.length} · ${trial.protocol.toUpperCase()}</p><h2>${trial.prompt}</h2>`;
+  const progress = document.createElement("p");
+  progress.className = "progress";
+  progress.textContent = `Trial ${trialIndex + 1} of ${experiment.trials.length} · ${trial.protocol.toUpperCase()}`;
+  const prompt = document.createElement("h2");
+  prompt.textContent = trial.prompt;
+  heading.append(progress, prompt);
   section.append(heading);
   const players = document.createElement("div");
   players.className = "players";
@@ -437,4 +452,5 @@ recoverableSession = await recoverStoredSession();
 if (recoverableSession) {
   $("#resume").hidden = false;
   $("#resume").textContent = recoverableSession.submitted_at ? "Recover completed session" : `Resume saved session (${recoverableSession.trials.length}/${experiment.trials.length})`;
+}
 }

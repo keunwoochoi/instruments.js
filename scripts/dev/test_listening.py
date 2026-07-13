@@ -2,6 +2,7 @@
 """Deterministic tests for blind-listening evidence and analysis."""
 
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -116,6 +117,7 @@ class RandomizationTests(unittest.TestCase):
         self.assertEqual(browser_digest, listening.manifest_digest(fixture))
         with self.assertRaisesRegex(ValueError, "non-finite"):
             listening.canonical_json({"bad": float("nan")})
+        self.assertNotIn("crypto.subtle", (ROOT / "evals" / "listening" / "randomization.js").read_text())
 
     def test_randomization_is_deterministic_and_position_balanced(self):
         ids = ["a", "b", "c"]
@@ -281,11 +283,17 @@ class CampaignBundleTests(unittest.TestCase):
             self.assertNotIn("candidate", participant_json)
             self.assertNotIn("incumbent", participant_json)
             self.assertNotIn("222222", participant_json)
+            self.assertNotIn(analysis["provenance"]["blinding_nonce"], participant_json)
             self.assertIn('content="experiment.json"', (candidate / "listening" / "index.html").read_text())
             roles = {item["role"] for item in analysis["trials"][0]["stimuli"]}
             self.assertEqual(roles, {"candidate", "incumbent"})
             self.assertEqual(analysis["trials"][0]["reference_contract"]["id"], "ref.test.case-a")
             self.assertEqual(analysis["provenance"]["reference_registry_sha256"], "d" * 64)
+            old_role_tokens = {
+                "condition-" + hashlib.sha256(f"{'2' * 40}:{'1' * 40}:case-a:{role}".encode()).hexdigest()[:16]
+                for role in ("candidate", "incumbent")
+            }
+            self.assertTrue(old_role_tokens.isdisjoint({item["id"] for item in analysis["trials"][0]["stimuli"]}))
             for stimulus in analysis["trials"][0]["stimuli"]:
                 self.assertAlmostEqual(stimulus["integrated_lufs_after"], -23.0, places=2)
 
@@ -325,6 +333,17 @@ class CampaignBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "reference contract differs"):
                 listening.prepare_campaign_bundle(candidate, baseline, candidate / "listening")
             self.assertFalse((candidate / "listening").exists())
+
+    def test_campaign_private_nonce_mapping_tamper_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline, candidate = self.make_iteration_pair(Path(directory))
+            result = listening.prepare_campaign_bundle(candidate, baseline, candidate / "listening")
+            analysis_path = candidate / result["analysis_manifest"]
+            value = listening.load_json(analysis_path)
+            value["provenance"]["blinding_nonce"] = "0" * 64
+            analysis_path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "blinding mapping"):
+                listening.validate_analysis_manifest(analysis_path)
 
 
 if __name__ == "__main__":

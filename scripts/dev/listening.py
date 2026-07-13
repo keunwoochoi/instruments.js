@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import random
+import secrets
 import shutil
 import statistics
 import sys
@@ -166,6 +167,7 @@ def prepare_campaign_bundle(iteration_dir: Path | str, baseline_dir: Path | str,
     (out / "index.html").write_text(index)
 
     sample_rates: set[int] = set()
+    blinding_nonce = secrets.token_hex(32)
     public_trials: list[dict[str, Any]] = []
     private_trials: list[dict[str, Any]] = []
     for case_index, case in enumerate(candidate["cases"], 1):
@@ -186,7 +188,7 @@ def prepare_campaign_bundle(iteration_dir: Path | str, baseline_dir: Path | str,
             sample_rates.add(info.samplerate)
             source_shapes.add((info.samplerate, info.channels, info.frames))
             opaque = hashlib.sha256(
-                f"{candidate['source']['commit']}:{baseline['source']['commit']}:{case_id}:{role}".encode()
+                f"{blinding_nonce}:{case_id}:{role}".encode()
             ).hexdigest()[:16]
             stimulus_id = f"condition-{opaque}"
             relative = Path("audio") / f"{opaque}.wav"
@@ -252,6 +254,7 @@ def prepare_campaign_bundle(iteration_dir: Path | str, baseline_dir: Path | str,
             "case_schema_sha256": candidate["manifest"]["schema_sha256"],
             "reference_registry_sha256": candidate["reference_registry"]["sha256"],
             "reference_registry_schema_sha256": candidate["reference_registry"]["schema_sha256"],
+            "blinding_nonce": blinding_nonce,
         },
         "trials": private_trials,
     }
@@ -392,8 +395,8 @@ def validate_analysis_manifest(path: Path | str, verify_files: bool = True) -> t
     if value["provenance"]["generator"] == "campaign-ab-v2":
         _require_keys(
             value["provenance"],
-            {"generator", "candidate_commit", "baseline_commit", "metric_version", "case_manifest_sha256", "case_schema_sha256", "reference_registry_sha256", "reference_registry_schema_sha256"},
-            {"generator", "candidate_commit", "baseline_commit", "metric_version", "case_manifest_sha256", "case_schema_sha256", "reference_registry_sha256", "reference_registry_schema_sha256"},
+            {"generator", "candidate_commit", "baseline_commit", "metric_version", "case_manifest_sha256", "case_schema_sha256", "reference_registry_sha256", "reference_registry_schema_sha256", "blinding_nonce"},
+            {"generator", "candidate_commit", "baseline_commit", "metric_version", "case_manifest_sha256", "case_schema_sha256", "reference_registry_sha256", "reference_registry_schema_sha256", "blinding_nonce"},
             "campaign provenance",
         )
     private_trials = {trial["id"]: trial for trial in value["trials"]}
@@ -406,6 +409,10 @@ def validate_analysis_manifest(path: Path | str, verify_files: bool = True) -> t
             _require_keys(private, {"id", "case_id", "reference_sha256", "reference_contract", "stimuli"}, {"id", "case_id", "reference_sha256", "reference_contract", "stimuli", "x_source"}, f"{trial_id} private trial")
             if private["reference_sha256"] != private["reference_contract"]["reference_sha256"]:
                 raise ValueError(f"{trial_id}: reference contract digest mismatch")
+            for stimulus in private["stimuli"]:
+                expected_id = "condition-" + hashlib.sha256(f"{value['provenance']['blinding_nonce']}:{private['case_id']}:{stimulus['role']}".encode()).hexdigest()[:16]
+                if stimulus["id"] != expected_id:
+                    raise ValueError(f"{trial_id}: private blinding mapping does not match its sealed nonce")
         if private["case_id"] in case_ids:
             raise ValueError(f"duplicate analysis case id: {private['case_id']}")
         case_ids.add(private["case_id"])

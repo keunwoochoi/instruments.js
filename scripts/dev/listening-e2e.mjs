@@ -149,6 +149,13 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
 
+  await page.goto(`http://127.0.0.1:${port}/evals/listening/?experiment=missing-experiment.json`, { waitUntil: "networkidle" });
+  const missingManifestIsTerminal = await page.locator("#title").innerText() === "Listening experiment unavailable"
+    && await page.locator("#setup").isHidden()
+    && (await page.locator("#status").innerText()).includes("No response data");
+  if (!missingManifestIsTerminal) throw new Error("manifest load failure was not actionable and terminal");
+  errors.length = 0;
+
   const seed = 0x10010001;
   await page.goto(`http://127.0.0.1:${port}/evals/listening/?experiment=pilot/experiment.json&seed=${seed}`, { waitUntil: "networkidle" });
   await completeSetup(page, "browser-pilot");
@@ -173,9 +180,25 @@ try {
   };
 
   const { candidate, bundle, analysis } = await createCampaignBundle();
+  const hostilePrompt = '<img src=x onerror="window.__promptXss=true"> hostile prompt';
+  const hostileExperiment = JSON.parse(await readFile(join(bundle, "experiment.json"), "utf8"));
+  hostileExperiment.trials[0].prompt = hostilePrompt;
+  await writeFile(join(bundle, "experiment.json"), `${JSON.stringify(hostileExperiment, null, 2)}\n`);
+  const hostileAnalysis = JSON.parse(await readFile(analysis, "utf8"));
+  hostileAnalysis.experiment_digest = await manifestDigest(hostileExperiment);
+  await writeFile(analysis, `${JSON.stringify(hostileAnalysis, null, 2)}\n`);
   const campaignPort = port + 1;
   servers.push(spawn(PYTHON, ["-m", "http.server", String(campaignPort), "--bind", "127.0.0.1"], { cwd: bundle, stdio: "ignore" }));
   await waitForServer(`http://127.0.0.1:${campaignPort}/`);
+  await writeFile(join(bundle, "malformed.json"), "{not-json");
+  await writeFile(join(bundle, "invalid.json"), JSON.stringify({ title: "missing trials" }));
+  for (const badManifest of ("malformed.json", "invalid.json")) {
+    await page.goto(`http://127.0.0.1:${campaignPort}/?experiment=${badManifest}`, { waitUntil: "networkidle" });
+    if (await page.locator("#title").innerText() !== "Listening experiment unavailable" || !await page.locator("#setup").isHidden()) {
+      throw new Error(`${badManifest} did not render an actionable terminal error`);
+    }
+  }
+  errors.length = 0;
   const campaignUrl = `http://127.0.0.1:${campaignPort}/?seed=305419896`;
   await page.goto(campaignUrl, { waitUntil: "networkidle" });
   const publicExperiment = JSON.parse(await readFile(join(bundle, "experiment.json"), "utf8"));
@@ -183,6 +206,9 @@ try {
   const publicPaths = publicExperiment.trials.flatMap((trial) => trial.stimuli.map((item) => item.path));
   if (/candidate|incumbent|role|source_sha|222222/i.test(publicText) || publicPaths.some((path) => /candidate|incumbent/i.test(path))) throw new Error("campaign participant manifest leaks condition identity");
   await completeSetup(page, "campaign-browser-pilot");
+  if (await page.evaluate(() => window.__promptXss === true) || await page.locator("#trial h2").innerText() !== hostilePrompt) {
+    throw new Error("campaign prompt escaped text rendering");
+  }
   const campaignVisible = await page.locator("body").innerText();
   const mediaUrls = await page.locator("audio").evaluateAll((elements) => elements.map((element) => element.src));
   const campaignPrivateStatus = (await fetch(`http://127.0.0.1:${campaignPort}/listening-analysis.json`)).status;

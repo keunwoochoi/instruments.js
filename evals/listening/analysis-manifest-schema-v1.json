@@ -19,7 +19,8 @@
         "case_manifest_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "case_schema_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "reference_registry_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-        "reference_registry_schema_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        "reference_registry_schema_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "blinding_nonce": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
       },
       "additionalProperties": false
     },
