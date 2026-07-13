@@ -74,8 +74,15 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual({entry["contract_id"]: entry["canonical_sha256"] for entry in receipt["entries"]}, identities)
 
     def test_canonicalizer_pins_toolchain_and_peak_identity(self):
-        canonicalize_reference_receipt.verify_toolchain()
+        canonicalize_reference_receipt.verify_toolchain("1.0.31")
         with tempfile.TemporaryDirectory() as d:
+            license_path = Path(d) / "LICENSE"
+            license_path.write_text("fixture license", encoding="utf-8")
+            source = {"license_path": "LICENSE", "license_sha256": canonicalize_reference_receipt.sha256(license_path)}
+            canonicalize_reference_receipt.verify_license(source, d)
+            source["license_sha256"] = "0" * 64
+            with self.assertRaisesRegex(ValueError, "license identity mismatch"):
+                canonicalize_reference_receipt.verify_license(source, d)
             path = Path(d) / "fixture.wav"
             payload = b"\x00" * 4
             path.write_bytes(

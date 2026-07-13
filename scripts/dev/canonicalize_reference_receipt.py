@@ -28,7 +28,7 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def verify_toolchain():
+def verify_toolchain(expected_libsndfile):
     pinned = {}
     for line in REQUIREMENTS.read_text(encoding="utf-8").splitlines():
         if "==" in line:
@@ -39,6 +39,8 @@ def verify_toolchain():
         actual = importlib.metadata.version(name)
         if expected is None or actual != expected:
             raise ValueError(f"canonicalizer toolchain mismatch for {name}: expected {expected}, got {actual}")
+    if sf.__libsndfile_version__ != expected_libsndfile:
+        raise ValueError(f"canonicalizer toolchain mismatch for libsndfile: expected {expected_libsndfile}, got {sf.__libsndfile_version__}")
 
 
 def reject_duplicate_keys(pairs):
@@ -96,6 +98,12 @@ def safe_join(root, relative):
     except ValueError as exc:
         raise ValueError(f"receipt path escapes root: {relative}") from exc
     return path
+
+
+def verify_license(source, source_root):
+    path = safe_join(source_root, source["license_path"])
+    if not path.is_file() or sha256(path) != source["license_sha256"]:
+        raise ValueError(f"source license identity mismatch: {path}")
 
 
 def pin_peak_timestamp(path, timestamp):
@@ -162,8 +170,9 @@ def main(argv=None):
     parser.add_argument("--source-root", required=True)
     parser.add_argument("--output-root", required=True)
     args = parser.parse_args(argv)
-    verify_toolchain()
     receipt = load_receipt(args.receipt)
+    verify_toolchain(receipt["canonical_format"]["libsndfile_version"])
+    verify_license(receipt["source"], args.source_root)
     results = [rebuild_entry(entry, args.source_root, args.output_root, receipt["canonical_format"]) for entry in receipt["entries"]]
     print(json.dumps({"receipt": receipt["id"], "entries": results}, sort_keys=True))
 
