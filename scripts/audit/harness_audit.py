@@ -206,7 +206,10 @@ def check_domain_invariants(audit: Audit) -> None:
     wrap_path = ROOT / "skills" / "wrap-session" / "SKILL.md"
     finalize_path = ROOT / "skills" / "finalize-pr" / "SKILL.md"
     audit.require(wrap_path.is_file(), "missing canonical wrap-session skill")
-    audit.require("| Progressive or stacked session wrap | `skills/wrap-session/SKILL.md`" in agents_text, "AGENTS.md must route progressive session wrap-up to wrap-session")
+    audit.require(
+        any("Progressive or stacked session wrap" in line and "skills/wrap-session/SKILL.md" in line for line in agents_text.splitlines()),
+        "AGENTS.md must route progressive session wrap-up to wrap-session",
+    )
     audit.require("Evidence is immutable-input-bound" in agents_text, "AGENTS.md must state the exact-head evidence freshness rule")
     if wrap_path.is_file():
         wrap_text = text(wrap_path)
