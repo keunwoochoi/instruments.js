@@ -37,6 +37,9 @@ def report_subset(report):
         "interpretation": report["interpretation"],
         "mr_stft": report["mr_stft"],
         "logmel_dist": report["logmel_dist"],
+        "trajectories": report["trajectories"],
+        "harmonic_partials": report["harmonic_partials"],
+        "stereo": report["stereo"],
         "gates": report["gates"],
     }
 
@@ -69,8 +72,8 @@ def main():
     write_float_wav(ref_path, reference)
     write_float_wav(candidate_path, candidate)
 
-    identity = loop_metrics.compare_files(ref_path, ref_path, expected_onset_s=0.05)
-    mutation = loop_metrics.compare_files(candidate_path, ref_path, expected_onset_s=0.05)
+    identity = loop_metrics.compare_files(ref_path, ref_path, expected_onset_s=0.05, expected_f0=440.0)
+    mutation = loop_metrics.compare_files(candidate_path, ref_path, expected_onset_s=0.05, expected_f0=440.0)
     expected = {
         "fixture_version": 1,
         "generator": "scripts/dev/generate_loop_goldens.py",

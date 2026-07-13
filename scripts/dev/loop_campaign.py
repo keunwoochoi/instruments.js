@@ -83,6 +83,11 @@ def validate_manifest(path, schema_path=CASE_SCHEMA):
         unknown = set(case["analysis"]["required_axes"]) - KNOWN_AXES
         if unknown:
             raise ValueError(f"{case['id']}: unknown required axes: {sorted(unknown)}")
+        requires_partials = "partials" in case["analysis"]["required_axes"]
+        if requires_partials and "partial_model" not in case["analysis"]:
+            raise ValueError(f"{case['id']}: the partials axis requires an explicit partial_model")
+        if not requires_partials and "partial_model" in case["analysis"]:
+            raise ValueError(f"{case['id']}: partial_model is invalid when the partials axis is not required")
     return manifest
 
 
@@ -301,12 +306,17 @@ def verify_iteration(out):
         }
         if any(case["render_metadata"].get(key) != value for key, value in expected_render_metadata.items()):
             raise ValueError(f"{case['id']}: renderer metadata differs from sealed render request")
+        analysis = manifest_case["analysis"]
         expected_configuration = {
-            "profile": manifest_case["analysis"]["profile"],
+            "profile": analysis["profile"],
             "expected_onset_s": render["lead_seconds"],
             "note_off_s": None if is_drum else render["lead_seconds"] + render["note_seconds"],
-            "max_post_note_off_db": manifest_case["analysis"].get("max_post_note_off_db"),
-            "required_axes": manifest_case["analysis"]["required_axes"],
+            "max_post_note_off_db": analysis.get("max_post_note_off_db"),
+            "required_axes": analysis["required_axes"],
+            "expected_f0": (440.0 * (2.0 ** ((render["midi"] - 69) / 12.0))
+                            if "partials" in analysis["required_axes"] else None),
+            "partial_model": analysis.get("partial_model"),
+            "thresholds": loop_metrics.PROFILES[analysis["profile"]]["thresholds"],
         }
         if any(report["configuration"].get(key) != value for key, value in expected_configuration.items()) or report["profile"] != manifest_case["analysis"]["profile"]:
             raise ValueError(f"{case['id']}: metric configuration differs from sealed analysis request")
@@ -377,6 +387,9 @@ def run_campaign(args):
             expected_onset_s=r["lead_seconds"],
             note_off_s=None if is_drum else r["lead_seconds"] + r["note_seconds"],
             max_post_note_off_db=case["analysis"].get("max_post_note_off_db"),
+            expected_f0=(440.0 * (2.0 ** ((r["midi"] - 69) / 12.0))
+                         if "partials" in case["analysis"]["required_axes"] else None),
+            partial_model=case["analysis"].get("partial_model"),
             reference_contract=bound,
         )
         if report["inputs"]["reference"]["sha256"] != bound["evidence"]["reference_sha256"]:

@@ -51,7 +51,7 @@ def case(case_id, role, reference=FIXTURE_PATH, required_axes=None):
 
 def manifest():
     return {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "family": "test",
         "description": "Equation-fixture runner test.",
         "cases": [case("tune-a", "tune"), case("hold-b", "held_out")],
@@ -96,6 +96,32 @@ class ManifestTests(unittest.TestCase):
         value["cases"][0]["reference"] = "../secret.wav"
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaisesRegex(ValueError, "safe path"):
+                loop_campaign.validate_manifest(self.write_manifest(d, value))
+
+    def test_partials_axis_requires_explicit_pairing_model(self):
+        value = manifest()
+        value["cases"][0]["analysis"]["required_axes"].append("partials")
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaisesRegex(ValueError, "partial_model"):
+                loop_campaign.validate_manifest(self.write_manifest(d, value))
+
+    def test_partial_model_without_axis_is_rejected(self):
+        value = manifest()
+        value["cases"][0]["analysis"]["partial_model"] = {
+            "type": "proximity_harmonic", "search_cents": 90.0,
+        }
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaisesRegex(ValueError, "not required"):
+                loop_campaign.validate_manifest(self.write_manifest(d, value))
+
+    def test_invalid_partial_model_is_rejected_by_schema(self):
+        value = manifest()
+        value["cases"][0]["analysis"]["required_axes"].append("partials")
+        value["cases"][0]["analysis"]["partial_model"] = {
+            "type": "stiff_string", "inharmonicity_b": -1.0, "search_cents": 90.0,
+        }
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(loop_campaign.jsonschema.ValidationError):
                 loop_campaign.validate_manifest(self.write_manifest(d, value))
 
     def test_unverified_contract_fails_before_render(self):
@@ -284,6 +310,8 @@ class EndToEndTests(unittest.TestCase):
                 self.assertEqual(report["metric_version"], loop_campaign.loop_metrics.METRIC_VERSION)
                 self.assertEqual(report["inputs"]["render"]["sha256"], item["render_sha256"])
                 self.assertEqual(report["configuration"]["expected_onset_s"], 0.05)
+                self.assertIsNone(report["configuration"]["expected_f0"])
+                self.assertIsNone(report["harmonic_partials"])
             with self.assertRaisesRegex(FileExistsError, "not an empty directory"):
                 with contextlib.redirect_stdout(io.StringIO()):
                     loop_campaign.run_campaign(args)
