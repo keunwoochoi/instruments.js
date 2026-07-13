@@ -40,6 +40,8 @@ pub enum Instrument {
     DrumsRock = 13,
     /// Jazz kit: dark ride-forward, small dry kick, high-tuned shell-toned snare.
     DrumsJazz = 14,
+    /// Bowed cello - the first continuously-excited instrument (#50 spike).
+    Cello = 15,
 }
 
 impl Instrument {
@@ -59,6 +61,7 @@ impl Instrument {
             12 => Self::GuitarDistorted,
             13 => Self::DrumsRock,
             14 => Self::DrumsJazz,
+            15 => Self::Cello,
             _ => Self::Marimba,
         }
     }
@@ -309,6 +312,8 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
     // need far more gain than RMS suggested and why the piano needed −4.4 LU.
     // Re-run both scripts after any preset change and paste the corrected values.
     match inst {
+        // cello: provisional, NOT a measured LUFS bake (spike). Re-run measure-loudness.
+        Instrument::Cello => 1.0,
         Instrument::Marimba => 2.1,       // reference
         Instrument::Vibraphone => 4.9,    // was -30.5 LUFS
         Instrument::Glockenspiel => 30.6, // reverb pre-delay re-bake 2026-07-13 (x1.11)
@@ -333,6 +338,7 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
 /// electrics lowest (the cab/amp chain already carries their space).
 pub fn room_send(inst: Instrument) -> f32 {
     match inst {
+        Instrument::Cello => 0.12,
         Instrument::Drums | Instrument::DrumsRock => 0.16,
         Instrument::DrumsJazz => 0.18, // brushes/jazz kits are recorded roomier
         Instrument::Piano => 0.09,
@@ -5826,6 +5832,7 @@ impl DrumVoice {
 #[derive(Clone, Copy)]
 pub enum Kernel {
     Off,
+    Bowed(BowedVoice),
     Modal(ModalVoice),
     Pluck(PluckVoice),
     EPluck(ElectricVoice),
@@ -6186,6 +6193,7 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
         Instrument::DrumsJazz => Kernel::Drum(DrumVoice::start(midi, vel, sr, seed, KitStyle::Jazz)),
         Instrument::SynthPad => Kernel::Synth(SynthVoice::start(f0, vel, sr)),
         Instrument::Piano => Kernel::Piano(PianoVoice::start(midi, f0, vel, sr, seed)),
+        Instrument::Cello => Kernel::Bowed(BowedVoice::start(f0, vel, sr)),
         Instrument::GuitarSteel => {
             // steel: darker loop than nylon in RELATIVE terms (h12/h1 t60 ratio
             // ~1/3 in ref 015) but a much brighter pick excitation near the
@@ -7566,5 +7574,342 @@ mod bench_probe {
                 println!("{name} midi {midi}: {:.1} us/note-on", t0.elapsed().as_micros() as f64 / 50.0);
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bowed string (spike for #50 / #58).
+//
+// This is the first continuously-excited instrument in the engine, and it is
+// structurally different from everything else here: a struck or plucked voice is
+// fully determined at note-on, but a bowed string is driven for the whole note.
+// Until the gesture path (#56) exists, the bow gesture is synthesized from
+// velocity by a default envelope - which is exactly the "default gesture" the
+// design doc requires, because without it a bowed note driven by bare MIDI is
+// silent.
+//
+// Topology (Smith; McIntyre/Schumacher/Woodhouse):
+//   nut  <--- del_nb ---  BOW  --- del_br ---> bridge
+//        ---  del_bn --->     <--- del_rb ---
+// Two bidirectional rails meeting at an interior scattering point. This is why
+// StringLoop (a single-delay-loop Karplus-Strong) cannot host a bow: the friction
+// junction needs the string velocity arriving from BOTH directions in order to
+// scatter.
+//
+// The junction solves the friction characteristic against the string's wave
+// impedance each sample. Stick/slip is genuinely bistable, so it carries state.
+pub const BOW_BUF: usize = 1024;
+
+#[derive(Clone, Copy)]
+struct Rail {
+    buf: [f32; BOW_BUF],
+    pos: usize,
+    len: usize,
+}
+
+impl Rail {
+    const fn new() -> Self {
+        Self { buf: [0.0; BOW_BUF], pos: 0, len: 1 }
+    }
+    #[inline(always)]
+    fn set_len(&mut self, l: f32) {
+        self.len = (l as usize).clamp(2, BOW_BUF - 1);
+    }
+    /// The sample that has travelled the length of this rail.
+    #[inline(always)]
+    fn read(&self) -> f32 {
+        self.buf[self.pos]
+    }
+    /// Write the new sample into the slot just vacated and advance.
+    ///
+    /// read() and write() are separate because a scattering junction needs the
+    /// arriving waves from BOTH rails before it can compute what to send back.
+    /// Each rail is read once and written once per sample.
+    #[inline(always)]
+    fn write(&mut self, input: f32) {
+        self.buf[self.pos] = input;
+        self.pos = (self.pos + 1) % self.len;
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct BowedVoice {
+    nb: Rail, // nut  -> bow
+    bn: Rail, // bow  -> nut
+    br: Rail, // bow  -> bridge
+    rb: Rail, // bridge -> bow
+
+    // bridge termination: lossy, frequency-dependent (a real bridge is not a wall)
+    br_lp: f32,
+    br_c: f32,
+    br_loss: f32,
+
+    // bow gesture (synthesized from velocity until #56 lands)
+    bow_vel: f32,      // signed: sign is bow direction
+    bow_force: f32,    // selects the Schelleng regime
+    env: f32,          // attack/release of the drive
+    env_target: f32,
+    env_rate: f32,
+
+    // friction state. Stick/slip is bistable - this is the branch the design doc
+    // says we do not get to optimize away.
+    stuck: bool,
+
+    // body: the cello is nothing without one
+    body_a1: [f32; 8],
+    body_r2: [f32; 8],
+    body_g: [f32; 8],
+    body_y1: [f32; 8],
+    body_y2: [f32; 8],
+
+    dc_x1: f32,
+    dc_y1: f32,
+    level: f32,
+    age: u64,
+    releasing: bool,
+    dbg_slip: f32,
+    dbg_vin: f32,
+    dbg_vinj: f32,
+    dbg_n: f32,
+}
+
+impl BowedVoice {
+    pub fn start(f0: f32, vel: f32, sr: f32) -> Self {
+        let mut v = Self {
+            nb: Rail::new(), bn: Rail::new(), br: Rail::new(), rb: Rail::new(),
+            br_lp: 0.0, br_c: 0.0, br_loss: 0.0,
+            bow_vel: 0.0, bow_force: 0.0,
+            env: 0.0, env_target: 1.0, env_rate: 0.0,
+            stuck: true,
+            body_a1: [0.0; 8], body_r2: [0.0; 8], body_g: [0.0; 8],
+            body_y1: [0.0; 8], body_y2: [0.0; 8],
+            dc_x1: 0.0, dc_y1: 0.0,
+            level: 0.0, age: 0, releasing: false,
+            dbg_slip: 0.0, dbg_vin: 0.0, dbg_vinj: 0.0, dbg_n: 0.0,
+        };
+
+        // Total round-trip is one period. beta = bow-bridge distance as a fraction
+        // of string length; a cellist bows around 1/8 from the bridge. The bow point
+        // splits the string, and that split IS the Helmholtz corner geometry.
+        let period = sr / f0.max(20.0);
+        let beta = 0.127;
+        let half = period * 0.5;
+        v.br.set_len(half * beta);
+        v.rb.set_len(half * beta);
+        v.nb.set_len(half * (1.0 - beta));
+        v.bn.set_len(half * (1.0 - beta));
+
+        // Bridge reflection: -1 * one-pole lowpass. Loss sets the decay when the bow
+        // leaves; brightness sets how much of the corner survives each round trip.
+        v.br_c = 0.62;
+        v.br_loss = 0.988;
+
+        // Bow gesture, synthesized. Velocity maps to bow SPEED and FORCE together,
+        // the way an arm does - harder = faster and heavier. Down-bow by default.
+        // Schelleng: for a given bow-bridge distance beta there is a MINIMUM bow force
+        // below which Helmholtz motion cannot be sustained and the string drops into
+        // subharmonics ("surface sound"). Our first default gesture mapped low velocity
+        // straight to low force and fell under that line - a sustained C3 at vel 0.4 came
+        // out at 87 Hz, i.e. 2/3 of the fundamental. The model was right; the gesture was
+        // wrong. So force gets a floor and only leans on velocity above it.
+        //
+        // Minimum force scales roughly as v_bow / beta^2, so the floor rises with speed.
+        let vv = vel.clamp(0.02, 1.0);
+        v.bow_vel = 0.08 + 0.24 * vv;
+
+        // Schelleng's minimum bow force rises with bow SPEED and with the string's wave
+        // impedance - i.e. the treble needs a heavier bow than the bass for the same
+        // speed. Our first gesture ignored the register term and C4 at full velocity fell
+        // straight through the floor into subharmonics (-2158 cents: it was playing a
+        // completely different note). The model was right; the gesture was under-forced.
+        let reg = ((f0 / 65.4).max(1.0).log2() / 3.0).clamp(0.0, 1.0); // 0 at C2, 1 at C5
+        let f_min = (0.85 + 1.6 * v.bow_vel) * (1.0 + 1.15 * reg);
+        v.bow_force = f_min + 0.45 * vv;
+        v.env = 0.0;
+        v.env_target = 1.0;
+        // a bow takes tens of ms to speak - this is why bowed notes cannot be
+        // driven by an impulse
+        v.env_rate = 1.0 - (-1.0 / (0.035 * sr)).exp();
+
+        // Cello body: measured-ish low modes (A0 ~ 220, main wood ~ 300, bridge hill).
+        // A cello body is not a bank of sharp peaks - a high-Q low mode makes a WOLF,
+        // and an unmanaged one is a 12 dB hole/blowup at whatever note lands on it.
+        // (It did: G2 was +12 dB over C3.) Broad, damped, overlapping.
+        let modes = [
+            (98.0f32, 0.16f32, 0.30f32), // A0-ish air; damped hard or it wolfs
+            (176.0, 0.15, 0.45),
+            (220.0, 0.14, 0.55),
+            (300.0, 0.13, 0.60), // main wood
+            (405.0, 0.12, 0.50),
+            (600.0, 0.11, 0.40),
+            (980.0, 0.10, 0.30), // bridge hill
+            (1900.0, 0.08, 0.20),
+        ];
+        for (i, (f, t60, g)) in modes.iter().enumerate() {
+            let w = core::f32::consts::TAU * f / sr;
+            let r = (-6.9078 / (t60 * sr)).exp();
+            v.body_a1[i] = 2.0 * r * w.cos();
+            v.body_r2[i] = -r * r;
+            v.body_g[i] = *g * 0.06;
+        }
+
+        v.level = 0.0045; // provisional; NOT a measured LUFS bake (spike)
+        v
+    }
+
+    /// Friction, solved as the Friedlander load-line intersection.
+    ///
+    /// ⚠️ THIS IS THE MODEL THE LITERATURE HAS DECLARED WRONG, AND WE KEPT IT ANYWAY
+    /// FOR ONE ROUND, ON PURPOSE - so that the failure is on the record.
+    ///
+    /// A single-valued mu(v) friction curve is not one-to-one, so the update has multiple
+    /// roots (the Friedlander ambiguity) and needs the `stuck` branch rule below to pick
+    /// one. Woodhouse (Acta Acustica 89:355, 2003) measured that this makes the scheme
+    /// sensitively dependent on rounding noise: he runs it at 200 kHz and still writes
+    /// that "no time step is short enough to guarantee convergence in every case".
+    ///
+    /// We reproduced that here without meaning to. Sweeping (velocity x register), this
+    /// model drops into subharmonics in scattered cells of the grid - C4 at full bow came
+    /// out 2158 cents flat, i.e. playing a different note - and the cells move when the
+    /// gesture mapping changes. That is not a tuning bug to chase; it is the documented
+    /// pathology of the model.
+    ///
+    /// The fix is NOT to oversample: Woodhouse's THERMAL friction model (friction as a
+    /// function of contact temperature) is single-valued, has no branch rule, no
+    /// discontinuity to antialias, and converges at 50 kHz - i.e. it is both better
+    /// behaved AND cheaper. Maestre, Spa & Smith (ICMC 2014) put it in a waveguide,
+    /// which is exactly this topology. That is the next iteration.
+    ///
+    /// This is the crux, and getting it wrong is the difference between a bowed
+    /// string and a pluck. The bow does not simply push: the force it can exert and
+    /// the velocity the string ends up at are coupled, because the string's own wave
+    /// impedance resists. So we intersect the friction characteristic with the
+    /// string's load line rather than evaluating friction at the *incoming* velocity.
+    ///
+    ///   string velocity after injection:  v = v_in + f/(2Z)
+    ///   relative (bow - string):          d  = d0 - f/(2Z),   d0 = v_bow - v_in
+    ///   friction law:                     f  = F_N * mu(|d|) * sgn(d)
+    ///
+    /// STICK is the case the naive version misses entirely: if the force needed to
+    /// carry the string at bow speed (2Z*d0) is within what static friction can
+    /// supply, the string IS carried at bow speed - and *that* is what pumps energy
+    /// in every period and makes the thing self-oscillate instead of decaying.
+    #[inline(always)]
+    fn friction(&mut self, d0: f32, force: f32) -> f32 {
+        const V0: f32 = 0.08; // Stribeck velocity
+        const MU_S: f32 = 0.85; // static
+        const MU_D: f32 = 0.30; // dynamic
+        const TWO_Z: f32 = 2.0; // normalized string wave impedance seen by the bow
+
+        let f_stick = TWO_Z * d0;
+        // Hysteresis: breaking away takes more than staying stuck (Stribeck).
+        let f_max = MU_S * force * if self.stuck { 1.0 } else { 0.92 };
+
+        if f_stick.abs() <= f_max {
+            self.stuck = true;
+            return f_stick;
+        }
+        self.stuck = false;
+
+        // SLIP: |f| = F_N * mu(|d|), |d| = |d0| - |f|/(2Z).
+        // Bounded fixed-point - contraction is strong, 3 passes is plenty, and the
+        // work per sample is constant (no data-dependent iteration count).
+        let s = d0.signum();
+        let dd = d0.abs();
+        let mut fa = MU_D * force;
+        for _ in 0..3 {
+            let slip = (dd - fa / TWO_Z).max(0.0);
+            let mu = MU_D + (MU_S - MU_D) * V0 / (V0 + slip);
+            fa = mu * force;
+        }
+        s * fa.min(f_stick.abs())
+    }
+
+    pub fn render(&mut self, out: &mut [f32]) -> bool {
+        const INV_2Z: f32 = 0.5;
+
+        for s in out.iter_mut() {
+            self.env += (self.env_target - self.env) * self.env_rate;
+            let vb = self.bow_vel * self.env;
+            // The bow LIFTS on release - force is enveloped too, not just speed. A bow
+            // that stops moving but keeps pressing does not release the string, it PINS
+            // it: the junction becomes a sign-inverting reflector and the string rings
+            // on for tens of seconds. (It did. That is what this line fixes.)
+            let fb = self.bow_force * self.env;
+
+            // velocity waves arriving at the bow from both sides
+            let from_nut = self.nb.read();
+            let from_bridge = self.rb.read();
+            let v_in = from_nut + from_bridge;
+
+            // load-line solve, then the velocity wave the force launches BOTH ways
+            let f = self.friction(vb - v_in, fb);
+            let v_inj = (f * INV_2Z).clamp(-2.0, 2.0);
+
+            // scatter: each side receives what came from the other, plus the injection
+            let to_bridge = from_nut + v_inj;
+            let to_nut = from_bridge + v_inj;
+
+            // propagate to the terminations
+            let at_bridge = self.br.read();
+            self.br.write(to_bridge);
+            let at_nut = self.bn.read();
+            self.bn.write(to_nut);
+
+            // bridge: lossy, frequency-dependent reflection. Also our pickup - this is
+            // where the string actually drives the body.
+            self.br_lp += self.br_c * (at_bridge - self.br_lp);
+            self.rb.write(-self.br_loss * flush_denormal(self.br_lp));
+
+            // nut: near-rigid
+            self.nb.write(-0.998 * at_nut);
+
+            // body
+            let drive = at_bridge;
+            let mut body = 0.0;
+            for i in 0..8 {
+                let y = self.body_a1[i] * self.body_y1[i]
+                    + self.body_r2[i] * self.body_y2[i]
+                    + self.body_g[i] * drive;
+                self.body_y2[i] = self.body_y1[i];
+                self.body_y1[i] = flush_denormal(y);
+                body += y;
+            }
+
+            let y = 0.7 * body + 0.3 * drive;
+            let hp = y - self.dc_x1 + DC_POLE * self.dc_y1;
+            self.dc_x1 = y;
+            self.dc_y1 = flush_denormal(hp);
+
+            self.dbg_slip = 0.98 * self.dbg_slip + if self.stuck { 0.0 } else { 1.0 };
+            self.dbg_vin = 0.98 * self.dbg_vin + v_in.abs();
+            self.dbg_vinj = 0.98 * self.dbg_vinj + v_inj.abs();
+            self.dbg_n = 0.98 * self.dbg_n + 1.0;
+
+            *s = hp * self.level;
+            self.age += 1;
+        }
+
+        // A bowed voice ends when the STRING is quiet - not when the bow envelope is.
+        // After the bow lifts, the string rings down on the bridge and nut losses, and
+        // cutting it there would be the "note that stops dead" the design doc gates on.
+        !(self.releasing && self.env < 1.0e-3 && self.dbg_vin / self.dbg_n.max(1.0) < 2.0e-3)
+    }
+
+    /// Diagnostics for the spike only.
+    pub fn debug_state(&self) -> (f32, f32, f32) {
+        (
+            self.dbg_slip / self.dbg_n.max(1.0),
+            self.dbg_vin / self.dbg_n.max(1.0),
+            self.dbg_vinj / self.dbg_n.max(1.0),
+        )
+    }
+
+    /// Note-off lifts the bow. The string then rings down on its own losses - it does
+    /// not cut, and it does not fade like a fader.
+    pub fn damp(&mut self, sr: f32) {
+        self.releasing = true;
+        self.env_target = 0.0;
+        self.env_rate = 1.0 - (-1.0 / (0.060 * sr)).exp();
     }
 }
