@@ -26,8 +26,8 @@ from scipy.signal import resample_poly
 import soundfile as sf
 
 
-REPORT_SCHEMA_VERSION = "1.0.0"
-METRIC_VERSION = "2026.07.12-l1.1"
+REPORT_SCHEMA_VERSION = "1.1.0"
+METRIC_VERSION = "2026.07.12-l2.1"
 SCHEMA_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "evals", "metrics", "report-schema-v1.json"))
 _REPORT_SCHEMA = None
 
@@ -454,25 +454,6 @@ def partial_decay(x, sr, top=6):
     return out
 
 
-def manifest_lookup(ref_path):
-    """Match ref_path against evals/reference-manifest.json `match` substrings.
-    Returns the corpus entry (known limitations: sr ceiling, level normalization,
-    release-gate mask) or None. Fit with eyes open."""
-    import os
-    here = os.path.dirname(os.path.abspath(__file__))
-    mpath = os.path.join(here, "..", "..", "evals", "reference-manifest.json")
-    try:
-        with open(mpath) as f:
-            man = json.load(f)
-    except OSError:
-        return None
-    p = str(ref_path)
-    for c in man.get("corpora", []):
-        if c.get("match") and c["match"] in p:
-            return c
-    return None
-
-
 def disable_invalid_axes(report, invalid_axes):
     """Fail closed: remove values a corpus contract says cannot be trusted."""
     if not invalid_axes:
@@ -503,7 +484,7 @@ def disable_invalid_axes(report, invalid_axes):
 
 def compare_files(render_path, ref_path, profile="default", flat=False,
                   expected_onset_s=None, note_off_s=None,
-                  max_post_note_off_db=None):
+                  max_post_note_off_db=None, reference_contract=None):
     prof = PROFILES.get(profile, PROFILES["default"])
     xr, sr_r = load_mono(render_path)
     xf, sr_f = load_mono(ref_path)
@@ -514,7 +495,7 @@ def compare_files(render_path, ref_path, profile="default", flat=False,
                            max_post_note_off_db=max_post_note_off_db)
     if not gates["finite"]["pass"]:
         raise ValueError("render contains NaN or infinite samples; comparison aborted")
-    ref_meta = manifest_lookup(ref_path)
+    ref_meta = reference_contract["contract"] if reference_contract else {}
     operations = []
     if ref_meta and ref_meta.get("mask_after_s"):
         # hard release gates in the corpus tax physically-correct tails: truncate
@@ -587,7 +568,7 @@ def compare_files(render_path, ref_path, profile="default", flat=False,
         },
         "logmel_dist": lm,
         "weighting": "flat" if flat else "K (BS.1770)",
-        "ref_corpus": ({k: ref_meta[k] for k in ("corpus", "sr", "level_normalized", "mask_after_s", "invalid_axes", "notes") if k in ref_meta} if ref_meta else None),
+        "reference_contract": reference_contract["evidence"] if reference_contract else None,
         "centroid": {"render": centroid_traj(xr, sr), "reference": centroid_traj(xf, sr)},
         "envelope": {"render": envelope_stats(xr, sr), "reference": envelope_stats(xf, sr)},
         "partials": {"render": partials(xr, sr), "reference": partials(xf, sr)},
@@ -600,6 +581,6 @@ def compare_files(render_path, ref_path, profile="default", flat=False,
         report["logmel_lf"] = logmel_dist(xr, xf, sr, perceptual=False, n=lf["n"], hop=lf["hop"],
                                           mels=lf["mels"], fmin=lf["fmin"], fmax=lf["fmax"])
         report["glide_hz"] = {"render": glide_track(xr, sr), "reference": glide_track(xf, sr)}
-    disable_invalid_axes(report, (ref_meta or {}).get("invalid_axes", {}))
+    disable_invalid_axes(report, ref_meta.get("invalid_axes", {}))
     validate_report(report)
     return report
