@@ -7,3 +7,7 @@ description = "instruments.js DSP core: SoA voice engine, physical-modeling kern
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+[features]
+# Off by default: adds measurement-only exports, never part of the shipped wasm.
+bench-scaffold = []

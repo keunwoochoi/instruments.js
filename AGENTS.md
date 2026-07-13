@@ -50,7 +50,7 @@
 
 | Path | Owns |
 |---|---|
-| `crates/dsp/` | Rust DSP core → WASM (SoA voice engine, all instruments, mixing) |
+| `crates/dsp/` | Rust DSP core → WASM (voice bank, all instruments, mixing). **The bank is AoS and scalar today** — `Vec<Voice>`, enum-dispatched, no SIMD. The architecture doc's "SoA voice bank" is an unrealized intent, not a description; budget accordingly (#62). |
 | `packages/core` | TS public API, worklet host, voice/track management |
 | `packages/instruments` | Instrument façades, presets, GM program map |
 | `packages/midi` | Note-list scheduler, MIDI file parsing, GM drum map, Web MIDI |
