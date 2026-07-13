@@ -33,13 +33,13 @@ def sha256(path):
 
 
 def read_json(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def write_json(path, value):
-    with open(path, "w") as f:
-        json.dump(value, f, indent=2, sort_keys=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(value, f, indent=2, sort_keys=True, ensure_ascii=False)
         f.write("\n")
 
 
@@ -140,11 +140,15 @@ def render_case(case, out_path):
         str(r["velocity"]), str(r["note_seconds"]), str(out_path), str(r["total_seconds"]),
         str(r["sample_rate"]), "--float32", "--lead-seconds", str(r["lead_seconds"]),
     ]
-    proc = subprocess.run(cmd, cwd=ROOT, check=True, text=True, capture_output=True)
+    try:
+        proc = subprocess.run(cmd, cwd=ROOT, check=True, text=True, capture_output=True)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "no renderer diagnostics").strip()
+        raise RuntimeError(f"render-note failed for {case['id']} (exit {exc.returncode}):\n{detail}") from exc
     try:
         return json.loads(proc.stdout.strip().splitlines()[-1])
     except (IndexError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"render-note returned invalid metadata for {case['id']}: {proc.stdout}") from exc
+        raise RuntimeError(f"render-note returned invalid metadata for {case['id']}: stdout={proc.stdout!r}, stderr={proc.stderr!r}") from exc
 
 
 def objective_vector(report):
@@ -205,7 +209,7 @@ def seal_iteration(out):
     files = sorted(path for path in out.rglob("*") if path.is_file() and path.name not in excluded)
     digests = {str(path.relative_to(out)): sha256(path) for path in files}
     write_json(out / "evidence-digests.json", {"schema_version": "1.0.0", "files": digests})
-    (out / ".complete").write_text(sha256(out / "evidence-digests.json") + "\n")
+    (out / ".complete").write_text(sha256(out / "evidence-digests.json") + "\n", encoding="utf-8")
 
 
 def verify_iteration(out):
@@ -214,7 +218,7 @@ def verify_iteration(out):
     digest_path = out / "evidence-digests.json"
     if not complete.is_file() or not digest_path.is_file():
         raise ValueError("iteration is not sealed")
-    if complete.read_text().strip() != sha256(digest_path):
+    if complete.read_text(encoding="utf-8").strip() != sha256(digest_path):
         raise ValueError("completion digest does not match evidence-digests.json")
     evidence = read_json(digest_path)
     expected = evidence.get("files", {})
@@ -245,8 +249,15 @@ def run_drift(baseline, out):
         text=True,
         capture_output=True,
     )
-    log_path.write_text(proc.stdout + proc.stderr)
+    log_path.write_text(proc.stdout + proc.stderr, encoding="utf-8")
     return {"status": "pass" if proc.returncode == 0 else "fail", "log": "drift.log"}
+
+
+def prepare_output_dir(out):
+    if out.exists() and (not out.is_dir() or any(out.iterdir())):
+        raise FileExistsError(f"iteration path is not an empty directory: {out}")
+    (out / "renders").mkdir(parents=True, exist_ok=True)
+    (out / "reports").mkdir()
 
 
 def run_campaign(args):
@@ -257,10 +268,7 @@ def run_campaign(args):
     dirty = verify_clean_source(args.allow_dirty)
     wasm = verify_wasm(args.skip_wasm_verify)
     out = Path(args.out).resolve()
-    if out.exists() and any(out.iterdir()):
-        raise FileExistsError(f"iteration directory is not empty: {out}")
-    (out / "renders").mkdir(parents=True, exist_ok=True)
-    (out / "reports").mkdir()
+    prepare_output_dir(out)
 
     baseline_dir = Path(args.baseline_dir).resolve() if args.baseline_dir else None
     cases = []
@@ -327,7 +335,7 @@ def run_campaign(args):
     }
     validate_iteration(iteration)
     write_json(out / "iteration.json", iteration)
-    (out / "summary.md").write_text(markdown_summary(iteration))
+    (out / "summary.md").write_text(markdown_summary(iteration), encoding="utf-8")
 
     audition = None
     if baseline_dir and classification in {"candidate", "listening_required"} and (baseline_dir / "renders").is_dir():
