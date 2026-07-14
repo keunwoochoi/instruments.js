@@ -8544,7 +8544,7 @@ impl BowedVoice {
         // numerically (the load line meets it exactly once, so no ambiguity and no NaN) and
         // loses the hysteresis. An instrument that is in tune and honestly described beats
         // one that is a semitone flat and described as thermal.
-        const COOL: f32 = 0.60; // thermal relaxation of the contact patch
+        const COOL: f32 = 0.30; // thermal relaxation of the contact patch
 
         // Rosin softens as it heats. This IS the friction law - there is no mu(v) anywhere.
         let mu = MU0 / (1.0 + self.temp);
@@ -8613,7 +8613,11 @@ impl BowedVoice {
             // nut: near-rigid
             self.nb.write(-0.998 * at_nut);
 
-            // body
+            // THE BODY IS ONLY 8 MODES, AND IT IS NOT THE PROBLEM. A broadband continuum
+            // above the modal-overlap crossover (the argument that gave the piano its
+            // 160-mode board) was added here and measured NO CHANGE AT ALL, at any gain:
+            // the signal ARRIVING at the bridge has no high frequencies for a body to
+            // radiate. That is what rules the body out and puts the fault in the string.
             let drive = at_bridge;
             let mut body = 0.0;
             for i in 0..8 {
