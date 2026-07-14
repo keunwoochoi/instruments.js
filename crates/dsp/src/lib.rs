@@ -2062,3 +2062,92 @@ mod tests {
     }
 
 }
+
+/// Measurement-only exports for sizing the higher-capacity piano soundboard (#49).
+///
+/// Off by default — `bench-scaffold` is not enabled in any shipped build, so these
+/// symbols never reach `packages/core/wasm/`. They exist so the soundboard budget in
+/// `agentic-docs/design/2026-07-13-higher-capacity-piano.md` is reproducible by a
+/// reviewer instead of being asserted:
+///
+///   cargo build -p instruments-dsp --target wasm32-unknown-unknown --release \
+///     --features bench-scaffold
+///   npm run bench:soundboard
+#[cfg(feature = "bench-scaffold")]
+#[allow(unsafe_code)]
+mod bench_scaffold {
+    /// M independent 2nd-order modal resonators, N samples. The open-loop board.
+    #[no_mangle]
+    pub extern "C" fn ij_bench_modes(m: u32, n: u32) -> f32 {
+        let m = (m as usize).min(1024);
+        let (mut y1, mut y2) = (vec![0.001f32; m], vec![0.0f32; m]);
+        let mut a1 = vec![0.0f32; m];
+        let r2 = vec![-0.999f32; m];
+        for k in 0..m {
+            a1[k] = 1.9 + 0.0001 * k as f32;
+        }
+        let mut acc = 0.0f32;
+        for _ in 0..n {
+            let mut sum = 0.0f32;
+            for k in 0..m {
+                let y = a1[k] * y1[k] + r2[k] * y2[k] + 0.0001;
+                y2[k] = y1[k];
+                y1[k] = y;
+                sum += y;
+            }
+            acc += sum;
+        }
+        acc
+    }
+
+    /// P bridge ports <-> M modes, both directions, N samples.
+    ///
+    /// This is the closed-loop coupling term of Architecture A3. It is the whole
+    /// reason the design uses a low-rank bridge-port basis rather than per-string
+    /// mode weights: projecting every string onto every mode costs O(M) *per voice*
+    /// (~25 us/voice at M=400 — unaffordable), while projecting a fixed set of P
+    /// bridge ports onto the modes costs O(P*M) *once per sample*, independent of
+    /// how many voices are sounding. Voices then only read/write their port.
+    #[no_mangle]
+    pub extern "C" fn ij_bench_ports(p: u32, m: u32, n: u32) -> f32 {
+        let p = (p as usize).min(32);
+        let m = (m as usize).min(1024);
+        let (mut y1, mut y2) = (vec![0.001f32; m], vec![0.0f32; m]);
+        let mut a1 = vec![0.0f32; m];
+        let r2 = vec![-0.999f32; m];
+        let mut phi = vec![0.0f32; m * p];
+        for k in 0..m {
+            a1[k] = 1.9 + 0.0001 * k as f32;
+            for j in 0..p {
+                phi[k * p + j] = 0.01 + 0.001 * ((k + j) % 7) as f32;
+            }
+        }
+        let port_force = vec![0.0001f32; p];
+        let mut port_vel = vec![0.0f32; p];
+        let mut acc = 0.0f32;
+        for _ in 0..n {
+            for k in 0..m {
+                let mut drive = 0.0f32;
+                for j in 0..p {
+                    drive += phi[k * p + j] * port_force[j];
+                }
+                let y = a1[k] * y1[k] + r2[k] * y2[k] + drive;
+                y2[k] = y1[k];
+                y1[k] = y;
+            }
+            for v in port_vel.iter_mut() {
+                *v = 0.0;
+            }
+            for k in 0..m {
+                let v = y1[k] - y2[k];
+                for j in 0..p {
+                    port_vel[j] += phi[k * p + j] * v;
+                }
+            }
+            for j in 0..p {
+                acc += port_vel[j];
+            }
+        }
+        acc
+    }
+}
