@@ -130,7 +130,18 @@ if (outPath) {
     ev.push({ kind: "on", m: 67, v: 0.9, t: 11.0 + i * 0.16 });
     ev.push({ kind: "off", m: 67, t: 11.0 + i * 0.16 + 0.09 });
   }
-  const mono = renderNotes(x, p, ev, 13.5);
+  // 5) same-key replay under pedal — every strike must keep its own string/board tail
+  ev.push({ kind: "pedal", on: 1, t: 13.5 });
+  [
+    [13.6, 0.55],
+    [14.4, 0.9],
+    [15.2, 0.72],
+  ].forEach(([t, v]) => {
+    ev.push({ kind: "on", m: 60, v, t });
+    ev.push({ kind: "off", m: 60, t: t + 0.45 });
+  });
+  ev.push({ kind: "pedal", on: 0, t: 17.2 });
+  const mono = renderNotes(x, p, ev, 18.2);
   const buf = Buffer.alloc(44 + mono.length * 2);
   buf.write("RIFF", 0); buf.writeUInt32LE(36 + mono.length * 2, 4); buf.write("WAVE", 8);
   buf.write("fmt ", 12); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22);
