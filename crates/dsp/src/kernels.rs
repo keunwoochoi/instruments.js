@@ -403,7 +403,7 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::EPiano => 1.17,       // EP r2 tine/pickup rebuild, reverb-flat re-bake 2026-07-13 (×1.05)
         Instrument::Drums => 0.58,        // drums r4 0.61 x room 0.95 (verify by sweep)
         Instrument::SynthPad => 0.51,     // reverb pre-delay re-bake 2026-07-13 (x1.08)
-        Instrument::Piano => 0.0055, // P1 per-key calibration re-bake (per-key LUFS trims raised the mid; was -14.9 LUFS at 0.130, x0.51 per measure-loudness)
+        Instrument::Piano => 0.0053, // P1 per-key calibration re-bake (per-key LUFS trims raised the mid; was -14.9 LUFS at 0.130, x0.51 per measure-loudness)
         Instrument::GuitarSteel => 0.364,   // body-round 0.387 x room 0.94 (verify by sweep)
         Instrument::GuitarElectric => 0.416, // reverb pre-delay re-bake 2026-07-13 (x1.08)
         Instrument::GuitarDistorted => 0.135, // reverb pre-delay re-bake 2026-07-13 (x1.06)
@@ -2731,6 +2731,22 @@ const PIANO_ACTION_THUMP_GAIN: f32 = 0.006_748_095; // 0.012 * 10^(-5/20)
 #[derive(Clone, Copy)]
 pub struct PianoVoice {
     strings: [StringLoop; 3],
+    /// HORIZONTAL polarization, one per string (Weinreich 1977).
+    ///
+    /// A piano string vibrates in TWO planes. The vertical plane pushes the bridge and
+    /// therefore radiates - and therefore decays fast. The horizontal plane is parallel to
+    /// the soundboard, barely loads the bridge, radiates weakly, and so rings on for a very
+    /// long time. The hammer strikes vertically, so horizontal starts near-silent; energy
+    /// then ROTATES into it through the bridge, which is not perfectly constrained.
+    ///
+    /// That rotation is the piano's BLOOM. The note does not merely decay - it hands energy
+    /// from a fast-dying mode to a long-singing one. Without it the aftersound has to be
+    /// faked from unison anti-phase modes alone, which is what we were doing.
+    strings_h: [StringLoop; 3],
+    /// vertical <-> horizontal energy rotation at the bridge
+    pol_rot: f32,
+    /// how much the horizontal plane reaches the listener (it barely moves the bridge)
+    pol_out: f32,
     strike_off: [usize; 3],
     strike_lag: [usize; 3],
     strike_jit: [f32; 3],
@@ -2965,12 +2981,15 @@ impl PianoVoice {
         // incommensurate, the beating never locks, and the strings can be heard at their
         // real, near-equal weights.
         let mut ds = Lcg(0x9E37_79B9 ^ midi.wrapping_mul(2_654_435_761));
-        let j1 = 1.00 + 0.27 * ds.next(); // 0.73 .. 1.27
-        let j2 = 0.85 + 0.30 * ds.next(); // 0.55 .. 1.15
+        // Three strings, each a little off pitch, in BOTH directions. That is all.
+        // No centre string that is exactly right and two that are wrong.
+        let j1 = 0.75 + 0.35 * ds.next(); // +0.40 .. +1.10 of the spread
+        let j2 = -0.80 - 0.35 * ds.next(); // -0.45 .. -1.15
+        let j0 = 0.30 * ds.next();
         let cfg: [f32; 3] = [
-            0.0,
+            detune_spread * j0,  // even the "centre" string is not exactly on pitch
             detune_spread * j1,
-            -detune_spread * j2,
+            detune_spread * j2,
         ];
         // TWO coupling terms (see bridge_g field docs).
         // g0 — broadband, purely real: no phase, no detune; owns the composite
@@ -2995,25 +3014,30 @@ impl PianoVoice {
         // their physical weights, the UNBOOSTED coupling gives 4.14x on its own. Boost
         // removed. Fix the cause, and the compensations delete themselves.
         let bridge_g0 = rate_gap / (8.686 * n_strings as f32 * f0);
-        // g1 — through the admittance lowpass: gives the FUNDAMENTAL its extra
-        // dive while upper partials keep ~the broadband rate. P1: the dive is
-        // a per-key MEASURED quantity (strong only around C3–G3 — C3 p1 dives
-        // at −52 dB/s vs −9 for its mids; zero across most of the keyboard),
-        // not a broad bass Gaussian. The lowpass phase LAG pulls the fast mode
-        // SHARP by ≈ N·g1·Im H(f0) rad/round-trip (Weinreich's "twang", §VI),
-        // so g1 stays capped at 0.04 rad — the pull applies only to the fast
-        // mode; the aftersound that carries perceived pitch is untouched.
+        // g1 — REMOVED. This was an artificial pitch pull, and the owner heard it:
+        //
+        //   "the twang, i.e. as if in a synth, filter with high Q is changing its frequency
+        //    sweep, exists. a little bit, but it does exist."
+        //   "the sweep... i think that's a weird decision..to artificially add. why??"
+        //   "i'd rather just let the three strings have variation in their pitch, both + and
+        //    -, and that's it."
+        //
+        // He is right. g1 existed to give the fundamental an "extra dive" - a faster initial
+        // decay - by phase-lagging the bridge admittance. But a phase lag in the coupling
+        // DRAGS THE FAST MODE SHARP, and as that mode dies the perceived pitch slides back
+        // down. The code knew: its own comment cited "Weinreich's 'twang', §VI" and then
+        // merely CAPPED the pull at 0.02 rad rather than asking why we were introducing a
+        // pitch glide at all. A capped artefact is still an artefact.
+        //
+        // Measured: partial 3 swept -3.3 cents over the decay. On a long-ringing, high-Q
+        // partial that reads as a filter sweep, which is exactly what he described.
+        //
+        // The dive it was buying is not worth a glide. Deleted.
+        let bridge_g1 = 0.0f32;
+        let _ = dive_extra_dbps;
+        // still needed for the admittance lowpass cutoff (bridge_c) - that shapes HOW the
+        // coupling drains with frequency, and it does not pull pitch. Only g1 did.
         let bridge_fc = (0.25 * f0).max(40.0);
-        let xb = f0 / bridge_fc;
-        let h_re = 1.0 / (1.0 + xb * xb);
-        let h_mag = h_re.sqrt();
-        let h_im = xb * h_re;
-        // twang cap 0.02 rad (halved from r3's 0.04): the C3 prompt measured
-        // +10 c sharp vs the reference at the old cap — half the dive depth
-        // where the cap binds is the better trade (P2 owns a real admittance
-        // mechanism for the dive).
-        let bridge_g1 = (dive_extra_dbps / (8.686 * n_strings as f32 * f0 * h_mag))
-            .min(0.02 / (n_strings as f32 * h_im));
         let rng = Lcg(seed | 1);
         // Prompt string (the struck vertical polarization) gets its OWN loop
         // filter solved from the measured early HI-band t60 (its high
@@ -3043,6 +3067,12 @@ impl PianoVoice {
         //   - a per-note, per-string FORCE difference
         // All deterministic per key - the same piano every render. It is an instrument, not
         // a random number generator.
+        // The horizontal polarization: same string, same stiffness, so the same dispersion -
+        // but it is weakly coupled to the bridge, so its loss is far lower and it sings on.
+        // Its frequency differs by a few cents (the bridge/agraffe are not symmetric), which
+        // is what makes the vertical and horizontal beat against each other.
+        let h_t60 = (t60 * 3.2).min(60.0);
+        let (loss_h, lp_h) = solve_piano_loss(f0, sr, h_t60, (t60_hi * 3.2).min(h_t60 * 0.99), f_hi);
         let mut sk = Lcg(0x85EB_CA6B ^ midi.wrapping_mul(0x27D4_EB2F));
         let mut strike_off = [0usize; 3];
         let mut strike_lag = [0usize; 3];
@@ -3067,6 +3097,26 @@ impl PianoVoice {
             // was right and the physics agrees with it.
             strike_lag[i] = if i == 0 { 0 } else { 1 + (sk.next() > 0.0) as usize };
             strike_jit[i] = 1.0 + 0.09 * sk.next();
+        }
+        let mut strings_h = [StringLoop::new(f0, 0.0, sr, loss_h, lp_h, disp_n, disp_a); 3];
+        for (i, s) in strings_h.iter_mut().enumerate().take(n_strings) {
+            // Off its own vertical partner - but ZERO-MEAN and RANDOM-SIGNED, which matters
+            // enormously and I got it wrong first.
+            //
+            // The first version put the horizontal ALWAYS SHARP (+1.6 .. +2.5 cents). Since
+            // energy rotates vertical -> horizontal over the decay, EVERY partial's centre of
+            // mass then migrated UPWARD, coherently, by ~2 cents. Measured: partial 1 swept
+            // +2.0 c by 1.5 s. A coherent pitch glide on a long-ringing, high-Q partial is
+            // audible as exactly what the owner named:
+            //
+            //   "the twang, i.e. as if in a synth, filter with high Q is changing its
+            //    frequency sweep, exists. a little bit, but it does exist."
+            //
+            // He heard a 2-cent sweep. A real piano's horizontal mode sits a hair off its
+            // vertical partner in EITHER direction, uncorrelated across strings, so the
+            // migrations cancel instead of accumulating into a glide.
+            let dh = cfg[i] + 0.75 * sk.next();
+            *s = StringLoop::new(f0, dh, sr, loss_h, lp_h, disp_n, disp_a);
         }
 
         // Hammer-string collision (the anti-harpsichord): the string starts at REST
@@ -3109,6 +3159,9 @@ impl PianoVoice {
         // body knock: dense soundboard mode cloud (see below)
         let mut v = Self {
             strings,
+            strings_h,
+            pol_rot: 0.006,
+            pol_out: 0.08,
             strike_off,
             strike_lag,
             strike_jit,
@@ -3440,6 +3493,10 @@ impl PianoVoice {
                             self.lag_pos[i] = (head + 1) % d.min(STRIKE_LAG_MAX);
                             self.strings[i].inject(off, out);
                         }
+                        // The hammer is not perfectly aligned with the string plane, so a
+                        // little force goes into the HORIZONTAL polarization directly. Most
+                        // of the horizontal energy will arrive later, by rotation.
+                        self.strings_h[i].inject(off, w * 0.05);
                     }
                 } else if self.h_v < 0.0 {
                     self.h_active = false; // hammer moving away, contact over
@@ -3474,6 +3531,36 @@ impl PianoVoice {
             for (i, st) in self.strings.iter_mut().enumerate().take(self.n_strings) {
                 st.commit(w[i] - gsum);
             }
+
+            // ---- HORIZONTAL POLARIZATION (Weinreich 1977) ----
+            //
+            // The bridge is driven by the string's VERTICAL motion - that is what radiates,
+            // and that is why the vertical plane decays fast. The horizontal plane lies
+            // parallel to the soundboard, barely loads the bridge, and therefore rings on far
+            // longer. It is where the aftersound actually lives.
+            //
+            // ROTATION is the point. The bridge is not perfectly constrained, so the vertical
+            // drain drives the horizontal plane too: energy leaves the fast-dying mode and
+            // arrives in the long-singing one. The note does not just decay - it BLOOMS. That
+            // hand-off is the single most piano-like thing a string does, and modelling one
+            // polarization per string cannot produce it at all.
+            let mut wh = [0.0f32; 3];
+            let mut wh_sum = 0.0f32;
+            let mut s_h = 0.0f32;
+            for (i, st) in self.strings_h.iter_mut().enumerate().take(self.n_strings) {
+                let (y, wi) = st.tick();
+                wh[i] = wi;
+                wh_sum += wi;
+                s_h += y * self.out_w[i];
+            }
+            // the horizontal plane hardly pushes the bridge, so it drains far more slowly
+            let gsum_h = 0.18 * self.bridge_g0 * wh_sum;
+            let rot = self.pol_rot * gsum;
+            for (i, st) in self.strings_h.iter_mut().enumerate().take(self.n_strings) {
+                st.commit(wh[i] - gsum_h + rot);
+            }
+            // and it radiates weakly, because radiation IS bridge motion
+            s += s_h * self.pol_out;
             // phantom partials (see field docs): quadratic tension tap off the
             // prompt + ONE aftersound string. Squaring the full detuned pair
             // parked a 2·f0 beat chorus in the tail (measured lm_tail
