@@ -2184,3 +2184,109 @@ mod bench_scaffold {
         acc
     }
 }
+
+#[test]
+fn board_tonality() {
+    // THE OWNER'S RULE, and it is absolute:
+    //   "the resonance frequency pattern of sound board (or anything structural) should
+    //    never have any tonality, any pitch. never ever."
+    //
+    // Measuring this correctly is harder than it looks, and my first two attempts both
+    // measured the wrong thing:
+    //
+    //   - Plain autocorrelation reports high "salience" for ANY smooth, lowpassed signal,
+    //     because adjacent samples correlate. It was measuring spectral TILT, not pitch.
+    //   - Global peak-over-median also just reports TILT: a board that is simply louder
+    //     at the bottom scores as "peaky" while having no audible resonance at all.
+    //
+    // What actually makes a structure audible as a NOTE is a resonance that stands out
+    // FROM ITS NEIGHBOURS and rings long enough to have a period. So:
+    //
+    //   LOCAL CONTRAST - each bin against the median of a +-1/3-octave window around it.
+    //                    This is blind to tilt and sees only "does one mode tower".
+    //   RING TIME      - anything that rings has a period you can hear a pitch in.
+    use crate::kernels::*;
+    let sr = 48000.0f32;
+    let mut modes = [(0.0f32, 0.0f32, 0.0f32); MAX_BODY_MODES];
+    let n = piano_board(sr, &mut modes);
+
+    let len = (1.2 * sr) as usize;
+    let mut ir = vec![0.0f32; len];
+    let (mut a1, mut r2, mut g) = (vec![0.0f32; n], vec![0.0f32; n], vec![0.0f32; n]);
+    let (mut y1, mut y2) = (vec![0.0f32; n], vec![0.0f32; n]);
+    for i in 0..n {
+        let (f, t60, gg) = modes[i];
+        let r = (-6.907755 / (t60 * sr)).exp();
+        let w = core::f32::consts::TAU * f / sr;
+        a1[i] = 2.0 * r * w.cos();
+        r2[i] = r * r;
+        g[i] = gg * (1.0 - r);
+    }
+    for t in 0..len {
+        let drive = if t == 0 { 1.0 } else { 0.0 };
+        let mut s = 0.0;
+        for i in 0..n {
+            let y = a1[i] * y1[i] - r2[i] * y2[i] + g[i] * drive;
+            y2[i] = y1[i];
+            y1[i] = y;
+            s += y;
+        }
+        ir[t] = s;
+    }
+
+    // magnitude on a fine log grid
+    let seg: Vec<f32> = ir.iter().skip((0.02 * sr) as usize).cloned().collect();
+    let mut fs = vec![];
+    let mut mags = vec![];
+    let mut f = 50.0f32;
+    while f < 5000.0 {
+        let w = core::f32::consts::TAU * f / sr;
+        let c = 2.0 * w.cos();
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for &v in seg.iter().take(24000) {
+            let s0 = v + c * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        mags.push(((s1 * s1 + s2 * s2 - c * s1 * s2).max(0.0)).sqrt().max(1e-12));
+        fs.push(f);
+        f *= 1.01;
+    }
+
+    // LOCAL CONTRAST: each bin vs the median of +-1/3 octave around it. Tilt-blind.
+    let half = (0.3333f32.exp2().log(1.01) / 1.0) as usize; // bins per 1/3 octave
+    let mut worst = 0.0f32;
+    let mut worst_f = 0.0f32;
+    for i in 0..mags.len() {
+        let lo = i.saturating_sub(half);
+        let hi = (i + half + 1).min(mags.len());
+        let mut w: Vec<f32> = mags[lo..hi].to_vec();
+        w.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let med = w[w.len() / 2];
+        let c = 20.0 * (mags[i] / med).log10();
+        if c > worst {
+            worst = c;
+            worst_f = fs[i];
+        }
+    }
+
+    // RING TIME
+    let pk = ir.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+    let mut ring = len as f32 / sr;
+    for t in (0..len).step_by(240) {
+        let w = &ir[t..(t + 2400).min(len)];
+        let r = (w.iter().map(|v| v * v).sum::<f32>() / w.len() as f32).sqrt();
+        if r < pk * 0.001 {
+            ring = t as f32 / sr;
+            break;
+        }
+    }
+
+    eprintln!(
+        "BOARD n={n}  local_contrast={worst:.1} dB @ {worst_f:.0} Hz   ring={ring:.2}s"
+    );
+    eprintln!("BOARD rule (owner): a structure must have NO pitch -> contrast < 9 dB, ring < 0.20 s");
+    let pass = worst < 9.0 && ring < 0.20;
+    eprintln!("BOARD {}", if pass { "PASS" } else { "** FAIL - the structure is TONAL" });
+    assert!(pass, "soundboard is tonal: {worst:.1} dB local contrast, {ring:.2}s ring");
+}

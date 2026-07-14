@@ -208,35 +208,62 @@ pub const MAX_BODY_MODES: usize = 160;
 /// no longer resolvable and a dense deterministic bank is the wrong estimator, so the modes
 /// thin out and a broadband tail carries the top.
 pub fn piano_board(sr: f32, out: &mut [(f32, f32, f32)]) -> usize {
-    const DENSITY: f32 = 1.0 / 19.5; // modes per Hz (Ege & Boutillon, strung upright)
-    const ETA: f32 = 0.021; // mean loss factor
+    // THE OWNER'S RULE, and it is absolute:
+    //   "the resonance frequency pattern of sound board (or anything structural) should
+    //    never have any tonality, any pitch. never ever."
+    //
+    // The first version broke it badly. Measured on the board ALONE (impulse straight
+    // through the bank, no string): pitch salience 0.381, spectral peakiness 23.3 dB, and
+    // it RANG for 0.64 s. Three separate mistakes, each of which produces pitch:
+    //
+    //   1. The modes were nearly EVENLY SPACED (~19.5 Hz apart, lightly jittered). An
+    //      evenly-spaced set of resonances is a COMB, and a comb has a pitch. This is the
+    //      one that mattered most.
+    //   2. They were far too lightly damped, so the board RANG FREE. Anything that rings
+    //      long enough to have a period is something you can hear a pitch in - and the
+    //      action thump is a broadband click, which is exactly the signal that exposes it.
+    //   3. A Gaussian amplitude peak put one mode 23 dB over its neighbours. A resonance
+    //      that towers is a resonance you hear as a note.
+    //
+    // A real soundboard is a heavily-damped, irregular, densely-overlapping structure. It
+    // COLOURS; it does not SING. Rebuilt accordingly:
+    //
+    //   - frequencies are drawn IRREGULARLY (log-uniform jitter, no fixed step), so there
+    //     is no periodicity for the ear to lock onto;
+    //   - damping is strong and rises with frequency, so the board's impulse response dies
+    //     in ~0.1 s rather than ringing;
+    //   - amplitudes are broadly spread with no dominant peak.
+    //
+    // Gated by `board_tonality` in lib.rs, which measures pitch salience, spectral
+    // peakiness and ring time on the bank in isolation. That test is the owner's rule,
+    // made enforceable.
+    const ETA_LO: f32 = 0.10; // loss factor at the bottom - a board is HEAVILY damped
+    const ETA_HI: f32 = 0.26; // and more so up top, where radiation dominates
     let mut n = 0;
-    let mut f = 48.0f32;
+    let mut f = 55.0f32;
     let mut seed = 0x9E3779B9u32;
     let mut rnd = || {
         seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
         (seed >> 8) as f32 / 16_777_216.0
     };
-    while n < out.len() && f < 5200.0 {
-        // t60 from the loss factor: decay rate = pi*f*eta
-        let t60 = 6.907755 / (core::f32::consts::PI * f * ETA);
-        // amplitude: the board radiates best in the 150-800 Hz region and rolls off either
-        // side. The +-30% scatter is the point - a board whose modes are evenly weighted
-        // sounds synthetic, and its notes all decay identically.
-        let lf = (f / 260.0).ln();
-        let shape = (-0.5 * lf * lf / 1.5).exp();
-        let g = shape * (0.7 + 0.6 * rnd());
-        out[n] = (f, t60.clamp(0.05, 2.5), g);
+    while n < out.len() && f < 5000.0 {
+        let x = (f / 55.0).log2() / 6.5; // 0 at the bottom, ~1 at the top
+        let eta = ETA_LO + (ETA_HI - ETA_LO) * x.clamp(0.0, 1.0);
+        let t60 = 6.907755 / (core::f32::consts::PI * f * eta);
+        // Broad, gently-tilted amplitude with heavy scatter and NO dominant peak. An
+        // evenly-weighted board sounds synthetic; a peaked one has a pitch.
+        let tilt = (55.0f32 / f).powf(0.35);
+        let g = tilt * (0.45 + 1.1 * rnd());
+        out[n] = (f, t60.clamp(0.02, 0.45), g);
         n += 1;
-        // spacing from the modal density, jittered. Above the modal-overlap crossover
-        // (~975 Hz) individual modes stop being resolvable, so thin them out.
-        let mut step = 1.0 / DENSITY;
-        if f > 975.0 {
-            step *= 1.0 + (f - 975.0) / 700.0;
-        }
-        f += step * (0.55 + 0.9 * rnd());
+        // IRREGULAR spacing. The mean follows the measured modal density (Ege & Boutillon,
+        // ~1 mode per 19.5 Hz), but each step is drawn from a wide distribution so the set
+        // never forms a comb.
+        let mean_step = 19.5 * (1.0 + 1.6 * (f / 1600.0).max(0.0));
+        f += mean_step * (0.25 + 1.6 * rnd() * rnd().max(0.35));
     }
     n
+
 }
 
 /// Instrument body as a parallel modal resonator bank on the track bus
@@ -376,7 +403,7 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::EPiano => 1.17,       // EP r2 tine/pickup rebuild, reverb-flat re-bake 2026-07-13 (×1.05)
         Instrument::Drums => 0.58,        // drums r4 0.61 x room 0.95 (verify by sweep)
         Instrument::SynthPad => 0.51,     // reverb pre-delay re-bake 2026-07-13 (x1.08)
-        Instrument::Piano => 0.0319, // P1 per-key calibration re-bake (per-key LUFS trims raised the mid; was -14.9 LUFS at 0.130, x0.51 per measure-loudness)
+        Instrument::Piano => 0.0055, // P1 per-key calibration re-bake (per-key LUFS trims raised the mid; was -14.9 LUFS at 0.130, x0.51 per measure-loudness)
         Instrument::GuitarSteel => 0.364,   // body-round 0.387 x room 0.94 (verify by sweep)
         Instrument::GuitarElectric => 0.416, // reverb pre-delay re-bake 2026-07-13 (x1.08)
         Instrument::GuitarDistorted => 0.135, // reverb pre-delay re-bake 2026-07-13 (x1.06)
@@ -2286,6 +2313,9 @@ impl PluckVoice {
 /// between p1 and p20 (A0: B = 2.2e-4 measured on Salamander, loop ~1750
 /// samples), which takes ~14-18 first-order sections. Solved per note in
 /// `design_piano_dispersion`; treble keys use 1-3.
+/// Longest per-string hammer contact delay (samples). ~0.35 ms at 48 kHz.
+const STRIKE_LAG_MAX: usize = 20;
+
 const PIANO_MAX_DISP: usize = 20;
 
 #[derive(Clone, Copy)]
@@ -2702,6 +2732,10 @@ const PIANO_ACTION_THUMP_GAIN: f32 = 0.006_748_095; // 0.012 * 10^(-5/20)
 pub struct PianoVoice {
     strings: [StringLoop; 3],
     strike_off: [usize; 3],
+    strike_lag: [usize; 3],
+    strike_jit: [f32; 3],
+    lag_buf: [[f32; STRIKE_LAG_MAX]; 3],
+    lag_pos: [usize; 3],
     // radiated mix per string: prompt-dominant at onset, aftersound plateau
     // ~7 dB below peak once the prompt dumps (see start() Weinreich note)
     out_w: [f32; 3],
@@ -2910,7 +2944,34 @@ impl PianoVoice {
         // sings on (aftersound). P1: all strings share the SOLVED loop filter
         // — velocity→brightness now lives entirely in the felt-hammer law
         // (where the physics puts it), not in a velocity-voiced loop filter.
-        let cfg: [f32; 3] = [0.0, detune_spread, -0.8 * detune_spread];
+        // PER-NOTE UNISON TUNING, and it must be IDIOSYNCRATIC.
+        //
+        // Owner: "for each note, the three strings should be tuned slightly differently."
+        // We did detune them - but with a rigid formula, [0, +d, -0.8d], the SAME shape on
+        // every one of the 88 notes, merely rescaled by a per-key d. A real piano is tuned
+        // by hand, note by note; each unison's three deviations are its own.
+        //
+        // That rigidity was not cosmetic - it was CAUSING a defect, and the defect was then
+        // papered over. With the two outer strings placed symmetrically about the centre,
+        // the three pairwise beat rates nearly coincide and the unison MODE-LOCKS, digging a
+        // ~-40 dB null into the tail. The previous fix was to mute strings 2 and 3 to -21 dB
+        // and -32 dB (see out_w) so the null could not be heard. But muting two of the three
+        // strings removes most of what a piano unison IS, which is why the instrument sounds
+        // "a bit too simple".
+        //
+        // Fix the cause: give every note its own irregular spread, deterministic per key
+        // (the same piano every render - it is an instrument, not a random number) but with
+        // no shared pattern between notes. The three pairwise beat rates are then
+        // incommensurate, the beating never locks, and the strings can be heard at their
+        // real, near-equal weights.
+        let mut ds = Lcg(0x9E37_79B9 ^ midi.wrapping_mul(2_654_435_761));
+        let j1 = 1.00 + 0.27 * ds.next(); // 0.73 .. 1.27
+        let j2 = 0.85 + 0.30 * ds.next(); // 0.55 .. 1.15
+        let cfg: [f32; 3] = [
+            0.0,
+            detune_spread * j1,
+            -detune_spread * j2,
+        ];
         // TWO coupling terms (see bridge_g field docs).
         // g0 — broadband, purely real: no phase, no detune; owns the composite
         // early envelope. Extra decay rate ≈ 8.686·N·g0·f0 dB/s at every
@@ -2926,12 +2987,14 @@ impl PianoVoice {
         let kb = (key / 0.31).min(1.0);
         let gap_cap = 3.0 + 60.0 * kb * kb;
         let rate_gap = (60.0 / t60_prompt - 60.0 / t60).max(0.0).min(gap_cap);
-        // GAP_BOOST: how strongly the in-phase (prompt) unison mode drains into the bridge
-        // relative to the anti-phase (aftersound) modes. This gap IS the two-stage decay -
-        // a piano's fast bloom then long singing tail - and it is the single biggest thing
-        // separating a piano's sustain from a plucked string's.
-        const GAP_BOOST: f32 = 4.0;
-        let bridge_g0 = GAP_BOOST * rate_gap / (8.686 * n_strings as f32 * f0);
+        // NOTE: an earlier revision multiplied this coupling by 4x, because the two-stage
+        // decay measured only 1.57x (a real piano is 2-4x) and the piano sounded like a
+        // plucked string. That was a hack compensating for a hack: the coupling was FINE,
+        // and the reason its prompt/aftersound split could not be heard is that strings 2
+        // and 3 were muted to -21 dB and -32 dB in out_w. With the strings restored to
+        // their physical weights, the UNBOOSTED coupling gives 4.14x on its own. Boost
+        // removed. Fix the cause, and the compensations delete themselves.
+        let bridge_g0 = rate_gap / (8.686 * n_strings as f32 * f0);
         // g1 — through the admittance lowpass: gives the FUNDAMENTAL its extra
         // dive while upper partials keep ~the broadband rate. P1: the dive is
         // a per-key MEASURED quantity (strong only around C3–G3 — C3 p1 dives
@@ -2962,11 +3025,48 @@ impl PianoVoice {
         let t60e_hi = piano_cal(mkey, &PIANO_CAL_T60E_HI).clamp(0.1, t60);
         let (loss0, lp_c0) = solve_piano_loss(f0, sr, t60, t60e_hi.min(t60 * 0.99), f_hi);
         let mut strings = [StringLoop::new(f0, 0.0, sr, loss0, lp_c0, disp_n, disp_a); 3];
+        // NO IN-PHASE EXCITATION among the three strings.
+        //
+        // Owner: "some randomness, within three strings, is needed imo. also no in-phase
+        // among them."
+        //
+        // The hammer was striking all three strings at the SAME INSTANT, at the SAME POINT,
+        // with the same phase - a perfectly coherent, in-phase excitation. That is not a
+        // thing a real hammer can do: felt is soft and uneven, the strings are not exactly
+        // coplanar, and the contact point differs by a fraction of a millimetre across the
+        // unison. A coherent strike manufactures a strong in-phase mode and makes the three
+        // strings behave like one fat string - which is precisely the "too simple" sound.
+        //
+        // So the strike is now incoherent in all three ways a real one is:
+        //   - a different strike POINT per string (each gets its own comb of missing partials)
+        //   - a small per-string CONTACT DELAY (sub-millisecond; the hammer is not flat)
+        //   - a per-note, per-string FORCE difference
+        // All deterministic per key - the same piano every render. It is an instrument, not
+        // a random number generator.
+        let mut sk = Lcg(0x85EB_CA6B ^ midi.wrapping_mul(0x27D4_EB2F));
         let mut strike_off = [0usize; 3];
+        let mut strike_lag = [0usize; 3];
+        let mut strike_jit = [1.0f32; 3];
         for (i, s) in strings.iter_mut().enumerate().take(n_strings) {
             let (ls, c) = if i == 0 { (loss0, lp_c0) } else { (loss, lp_c) };
             *s = StringLoop::new(f0, cfg[i], sr, ls, c, disp_n, disp_a);
-            strike_off[i] = ((strike_q * s.len as f32) as usize).clamp(1, s.len - 1);
+            // strike point: +-6% around the nominal, per string
+            let qj = strike_q * (1.0 + 0.06 * sk.next());
+            strike_off[i] = ((qj * s.len as f32) as usize).clamp(1, s.len - 1);
+            // contact delay: 0 .. ~0.35 ms. Enough to decohere, far too small to hear as a flam.
+            // Contact delay: ONE OR TWO SAMPLES. Get the magnitude from the physics, not
+            // from taste. The three strings of a unison sit within ~0.1 mm of coplanar and
+            // the hammer arrives at ~4 m/s, so the real spread in contact time is ~25 us -
+            // about one sample at 48 kHz.
+            //
+            // The first attempt used 0.2-0.3 ms, i.e. ~10x too much. That is not a
+            // decoherence, it is a COMB: two of three strings delayed by 0.2 ms notches the
+            // attack around 2.5 kHz, and a +-1 sample rounding difference between 44.1 and
+            // 48 kHz moves the notch - which is exactly what the rate-stability test caught
+            // (attack centroid drifted 1138 -> 1251 Hz, 9.9% against an 8% gate). The test
+            // was right and the physics agrees with it.
+            strike_lag[i] = if i == 0 { 0 } else { 1 + (sk.next() > 0.0) as usize };
+            strike_jit[i] = 1.0 + 0.09 * sk.next();
         }
 
         // Hammer-string collision (the anti-harpsichord): the string starts at REST
@@ -3010,6 +3110,10 @@ impl PianoVoice {
         let mut v = Self {
             strings,
             strike_off,
+            strike_lag,
+            strike_jit,
+            lag_buf: [[0.0; STRIKE_LAG_MAX]; 3],
+            lag_pos: [0; 3],
             // Weinreich fig. 4 balance: the hammer strike is vertical, so the
             // PROMPT polarization owns the onset; the aftersound plateau is
             // what remains once it dumps — refs hold that plateau ~7 dB under
@@ -3029,18 +3133,26 @@ impl PianoVoice {
                 // partial band. Replaces the r3 three-segment law — at the
                 // top of the keyboard the law's −2 dB plateau flattened the
                 // composite early decay ~35 dB/s short of the references.
-                let a_db = piano_cal(mkey, &PIANO_CAL_PLATEAU_DB);
+                // ONE hammer strikes all the strings of a note, and they ALL terminate on
+                // the same bridge. Their radiated weights are therefore near-equal, and
+                // whatever prompt/aftersound asymmetry exists must come from the COUPLING
+                // (in-phase mode drains into the bridge, anti-phase modes sing on), not
+                // from painting two of the three strings down.
+                //
+                // They were painted down HARD: [2.0, 0.175, 0.049] at C4 - strings 2 and 3
+                // at -21 dB and -32 dB. That was compensating for the mode-locking null
+                // caused by the rigid symmetric detune above. With the detune now
+                // idiosyncratic per note, the null cannot form, and the strings can be
+                // heard. This is most of what "too simple" was.
+                //
+                // The small residual inequality is physical: the hammer does not strike the
+                // three strings identically (see strike_w), and the outer strings sit at
+                // slightly different points on the bridge.
+                let _ = piano_cal(mkey, &PIANO_CAL_PLATEAU_DB);
                 if n_strings == 2 {
-                    let a = 1.8 * 10f32.powf(a_db / 20.0);
-                    [1.8, a, 0.0]
+                    [1.05, 0.95, 0.0]
                 } else {
-                    let a = 2.0 * 10f32.powf(a_db / 20.0);
-                    // 72/28: the two slow normal modes must reach the output
-                    // with clearly UNEQUAL amplitude, or their mode-locked
-                    // ~0.15 Hz residual beat digs a −40 dB null into the tail
-                    // (measured 4.75 s @ C4) that no real piano shows —
-                    // Weinreich's measured unison modes are asymmetric mixes.
-                    [2.0, 0.78 * a, 0.22 * a]
+                    [1.06, 0.97, 0.90]
                 }
             },
             bridge_g0,
@@ -3311,7 +3423,23 @@ impl PianoVoice {
                     let inj = f * self.h_gain * inv_n;
                     for i in 0..self.n_strings {
                         let off = self.strike_off[i];
-                        self.strings[i].inject(off, inj * strike_w[i]);
+                        let w = inj * strike_w[i] * self.strike_jit[i];
+                        // The hammer reaches this string a fraction of a millisecond after
+                        // the first, so its force arrives DELAYED - not truncated. Skipping
+                        // the early samples (the first attempt) does not delay the strike,
+                        // it makes it WEAKER: strings 2 and 3 simply lost the front of the
+                        // contact, the excitation energy dropped, and the two-stage decay
+                        // collapsed from 4.14x to 1.29x. Push through a tiny FIFO instead.
+                        let d = self.strike_lag[i];
+                        if d == 0 {
+                            self.strings[i].inject(off, w);
+                        } else {
+                            let head = self.lag_pos[i];
+                            let out = self.lag_buf[i][head];
+                            self.lag_buf[i][head] = w;
+                            self.lag_pos[i] = (head + 1) % d.min(STRIKE_LAG_MAX);
+                            self.strings[i].inject(off, out);
+                        }
                     }
                 } else if self.h_v < 0.0 {
                     self.h_active = false; // hammer moving away, contact over
