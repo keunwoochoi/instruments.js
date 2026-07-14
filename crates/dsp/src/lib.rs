@@ -2290,3 +2290,78 @@ fn board_tonality() {
     eprintln!("BOARD {}", if pass { "PASS" } else { "** FAIL - the structure is TONAL" });
     assert!(pass, "soundboard is tonal: {worst:.1} dB local contrast, {ring:.2}s ring");
 }
+
+#[cfg(test)]
+mod brass_gates {
+    use crate::kernels::*;
+
+    /// A brass instrument that does not BEAT ITS LIPS is not a brass instrument - it is a
+    /// sine wave. This is the check that would have caught the original model, and did not
+    /// exist: every other gate (render, budget, NaN, level) was green while the lips sat
+    /// blown wide open and never touched, 0.0% of the cycle, at every dynamic.
+    #[test]
+    fn trombone_lips_actually_beat() {
+        let sr = 48000.0;
+        for midi in [41u8, 46, 53, 58] {
+            for vel in [0.35f32, 1.0] {
+                let f0 = 440.0 * 2f32.powf((midi as f32 - 69.0) / 12.0);
+                let mut v = BrassVoice::start(f0, vel, sr);
+                let mut o = [0.0f32; 1];
+                for _ in 0..(sr as usize) {
+                    v.render(&mut o);
+                }
+                let n = 12000;
+                let mut closed = 0usize;
+                for _ in 0..n {
+                    v.render(&mut o);
+                    if v.probe().0 <= 0.0 {
+                        closed += 1;
+                    }
+                }
+                let frac = 100.0 * closed as f32 / n as f32;
+                // 5%, not 20%: a SOFT LOW note genuinely should beat weakly and sound dark,
+                // and it does - the weakest case measured is F2 at vel 0.35, at 7.9%. This
+                // gate exists to catch lips that never close AT ALL (the original: 0.0% at
+                // every note and every dynamic), not to legislate a closure fraction.
+                assert!(
+                    frac > 5.0,
+                    "midi {midi} vel {vel}: lips closed only {frac:.1}% of the cycle -                      they are being blown open and never beating, so the flow is not                      rectified and the tone is a sine"
+                );
+            }
+        }
+    }
+
+    /// The trombone must play the partial it was ASKED for, and keep playing it. The bore's
+    /// neighbouring modes (a fifth up, a fourth down) are also unstable, and if the lip does
+    /// not reject them the note slides onto one mid-sustain - a wolf. It did: the note ended
+    /// up 4 dB BELOW the mode a fifth above it.
+    #[test]
+    fn trombone_holds_its_slot() {
+        let sr = 48000.0;
+        for midi in [41u8, 46, 53, 58] {
+            let f0 = 440.0 * 2f32.powf((midi as f32 - 69.0) / 12.0);
+            let mut v = BrassVoice::start(f0, 0.9, sr);
+            let mut buf = vec![0.0f32; (2.2 * sr) as usize];
+            v.render(&mut buf);
+            let late = &buf[(1.9 * sr) as usize..];
+            let amp = |f: f32| -> f32 {
+                let w = core::f32::consts::TAU * f / sr;
+                let c = 2.0 * w.cos();
+                let (mut s1, mut s2) = (0.0f32, 0.0f32);
+                for &x in late.iter() {
+                    let s0 = x + c * s1 - s2;
+                    s2 = s1;
+                    s1 = s0;
+                }
+                (s1 * s1 + s2 * s2 - c * s1 * s2).max(0.0).sqrt() / late.len() as f32
+            };
+            let note = amp(f0);
+            let wolf = amp(f0 * 1.5).max(amp(f0 * 0.75));
+            let purity = 20.0 * (note / wolf.max(1e-12)).log10();
+            assert!(
+                purity > 12.0,
+                "midi {midi}: the note is only {purity:.0} dB above the NEIGHBOURING bore                  mode - the trombone has slipped its slot and is playing a wolf"
+            );
+        }
+    }
+}

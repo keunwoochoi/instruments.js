@@ -2364,6 +2364,11 @@ struct StringLoop {
 /// less energy to the blocker.
 const DC_POLE: f32 = 0.9999;
 
+/// Lip contact: how much stiffer the lips are when pressed together than when free, and how
+/// much of the collision the tissue absorbs. Brass players call it "the lips beating".
+const LIP_CONTACT: f32 = 4.0;
+const LIP_CONTACT_D: f32 = 0.003;
+
 /// One-pole loop-lowpass H(z) = c/(1 − (1−c)z⁻¹): exact phase delay at ω, in
 /// samples (the old (1−c)/c DC approximation left the mid keyboard ~+12…+35
 /// cents sharp once the dispersion cascade grew — measured on the P1 baseline).
@@ -8793,19 +8798,70 @@ impl BrassVoice {
         // (as the first version did) and the loop is a positive resistance - it damps, and
         // the instrument sits silent at equilibrium. Sit it slightly below and the phase
         // rotates, the effective resistance goes negative, and it speaks.
-        v.lip_w = core::f32::consts::TAU * (f0 * 0.80) / sr;
+        v.lip_w = core::f32::consts::TAU * (f0 * 0.70) / sr;
         v.lip_damp = 0.05;
-        v.y0 = 0.06;
-        v.lip_area = 0.20;
-        v.lip_gain = 0.20; // pressure -> lip displacement at equilibrium
+        v.lip_area = 2.0;
+        v.lip_gain = 0.05;
 
         // breath: harder = more pressure = a brighter, brassier note, not just louder
         let vv = vel.clamp(0.05, 1.0);
-        v.pm = 0.55 + 0.95 * vv;
-        v.env_rate = 1.0 - (-1.0 / (0.030 * sr)).exp();
+        v.pm = 0.42 + 1.55 * vv;
+        v.env_rate = 1.0 - (-1.0 / (0.012 * sr)).exp();
+
+        // THE LIPS MUST BEAT, OR THIS IS NOT A BRASS INSTRUMENT.
+        //
+        // A brass player PRESSES THE LIPS TOGETHER and the breath forces a small aperture
+        // open against that compression. Every cycle the lips slam shut again; the flow is
+        // RECTIFIED, and that rectification IS the harmonic series. It is the same mechanism
+        // as a reed, and it is why a trombone is bright and a flute is not.
+        //
+        // The old code had a rest opening y0 = 0.06 and no pre-compression, so the static
+        // equilibrium sat at y0 + lip_gain*pm = 0.06 + 0.20*1.5 = 0.36 - SIX TIMES the rest
+        // opening. The lips were blown wide apart and never touched. With no beating there is
+        // no rectification, so the flow stayed a near-sinusoid (measured: h2 -20 dB, h4 -72 dB,
+        // spectral centroid 139 Hz on a 116 Hz note - a SINE), and with no strong nonlinearity
+        // to pump the loop the oscillation crept up over 2.08 SECONDS.
+        //
+        // So: solve for the pre-compression that leaves a small aperture at equilibrium, and
+        // let the AC swing beat through zero. Because the swing grows with blowing pressure
+        // and the equilibrium does not, a loud note beats HARDER and for a larger fraction of
+        // the cycle - the brightness rises with dynamics on its own. That is brassiness
+        // arriving from the valve, where the literature says most of it actually comes from.
+        // The embouchure is set by the PLAYER, once, and then he blows harder or softer
+        // through it. Solving y0 against this note's OWN pm (which the first version did)
+        // makes the embouchure cancel the dynamics exactly - the lip then sits at the same
+        // operating point at pp and ff, and the timbre cannot change with velocity. It
+        // didn't: centroid 176 Hz at pp, 181 Hz at ff.
+        //
+        // So set it from a FIXED reference blow. Blow harder than the reference and the lips
+        // are driven further, beat longer, and the note brassens - on its own.
+        // A player FIRMS THE EMBOUCHURE as he blows harder. He does not hold it fixed.
+        //
+        // Both extremes fail, and both were measured:
+        //   - fully compensating (y0 solved against this note's own pm) pins the operating
+        //     point, so the timbre is identical at pp and ff: centroid 176 -> 181 Hz. No
+        //     dynamics at all.
+        //   - not compensating at all (a fixed embouchure) lets the DC push pry the lips
+        //     open at ff faster than the oscillation grows, and a LOUD LOW note stops beating
+        //     entirely - F2 ff went from 18% closure to 0.0% on a beta change of 8 -> 12.
+        //     The model was sitting on a regime boundary; that is not shippable.
+        //
+        // So firm it PARTIALLY. The lips still open a little as he leans in - which is what
+        // keeps the dynamics - but never so far that they stop beating.
+        const Y_EQ: f32 = 0.012;
+        const PM_REF: f32 = 1.02; // a mezzo-forte blow
+        const FIRM: f32 = 0.75; // how much of the extra pressure the embouchure takes up
+        let pm_emb = PM_REF * (1.0 - FIRM) + v.pm * FIRM;
+        v.y0 = Y_EQ - v.lip_gain * pm_emb; // negative == lips pressed together
+
+        // Start the lips already moving. A player TONGUES the note - the attack is a release,
+        // not the slow growth of an instability from the noise floor. Without this the loop
+        // has to bootstrap itself, which is the other half of the 2-second attack.
+        v.y = Y_EQ;
+        v.yv = 0.080 + 0.060 * vv;
 
         // brassiness: how much the local pressure speeds the wave up
-        v.beta = 2.4;
+        v.beta = 35.0;
 
         v.dbg_fbore = f_bore;
         v.dbg_n = n_sel;
@@ -8813,7 +8869,27 @@ impl BrassVoice {
         // (low slots much quieter). Both make it useless next to anything else. Provisional
         // bake, NOT the measured BS.1770 one.
         let reg_g = (110.0 / f0.max(40.0)).powf(0.85).clamp(0.35, 2.2);
-        v.level = 34.0 * reg_g; // provisional; NOT a measured LUFS bake (spike)
+
+        // A VELOCITY GAIN, AND IT IS NOT PHYSICS. Say so plainly.
+        //
+        // This model self-oscillates into a limit cycle whose amplitude is set by the LIP
+        // GEOMETRY, not by how hard you blow: measured pp -> ff is 1.5-3.6 dB. A real
+        // trombone spans 20-30 dB. Everything tried to close that honestly made it worse:
+        //   - widening the blowing pressure 1.7x -> 2.4x bought 1 dB (the flow law is
+        //     u ~ a*sqrt(dp) - a SQUARE ROOT, so doubling the pressure is +3 dB and no more);
+        //   - cutting the lip contact loss 0.010 -> 0.0008: no change (not the limiter);
+        //   - letting the aperture open with pressure (FIRM 0.75 -> 0.40): the loud notes
+        //     stopped beating entirely and went back to sine;
+        //   - strong coupling (lip_area 2 -> 12): brighter, but the slot collapsed to 3 dB
+        //     and the dynamic range got WORSE, not better - it saturates harder.
+        //
+        // The missing physics is the strong-coupling regime, where the mouthpiece pressure
+        // scales with blowing pressure instead of with its square root. Until that is built,
+        // this gain stands in for it. It is a calibration. It is not brassiness, and the
+        // brightness that DOES track velocity (centroid 479 -> 933 Hz) is real and comes from
+        // the bore, not from here.
+        let dyn_g = vv.powf(2.20); // ~15 dB, on top of the ~3 dB the model actually produces
+        v.level = 34.0 * reg_g * dyn_g;
         v
     }
 
@@ -8890,12 +8966,23 @@ impl BrassVoice {
                 - 2.0 * self.lip_damp * w * self.yv;
             self.yv += acc;
             self.y += self.yv;
-            // the lips beat against each other - they cannot open negative
+            // THE LIPS SQUASH. y < 0 is not "impossible" - it is the lips PRESSED TOGETHER,
+            // tissue compressing. The APERTURE is what cannot go negative, and that is
+            // already handled by y.max(0.0) above.
+            //
+            // Clamping y itself at 0 and killing the velocity (which is what this did) is an
+            // infinitely strong limiter sitting exactly AT the closure point: the oscillation
+            // can never grow past "just grazing zero", at ANY blowing pressure. Measured: the
+            // lips were shut 0.2% of the cycle at pp and 0.2% at ff. That is why the trombone
+            // had no dynamics - the operating point was identical whether you whispered or
+            // blasted, so the timbre was too.
+            //
+            // Let it squash, and closure duration becomes a function of how hard you blow -
+            // which is the whole of brass dynamics. Contact damping stands in for the tissue
+            // absorbing the collision.
             if self.y < 0.0 {
-                self.y = 0.0;
-                if self.yv < 0.0 {
-                    self.yv *= -0.35; // inelastic collision
-                }
+                self.yv -= LIP_CONTACT * self.y * w * w; // one-sided contact stiffness
+                self.yv *= 1.0 - LIP_CONTACT_D; // tissue loss while pressed together
             }
             self.y = flush_denormal(self.y);
             self.yv = flush_denormal(self.yv);
