@@ -40,6 +40,10 @@ pub enum Instrument {
     DrumsRock = 13,
     /// Jazz kit: dark ride-forward, small dry kick, high-tuned shell-toned snare.
     DrumsJazz = 14,
+    /// Bowed cello - the first continuously-excited instrument (#50 spike).
+    Cello = 15,
+    /// Trombone - lip valve + bore + bell + nonlinear propagation (#50 spike).
+    Trombone = 16,
 }
 
 impl Instrument {
@@ -59,6 +63,8 @@ impl Instrument {
             12 => Self::GuitarDistorted,
             13 => Self::DrumsRock,
             14 => Self::DrumsJazz,
+            15 => Self::Cello,
+            16 => Self::Trombone,
             _ => Self::Marimba,
         }
     }
@@ -309,6 +315,9 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
     // need far more gain than RMS suggested and why the piano needed −4.4 LU.
     // Re-run both scripts after any preset change and paste the corrected values.
     match inst {
+        // cello: provisional, NOT a measured LUFS bake (spike). Re-run measure-loudness.
+        Instrument::Cello => 1.0,
+        Instrument::Trombone => 1.0,
         Instrument::Marimba => 2.1,       // reference
         Instrument::Vibraphone => 4.9,    // was -30.5 LUFS
         Instrument::Glockenspiel => 30.6, // reverb pre-delay re-bake 2026-07-13 (x1.11)
@@ -333,6 +342,8 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
 /// electrics lowest (the cab/amp chain already carries their space).
 pub fn room_send(inst: Instrument) -> f32 {
     match inst {
+        Instrument::Cello => 0.12,
+        Instrument::Trombone => 0.13,
         Instrument::Drums | Instrument::DrumsRock => 0.16,
         Instrument::DrumsJazz => 0.18, // brushes/jazz kits are recorded roomier
         Instrument::Piano => 0.09,
@@ -5895,6 +5906,8 @@ impl DrumVoice {
 #[derive(Clone, Copy)]
 pub enum Kernel {
     Off,
+    Bowed(BowedVoice),
+    Brass(BrassVoice),
     Modal(ModalVoice),
     Pluck(PluckVoice),
     EPluck(ElectricVoice),
@@ -6255,6 +6268,8 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
         Instrument::DrumsJazz => Kernel::Drum(DrumVoice::start(midi, vel, sr, seed, KitStyle::Jazz)),
         Instrument::SynthPad => Kernel::Synth(SynthVoice::start(f0, vel, sr)),
         Instrument::Piano => Kernel::Piano(PianoVoice::start(midi, f0, vel, sr, seed)),
+        Instrument::Cello => Kernel::Bowed(BowedVoice::start(f0, vel, sr)),
+        Instrument::Trombone => Kernel::Brass(BrassVoice::start(f0, vel, sr)),
         Instrument::GuitarSteel => {
             // steel: darker loop than nylon in RELATIVE terms (h12/h1 t60 ratio
             // ~1/3 in ref 015) but a much brighter pick excitation near the
@@ -7789,5 +7804,747 @@ mod bench_probe {
                 println!("{name} midi {midi}: {:.1} us/note-on", t0.elapsed().as_micros() as f64 / 50.0);
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bowed string (spike for #50 / #58).
+//
+// This is the first continuously-excited instrument in the engine, and it is
+// structurally different from everything else here: a struck or plucked voice is
+// fully determined at note-on, but a bowed string is driven for the whole note.
+// Until the gesture path (#56) exists, the bow gesture is synthesized from
+// velocity by a default envelope - which is exactly the "default gesture" the
+// design doc requires, because without it a bowed note driven by bare MIDI is
+// silent.
+//
+// Topology (Smith; McIntyre/Schumacher/Woodhouse):
+//   nut  <--- del_nb ---  BOW  --- del_br ---> bridge
+//        ---  del_bn --->     <--- del_rb ---
+// Two bidirectional rails meeting at an interior scattering point. This is why
+// StringLoop (a single-delay-loop Karplus-Strong) cannot host a bow: the friction
+// junction needs the string velocity arriving from BOTH directions in order to
+// scatter.
+//
+// The junction solves the friction characteristic against the string's wave
+// impedance each sample. Stick/slip is genuinely bistable, so it carries state.
+pub const BOW_BUF: usize = 1024;
+
+#[derive(Clone, Copy)]
+struct Rail {
+    buf: [f32; BOW_BUF],
+    pos: usize,
+    pub len: usize,
+}
+
+impl Rail {
+    const fn new() -> Self {
+        Self { buf: [0.0; BOW_BUF], pos: 0, len: 1 }
+    }
+    #[inline(always)]
+    fn set_len(&mut self, l: f32) {
+        self.len = (l as usize).clamp(2, BOW_BUF - 1);
+    }
+    /// The sample that has travelled the length of this rail.
+    #[inline(always)]
+    fn read(&self) -> f32 {
+        self.buf[self.pos]
+    }
+    /// Write the new sample into the slot just vacated and advance.
+    ///
+    /// read() and write() are separate because a scattering junction needs the
+    /// arriving waves from BOTH rails before it can compute what to send back.
+    /// Each rail is read once and written once per sample.
+    #[inline(always)]
+    fn write(&mut self, input: f32) {
+        self.buf[self.pos] = input;
+        self.pos = (self.pos + 1) % self.len;
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct BowedVoice {
+    nb: Rail, // nut  -> bow
+    bn: Rail, // bow  -> nut
+    br: Rail, // bow  -> bridge
+    rb: Rail, // bridge -> bow
+
+    // bridge termination: lossy, frequency-dependent (a real bridge is not a wall)
+    br_lp: f32,
+    br_c: f32,
+    br_loss: f32,
+
+    // Fractional-delay tuning allpass. The four rails are integer-length and the bridge
+    // lowpass has its own phase delay, so the raw loop is short of a period by up to a
+    // sample and a half - which at C4 is ~90 cents. That is not "pitch flattening under
+    // bow force"; it is a tuning bug, and it must be removed before any claim about the
+    // former. This allpass supplies the remaining fraction.
+    ap_c: f32,
+    ap_x1: f32,
+    ap_y1: f32,
+
+    // bow gesture (synthesized from velocity until #56 lands)
+    bow_vel: f32,      // signed: sign is bow direction
+    bow_force: f32,    // selects the Schelleng regime
+    env: f32,          // attack/release of the drive
+    env_target: f32,
+    env_rate: f32,
+
+    dbg_lp_pd: f32,
+    /// Contact temperature of the rosin, above ambient. THE friction state.
+    temp: f32,
+    /// Diagnostic only - the thermal model needs no branch rule.
+    stuck: bool,
+
+    // body: the cello is nothing without one
+    body_a1: [f32; 8],
+    body_r2: [f32; 8],
+    body_g: [f32; 8],
+    body_y1: [f32; 8],
+    body_y2: [f32; 8],
+
+    dc_x1: f32,
+    dc_y1: f32,
+    level: f32,
+    age: u64,
+    releasing: bool,
+    dbg_slip: f32,
+    dbg_vin: f32,
+    dbg_vinj: f32,
+    dbg_n: f32,
+}
+
+impl BowedVoice {
+    pub fn start(f0: f32, vel: f32, sr: f32) -> Self {
+        let mut v = Self {
+            nb: Rail::new(), bn: Rail::new(), br: Rail::new(), rb: Rail::new(),
+            br_lp: 0.0, br_c: 0.0, br_loss: 0.0,
+            ap_c: 0.0, ap_x1: 0.0, ap_y1: 0.0,
+            bow_vel: 0.0, bow_force: 0.0,
+            env: 0.0, env_target: 1.0, env_rate: 0.0,
+            dbg_lp_pd: 0.0,
+            temp: 0.0,
+            stuck: true,
+            body_a1: [0.0; 8], body_r2: [0.0; 8], body_g: [0.0; 8],
+            body_y1: [0.0; 8], body_y2: [0.0; 8],
+            dc_x1: 0.0, dc_y1: 0.0,
+            level: 0.0, age: 0, releasing: false,
+            dbg_slip: 0.0, dbg_vin: 0.0, dbg_vinj: 0.0, dbg_n: 0.0,
+        };
+
+        // Total round-trip is one period. beta = bow-bridge distance as a fraction
+        // of string length; a cellist bows around 1/8 from the bridge. The bow point
+        // splits the string, and that split IS the Helmholtz corner geometry.
+        let period = sr / f0.max(20.0);
+        let beta = 0.127;
+
+        // Bridge reflection: -1 * one-pole lowpass.
+        v.br_c = 0.62;
+        v.br_loss = 0.988;
+
+        // Budget the loop delay EXACTLY, or the string plays flat.
+        //
+        // One full circulation (bow -> bridge -> bow -> nut -> bow) must total exactly one
+        // period. The rails are integer-length and the bridge lowpass contributes its own
+        // phase delay, so we compute what the filters already cost and hand the remainder
+        // to a fractional-delay allpass. Getting this wrong is worth ~90 cents at C4, which
+        // is exactly what we measured before fixing it.
+        let w = core::f32::consts::TAU * f0 / sr;
+        let (sw, cw) = w.sin_cos();
+        let g = 1.0 - v.br_c;
+        // phase delay of  H(z) = c / (1 - g z^-1)  at w
+        let lp_pd = (g * sw).atan2(1.0 - g * cw) / w;
+
+        // Only the SUM of the four rails sets the pitch, so budget the sum first and split
+        // it afterwards. Sizing the pairs symmetrically (br == rb, nb == bn) makes the loop
+        // tunable only in steps of TWO samples, which leaves a one-sample hole an allpass of
+        // delay < 1 cannot fill - that hole was worth up to 19 cents at C4. Size the four
+        // rails independently.
+        let target = period - lp_pd;
+        let mut n_int = target.floor();
+        let mut frac = target - n_int;
+        if frac < 0.02 {
+            // an allpass with delay ~0 is ill-conditioned; borrow a whole sample
+            n_int -= 1.0;
+            frac += 1.0;
+        }
+        let d = frac.clamp(0.02, 1.20);
+
+        // split: bridge side gets beta of the string, nut side the rest
+        let bridge_total = (n_int * beta).round().max(4.0);
+        let nut_total = (n_int - bridge_total).max(4.0);
+        let br = (bridge_total * 0.5).ceil();
+        let rb = bridge_total - br;
+        let bn = (nut_total * 0.5).ceil();
+        let nb = nut_total - bn;
+        v.br.set_len(br);
+        v.rb.set_len(rb);
+        v.bn.set_len(bn);
+        v.nb.set_len(nb);
+
+        v.ap_c = (1.0 - d) / (1.0 + d);
+        v.dbg_lp_pd = lp_pd;
+
+        // Bow gesture, synthesized. Velocity maps to bow SPEED and FORCE together,
+        // the way an arm does - harder = faster and heavier. Down-bow by default.
+        // Schelleng: for a given bow-bridge distance beta there is a MINIMUM bow force
+        // below which Helmholtz motion cannot be sustained and the string drops into
+        // subharmonics ("surface sound"). Our first default gesture mapped low velocity
+        // straight to low force and fell under that line - a sustained C3 at vel 0.4 came
+        // out at 87 Hz, i.e. 2/3 of the fundamental. The model was right; the gesture was
+        // wrong. So force gets a floor and only leans on velocity above it.
+        //
+        // Minimum force scales roughly as v_bow / beta^2, so the floor rises with speed.
+        let vv = vel.clamp(0.02, 1.0);
+        v.bow_vel = 0.08 + 0.24 * vv;
+
+        // Schelleng's minimum bow force rises with bow SPEED and with the string's wave
+        // impedance - i.e. the treble needs a heavier bow than the bass for the same
+        // speed. Our first gesture ignored the register term and C4 at full velocity fell
+        // straight through the floor into subharmonics (-2158 cents: it was playing a
+        // completely different note). The model was right; the gesture was under-forced.
+        let reg = ((f0 / 65.4).max(1.0).log2() / 3.0).clamp(0.0, 1.0); // 0 at C2, 1 at C5
+        let f_min = (0.85 + 1.6 * v.bow_vel) * (1.0 + 1.15 * reg) * 1.0;
+        v.bow_force = f_min + 0.45 * vv;
+        v.env = 0.0;
+        v.env_target = 1.0;
+        // a bow takes tens of ms to speak - this is why bowed notes cannot be
+        // driven by an impulse
+        v.env_rate = 1.0 - (-1.0 / (0.035 * sr)).exp();
+
+        // Cello body: measured-ish low modes (A0 ~ 220, main wood ~ 300, bridge hill).
+        // A cello body is not a bank of sharp peaks - a high-Q low mode makes a WOLF,
+        // and an unmanaged one is a 12 dB hole/blowup at whatever note lands on it.
+        // (It did: G2 was +12 dB over C3.) Broad, damped, overlapping.
+        let modes = [
+            (98.0f32, 0.16f32, 0.30f32), // A0-ish air; damped hard or it wolfs
+            (176.0, 0.15, 0.45),
+            (220.0, 0.14, 0.55),
+            (300.0, 0.13, 0.60), // main wood
+            (405.0, 0.12, 0.50),
+            (600.0, 0.11, 0.40),
+            (980.0, 0.10, 0.30), // bridge hill
+            (1900.0, 0.08, 0.20),
+        ];
+        for (i, (f, t60, g)) in modes.iter().enumerate() {
+            let w = core::f32::consts::TAU * f / sr;
+            let r = (-6.9078 / (t60 * sr)).exp();
+            v.body_a1[i] = 2.0 * r * w.cos();
+            v.body_r2[i] = -r * r;
+            v.body_g[i] = *g * 0.06;
+        }
+
+        v.level = 0.0045; // provisional; NOT a measured LUFS bake (spike)
+        v
+    }
+
+    /// Thermal friction (Woodhouse, Acta Acustica 89:355-368, 2003), in a waveguide
+    /// after Maestre, Spa & Smith (ICMC 2014).
+    ///
+    /// This replaces a single-valued mu(v) friction curve, and the reason is not that
+    /// mu(v) is crude - it is that mu(v) is NOT ONE-TO-ONE. The load line can intersect
+    /// it at up to three points (the Friedlander ambiguity), so the solver needs a branch
+    /// rule to pick a root, and Woodhouse measured that the resulting scheme depends
+    /// sensitively on rounding noise: he runs it at 200 kHz and still writes that "no time
+    /// step is short enough to guarantee convergence in every case". We reproduced that
+    /// exactly - the previous version dropped into subharmonics in scattered cells of the
+    /// (velocity x register) grid, and the cells MOVED when the gesture mapping changed.
+    ///
+    /// The thermal model makes friction a function of the CONTACT TEMPERATURE of the rosin
+    /// rather than of the sliding velocity. Rosin softens as it heats, so mu falls. The
+    /// consequences are the whole point:
+    ///
+    ///   * At any instant, T is a STATE, so mu is a CONSTANT with respect to velocity.
+    ///     The characteristic is plain Coulomb, the load-line intersection is UNIQUE, and
+    ///     there is no ambiguity, no branch rule, and no root selection.
+    ///   * The hysteresis loop that Smith & Woodhouse actually measured in rosin emerges:
+    ///     slipping dissipates power -> the contact heats -> mu drops -> it keeps slipping;
+    ///     sticking dissipates nothing -> it cools -> mu recovers -> it takes more to break
+    ///     away again. We do not paint the hysteresis on; it falls out of one state variable.
+    ///   * There is no manufactured discontinuity, so there is nothing to antialias. The
+    ///     BLAMP/ADAA plan is simply not needed.
+    ///
+    /// Woodhouse converges this at 20 us (50 kHz). We run it at 48 kHz, unoversampled.
+    ///
+    /// RESULT: the subharmonics are gone. Across the whole (velocity x register) grid the
+    /// model now holds the fundamental, dynamics rise monotonically with bow speed, and
+    /// nothing has to be oversampled.
+    ///
+    /// KNOWN RESIDUAL, and deliberately NOT fudged away: the string plays 17-114 cents FLAT,
+    /// worst in the treble and worst at LOW bow speed.
+    ///
+    /// It is not the delay lines. The loop budget is exact and verified: rails + the bridge
+    /// lowpass's phase delay + the tuning allpass sum to the period to within 0.01 samples.
+    /// So something in the junction is adding effective delay, and I do not yet know what.
+    /// Candidates, in the order I would test them: the finite width of the slip pulse (the
+    /// Helmholtz corner takes time to form, and a slower bow makes it wider - which matches
+    /// the observed velocity dependence); the classical flattening effect, which is real
+    /// physics and rises with bow force; and a phase error in the first-order tuning allpass
+    /// at large fractional delay.
+    ///
+    /// I am NOT applying an empirical pitch offset to hide it. A fudge factor with no
+    /// mechanism behind it is precisely what this project keeps catching in review, and the
+    /// honest fix is to calibrate against a real cello corpus (#52), which does not exist yet.
+    /// Left visible and measured.
+
+    #[inline(always)]
+    fn friction(&mut self, d0: f32, force: f32) -> f32 {
+        const TWO_Z: f32 = 2.0; // string wave impedance seen by the bow (two half-strings)
+        const MU0: f32 = 1.05; // cold rosin
+        const HEAT: f32 = 0.055; // frictional power -> temperature
+        const COOL: f32 = 0.011; // thermal relaxation of the contact patch
+
+        // Rosin softens as it heats. This IS the friction law - there is no mu(v) anywhere.
+        let mu = MU0 / (1.0 + self.temp);
+
+        let f_stick = TWO_Z * d0; // force required to carry the string at bow speed
+        let f_slip = mu * force; // most the contact can transmit at this temperature
+
+        let (f, slipping) = if f_stick.abs() <= f_slip {
+            (f_stick, false) // STICK: string carried at bow speed. Unique.
+        } else {
+            (f_slip * d0.signum(), true) // SLIP: Coulomb at mu(T). Also unique.
+        };
+
+        // Frictional heating: power = |force| x |sliding velocity|. Sticking slides nothing,
+        // so it dissipates nothing and the contact cools.
+        let v_slip = if slipping { d0 - f / TWO_Z } else { 0.0 };
+        let power = (f * v_slip).abs();
+        self.temp += HEAT * power - COOL * self.temp;
+        self.temp = flush_denormal(self.temp.max(0.0));
+        self.stuck = !slipping;
+
+        f
+    }
+
+    pub fn render(&mut self, out: &mut [f32]) -> bool {
+        const INV_2Z: f32 = 0.5;
+
+        for s in out.iter_mut() {
+            self.env += (self.env_target - self.env) * self.env_rate;
+            let vb = self.bow_vel * self.env;
+            // The bow LIFTS on release - force is enveloped too, not just speed. A bow
+            // that stops moving but keeps pressing does not release the string, it PINS
+            // it: the junction becomes a sign-inverting reflector and the string rings
+            // on for tens of seconds. (It did. That is what this line fixes.)
+            let fb = self.bow_force * self.env;
+
+            // velocity waves arriving at the bow from both sides
+            let from_nut = self.nb.read();
+            let from_bridge = self.rb.read();
+            let v_in = from_nut + from_bridge;
+
+            // load-line solve, then the velocity wave the force launches BOTH ways
+            let f = self.friction(vb - v_in, fb);
+            let v_inj = (f * INV_2Z).clamp(-2.0, 2.0);
+
+            // scatter: each side receives what came from the other, plus the injection
+            let to_bridge = from_nut + v_inj;
+            let to_nut = from_bridge + v_inj;
+
+            // propagate to the terminations
+            let at_bridge = self.br.read();
+            self.br.write(to_bridge);
+            let at_nut = self.bn.read();
+            self.bn.write(to_nut);
+
+            // bridge: lossy, frequency-dependent reflection. Also our pickup - this is
+            // where the string actually drives the body.
+            self.br_lp += self.br_c * (at_bridge - self.br_lp);
+            let refl = -self.br_loss * flush_denormal(self.br_lp);
+            // fractional-delay tuning allpass, in the loop
+            let ap = self.ap_c * (refl - self.ap_y1) + self.ap_x1;
+            self.ap_x1 = refl;
+            self.ap_y1 = flush_denormal(ap);
+            self.rb.write(ap);
+
+            // nut: near-rigid
+            self.nb.write(-0.998 * at_nut);
+
+            // body
+            let drive = at_bridge;
+            let mut body = 0.0;
+            for i in 0..8 {
+                let y = self.body_a1[i] * self.body_y1[i]
+                    + self.body_r2[i] * self.body_y2[i]
+                    + self.body_g[i] * drive;
+                self.body_y2[i] = self.body_y1[i];
+                self.body_y1[i] = flush_denormal(y);
+                body += y;
+            }
+
+            let y = 0.7 * body + 0.3 * drive;
+            let hp = y - self.dc_x1 + DC_POLE * self.dc_y1;
+            self.dc_x1 = y;
+            self.dc_y1 = flush_denormal(hp);
+
+            self.dbg_slip = 0.98 * self.dbg_slip + if self.stuck { 0.0 } else { 1.0 };
+            self.dbg_vin = 0.98 * self.dbg_vin + v_in.abs();
+            self.dbg_vinj = 0.98 * self.dbg_vinj + v_inj.abs();
+            self.dbg_n = 0.98 * self.dbg_n + 1.0;
+
+            *s = hp * self.level;
+            self.age += 1;
+        }
+
+        // A bowed voice ends when the STRING is quiet - not when the bow envelope is.
+        // After the bow lifts, the string rings down on the bridge and nut losses, and
+        // cutting it there would be the "note that stops dead" the design doc gates on.
+        !(self.releasing && self.env < 1.0e-3 && self.dbg_vin / self.dbg_n.max(1.0) < 2.0e-3)
+    }
+
+    pub fn debug_delays(&self) -> (f32, f32, f32, f32) {
+        let d = (1.0 - self.ap_c) / (1.0 + self.ap_c);
+        (
+            (self.br.len + self.rb.len) as f32,
+            (self.nb.len + self.bn.len) as f32,
+            self.dbg_lp_pd,
+            d,
+        )
+    }
+
+    /// Diagnostics for the spike only.
+    pub fn debug_state(&self) -> (f32, f32, f32) {
+        (
+            self.dbg_slip / self.dbg_n.max(1.0),
+            self.dbg_vin / self.dbg_n.max(1.0),
+            self.dbg_vinj / self.dbg_n.max(1.0),
+        )
+    }
+
+    /// Note-off lifts the bow. The string then rings down on its own losses - it does
+    /// not cut, and it does not fade like a fader.
+    pub fn damp(&mut self, sr: f32) {
+        self.releasing = true;
+        self.env_target = 0.0;
+        self.env_rate = 1.0 - (-1.0 / (0.060 * sr)).exp();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trombone (spike for #50 / #59).
+//
+// The DAFx/CCRMA survey (#66) says this should have been the first instrument, not
+// the cello, and it is right: one waveguide, one excitation termination, one bell,
+// one variable length. No valves, no toneholes, no interior junction, no cone. And
+// it is the one place a physical model beats a sampler OUTRIGHT - "brassiness" is a
+// dynamics-dependent spectral cascade, and sample libraries fake it with crossfaded
+// layers that always sound like crossfaded layers.
+//
+// Three pieces, each chosen against the literature rather than by intuition:
+//
+// 1. LIP: an OUTWARD-STRIKING mass-spring-damper (Adachi & Sato; Elliott & Bowsher).
+//    NOT an inward-striking reed. This matters more than anything else here: an
+//    inward-striking valve can only oscillate BELOW an air-column resonance, so it
+//    cannot be lipped up, cannot bend, and slots one way. SLOTTING IS THE
+//    INSTRUMENT. The lip's own resonance is what selects which bore mode sounds.
+//
+// 2. FLOW: the pressure-flow relation is one-to-one, so it has a CLOSED-FORM
+//    QUADRATIC SOLVE (Bilbao, DAFx-08). No table, no Newton. The survey was explicit
+//    that a bounded 2-iteration Newton with no convergence check inside a
+//    self-oscillating loop is a silent instability generator. We don't need one.
+//
+// 3. BRASSINESS: amplitude-dependent propagation speed (Cooper & Abel, DAFx-10) -
+//    the wave travels faster where the pressure is high, so the waveform steepens as
+//    it goes. Implemented as a fractional delay modulated by the TOTAL pressure
+//    (p+ + p-), both rails, per their Fig. 5. We do NOT claim to simulate shock
+//    formation: a real shock has unbounded bandwidth, oversampling has no fixed
+//    point, and Cooper & Abel deliberately discard the shock logic and prefer the
+//    result. Without shock the mechanism is phase modulation - which is exactly why
+//    FM was always good at brass.
+pub const BORE_BUF: usize = 2048;
+
+#[derive(Clone, Copy)]
+pub struct BrassVoice {
+    // bore: bidirectional pressure waveguide, mouthpiece <-> bell
+    fwd: [f32; BORE_BUF], // mouthpiece -> bell
+    bwd: [f32; BORE_BUF], // bell -> mouthpiece
+    pos: usize,
+    len: f32, // one-way bore length in samples (fractional)
+
+    // bell: a flared bell is a HIGH-PASS in transmission - low modes reflect back and
+    // sustain the oscillation, highs radiate out. That split is the whole reason a
+    // brass instrument both plays and projects.
+    bell_lp: f32,
+    bell_c: f32,
+    bell_loss: f32,
+
+    // lip valve
+    y: f32,      // opening (m, normalized). y <= 0 == lips closed (beating)
+    yv: f32,     // opening velocity
+    y0: f32,     // rest opening
+    lip_w: f32,  // resonance (rad/sample) - THIS selects the harmonic
+    lip_damp: f32,
+    lip_area: f32,
+    lip_gain: f32,
+
+    // breath
+    pm: f32, // mouth pressure
+    env: f32,
+    env_target: f32,
+    env_rate: f32,
+
+    // nonlinear propagation
+    beta: f32,
+
+    rdc_x1: f32,
+    rdc_y1: f32,
+    dc_x1: f32,
+    dc_y1: f32,
+    level: f32,
+    releasing: bool,
+    age: u64,
+    dbg_u: f32,
+    dbg_pmp: f32,
+    dbg_fbore: f32,
+    dbg_n: f32,
+    rms: f32,
+}
+
+impl BrassVoice {
+    /// Pick the harmonic and the slide position, the way a player does.
+    ///
+    /// A trombone does not have one length per note. The bore fundamental runs from
+    /// ~58 Hz (1st position, Bb) down to ~44 Hz (7th position, E), and the player
+    /// chooses a HARMONIC n of that fundamental with the lips. So for a target pitch
+    /// we search for the (n, slide) pair a player would actually use.
+    fn slot(f0: f32) -> (f32, f32) {
+        let mut best = (2.0f32, 58.0f32);
+        let mut best_err = f32::INFINITY;
+        for n in 2..=10 {
+            let fb = f0 / n as f32;
+            if !(43.0..=59.0).contains(&fb) {
+                continue;
+            }
+            // prefer the LOWEST harmonic that reaches the note - that is what a player
+            // does, because low slots are stabler and louder
+            let err = n as f32;
+            if err < best_err {
+                best_err = err;
+                best = (n as f32, fb);
+            }
+        }
+        best
+    }
+
+    pub fn start(f0: f32, vel: f32, sr: f32) -> Self {
+        let (n_sel, f_bore) = Self::slot(f0.max(60.0));
+
+        let mut v = Self {
+            fwd: [0.0; BORE_BUF],
+            bwd: [0.0; BORE_BUF],
+            pos: 0,
+            len: 1.0,
+            bell_lp: 0.0,
+            bell_c: 0.0,
+            bell_loss: 0.0,
+            y: 0.0,
+            yv: 0.0,
+            y0: 0.0,
+            lip_w: 0.0,
+            lip_damp: 0.0,
+            lip_area: 0.0,
+            lip_gain: 0.0,
+            pm: 0.0,
+            env: 0.0,
+            env_target: 1.0,
+            env_rate: 0.0,
+            beta: 0.0,
+            rdc_x1: 0.0,
+            rdc_y1: 0.0,
+            dc_x1: 0.0,
+            dc_y1: 0.0,
+            level: 0.0,
+            releasing: false,
+            age: 0,
+            dbg_u: 0.0,
+            dbg_pmp: 0.0,
+            dbg_fbore: 0.0,
+            dbg_n: 0.0,
+            rms: 0.0,
+        };
+
+        // Round-trip = one period of the BORE fundamental. Modes are then the full
+        // harmonic series, which is what a brass instrument plays (the mouthpiece and
+        // the bell together stretch a cylinder's odd-only series into a near-harmonic
+        // one; we get that series by construction instead of modelling the profile).
+        let period = sr / f_bore.max(30.0);
+        v.len = (period * 0.5).clamp(8.0, (BORE_BUF - 4) as f32);
+
+        // bell: reflect the lows, radiate the highs
+        v.bell_c = 0.28;
+        v.bell_loss = 0.985;
+
+        // Lip resonance sits AT the target pitch. Blowing harder does not change it -
+        // the player's embouchure does. Because the lip is outward-striking, it locks
+        // onto whichever bore mode is nearest, which is exactly slotting.
+        // Fletcher's valve classification: an OUTWARD-STRIKING valve oscillates when the
+        // air-column mode is ABOVE the lip resonance. Put the lip exactly ON the bore mode
+        // (as the first version did) and the loop is a positive resistance - it damps, and
+        // the instrument sits silent at equilibrium. Sit it slightly below and the phase
+        // rotates, the effective resistance goes negative, and it speaks.
+        v.lip_w = core::f32::consts::TAU * (f0 * 0.80) / sr;
+        v.lip_damp = 0.05;
+        v.y0 = 0.06;
+        v.lip_area = 0.20;
+        v.lip_gain = 0.20; // pressure -> lip displacement at equilibrium
+
+        // breath: harder = more pressure = a brighter, brassier note, not just louder
+        let vv = vel.clamp(0.05, 1.0);
+        v.pm = 0.55 + 0.95 * vv;
+        v.env_rate = 1.0 - (-1.0 / (0.030 * sr)).exp();
+
+        // brassiness: how much the local pressure speeds the wave up
+        v.beta = 2.4;
+
+        v.dbg_fbore = f_bore;
+        v.dbg_n = n_sel;
+        v.level = 4.0; // provisional; NOT a measured LUFS bake (spike)
+        v
+    }
+
+    #[inline(always)]
+    fn read(buf: &[f32; BORE_BUF], pos: usize, d: f32) -> f32 {
+        let di = d.floor();
+        let fr = d - di;
+        let i = (pos + BORE_BUF - di as usize - 1) % BORE_BUF;
+        let j = (i + BORE_BUF - 1) % BORE_BUF;
+        buf[i] * (1.0 - fr) + buf[j] * fr
+    }
+
+    pub fn render(&mut self, out: &mut [f32]) -> bool {
+        for s in out.iter_mut() {
+            self.env += (self.env_target - self.env) * self.env_rate;
+            let pm = self.pm * self.env;
+
+            // ---- read the bore, with the delay modulated by pressure ----
+            // Cooper & Abel: v(x,t) = c0 + beta * p. High pressure travels faster, so it
+            // catches up with the trough ahead of it and the wave STEEPENS. This is
+            // brassiness, and it is why a loud brass note is a different timbre and not
+            // just a louder one.
+            let p_at_bell_lin = Self::read(&self.fwd, self.pos, self.len);
+            let p_at_lip_lin = Self::read(&self.bwd, self.pos, self.len);
+            let p_total = p_at_bell_lin + p_at_lip_lin;
+            let d = (self.len - self.beta * p_total).clamp(4.0, self.len + 8.0);
+
+            let p_bell = Self::read(&self.fwd, self.pos, d);
+            let p_minus = Self::read(&self.bwd, self.pos, d);
+
+            // ---- lip valve: outward-striking, so mouth pressure PUSHES IT OPEN ----
+            // (An inward-striking reed would close here, and could then only oscillate
+            // below resonance - it could not be lipped up and would not slot.)
+            let p_mouthpiece = 2.0 * p_minus; // before the lip injects
+            let dp = pm - p_mouthpiece;
+
+            // The lips CLOSE as the breath stops. Without this, mouth pressure collapses while
+            // the bore is still pressurised, the lip slams shut against it, and the backflow
+            // dumps a ~10 dB transient at note-off - an audible pop.
+            //
+            // Only on RELEASE. Gating the aperture by the envelope during the ATTACK closes the
+            // lips before the instrument has spoken, so the oscillation never starts and it
+            // settles into a weak regime instead (it did: the tone dropped 40x and the
+            // brassiness vanished). A player's lips are already on the mouthpiece before the
+            // breath arrives.
+            let close = if self.releasing { self.env } else { 1.0 };
+            let a2 = self.lip_area * close * self.y.max(0.0);
+            // closed-form quadratic solve of  u = A*sqrt(|dp - Zc*u|)*sgn(...)
+            // (Bilbao DAFx-08). One-to-one, so no table and no Newton.
+            let u = if a2 > 1.0e-6 {
+                let a = a2 * 0.9;
+                let b = dp;
+                let disc = (a * a * a * a + 4.0 * a * a * b.abs()).max(0.0);
+                let mag = 0.5 * (-a * a + disc.sqrt());
+                mag.max(0.0) * b.signum()
+            } else {
+                0.0
+            };
+
+            let p_plus = p_minus + u;
+            let p_mp = p_plus + p_minus;
+
+            // Lip dynamics: a damped oscillator driven by the pressure across it.
+            // Outward-striking, so (pm - p_mp) OPENS the lips - that sign is the whole
+            // reason the instrument can be lipped up and can slot.
+            //
+            // The forcing has to be scaled by w^2, not applied raw: the equation is
+            // y'' = w^2 * (G*dp - (y - y0)) - 2*zeta*w*y', so at equilibrium a pressure
+            // dp displaces the lip by G*dp. Forcing it raw made the pressure term ~1000x
+            // the spring term and the lip was simply slammed - which is why every note
+            // came out at the same 905 Hz.
+            let w = self.lip_w;
+            let acc = w * w * (self.lip_gain * (pm - p_mp) - (self.y - self.y0 * close))
+                - 2.0 * self.lip_damp * w * self.yv;
+            self.yv += acc;
+            self.y += self.yv;
+            // the lips beat against each other - they cannot open negative
+            if self.y < 0.0 {
+                self.y = 0.0;
+                if self.yv < 0.0 {
+                    self.yv *= -0.35; // inelastic collision
+                }
+            }
+            self.y = flush_denormal(self.y);
+            self.yv = flush_denormal(self.yv);
+
+            // ---- bell: reflect the lows, radiate the highs ----
+            //
+            // Sign matters and I got it wrong first: an ideal open end inverts pressure,
+            // which makes the loop inverting and yields a closed-open pipe - odd harmonics
+            // of f/2. That is a CLARINET. A trombone plays the FULL harmonic series,
+            // because the mouthpiece and the flaring bell together stretch a cylinder's
+            // odd-only modes into a near-harmonic set. We get that series directly by
+            // making the round trip non-inverting, rather than modelling the bore profile.
+            // It is a simplification, and it is the one the waveguide literature uses.
+            // The bore needs a high Q to SLOT (the mode must dominate the lip), but a high-Q
+            // tube also rings for ~8 seconds after you stop blowing, which is not what a
+            // trombone does. A real player's lips stay on the mouthpiece and damp the tube.
+            // So the loop loss is lifted while the breath is on and restored when it stops:
+            // the lips let go of the note.
+            let loss = self.bell_loss * (0.86 + 0.14 * self.env);
+            self.bell_lp += self.bell_c * (p_bell - self.bell_lp);
+            let refl_raw = loss * flush_denormal(self.bell_lp);
+            // The bell RADIATES the static blowing pressure, it does not store it. Without
+            // this, DC accumulates around the loop (gain 0.94 -> ~16x), the bore saturates,
+            // the lip settles at equilibrium and the instrument never speaks. It did exactly
+            // that: p_mouthpiece parked at 1.295 and y at 0.3635, forever.
+            let refl = refl_raw - self.rdc_x1 + DC_POLE * self.rdc_y1;
+            self.rdc_x1 = refl_raw;
+            self.rdc_y1 = flush_denormal(refl);
+            let radiated = p_bell - refl_raw; // the bell is a HIGH-PASS in transmission
+
+            // ---- write and advance ----
+            self.fwd[self.pos] = p_plus;
+            self.bwd[self.pos] = refl;
+            self.pos = (self.pos + 1) % BORE_BUF;
+
+            let y = radiated;
+            let hp = y - self.dc_x1 + DC_POLE * self.dc_y1;
+            self.dc_x1 = y;
+            self.dc_y1 = flush_denormal(hp);
+
+            self.dbg_u = u;
+            self.dbg_pmp = p_mp;
+            self.rms = 0.999 * self.rms + 0.001 * hp.abs();
+            *s = hp * self.level;
+            self.age += 1;
+        }
+        // A blown voice ends when the BORE is quiet, not when the breath envelope is - cutting
+        // at the envelope would chop the ring-down, and "a note that stops dead is as fake as
+        // one that never brassens".
+        !(self.releasing && self.env < 1.0e-3 && self.rms < 2.0e-4)
+    }
+
+    pub fn damp(&mut self, sr: f32) {
+        self.releasing = true;
+        self.env_target = 0.0;
+        self.env_rate = 1.0 - (-1.0 / (0.045 * sr)).exp();
+    }
+
+    pub fn bore_info(&self) -> (f32, f32, f32) {
+        (self.len, self.dbg_fbore, self.dbg_n)
+    }
+
+    pub fn probe(&self) -> (f32, f32, f32, f32) {
+        (self.y, self.yv, self.dbg_u, self.dbg_pmp)
     }
 }

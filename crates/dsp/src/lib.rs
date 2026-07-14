@@ -674,24 +674,37 @@ impl Engine {
 
     pub fn note_off(&mut self, track: usize, midi: u32) {
         let inst = if track < MAX_TRACKS { self.tracks[track].instrument } else { return };
-        // one-shot percussion ignores note-off; sustained/damped families release
-        let damps = matches!(
-            inst,
+        // Which instruments release on note-off.
+        //
+        // This was an ALLOW-LIST with a `_ => false` fallthrough, and it failed silently
+        // twice: GuitarSteel was missing and its notes never released, and the bowed
+        // cello was missing and rang FOREVER (a self-oscillating voice with no note-off
+        // does not merely over-ring - it sustains at full amplitude).
+        //
+        // It is now an EXHAUSTIVE match with no wildcard, so adding an instrument without
+        // deciding this is a compile error rather than a bug someone finds by ear.
+        let damps = match inst {
+            // Free-ringing struck bars: no damper on the instrument, so note-off does
+            // nothing. This is correct and deliberate - do not "fix" it.
+            Instrument::Marimba | Instrument::Glockenspiel | Instrument::MusicBox => false,
+            // One-shot kits: the hit is the note.
+            Instrument::Drums | Instrument::DrumsRock | Instrument::DrumsJazz => false,
+            // Damped/sustained families.
             Instrument::Vibraphone
-                | Instrument::EPiano
-                | Instrument::Guitar
-                // steel was missing from this list — its notes NEVER released
-                // (round-2 finding: refs choke/ring at note-off, renders sailed
-                // through it; the release-transient work was inaudible)
-                | Instrument::GuitarSteel
-                | Instrument::Bass
-                | Instrument::SynthPad
-                | Instrument::Piano
-                // electrics: fretted strings damp on release (NSynth refs decay at
-                // t60 ≈ 0.3 s after note-off; see PluckVoice::damp electric branch)
-                | Instrument::GuitarElectric
-                | Instrument::GuitarDistorted
-        );
+            | Instrument::Guitar
+            | Instrument::GuitarSteel
+            | Instrument::GuitarElectric
+            | Instrument::GuitarDistorted
+            | Instrument::Bass
+            | Instrument::EPiano
+            | Instrument::SynthPad
+            | Instrument::Piano
+            // A bowed string and a blown horn are the instruments where a missed note-off
+            // is fatal: they are self-oscillating and would sustain at full amplitude
+            // forever, not merely over-ring.
+            | Instrument::Cello
+            | Instrument::Trombone => true,
+        };
         if !damps {
             return;
         }
@@ -740,6 +753,10 @@ impl Engine {
                         Kernel::EPluck(p) => p.damp(),
                         Kernel::Synth(s) => s.release(),
                         Kernel::Piano(p) => p.damp(),
+                    Kernel::Bowed(b) => b.damp(sr),
+                    Kernel::Brass(b) => b.damp(sr),
+                        Kernel::Bowed(b) => b.damp(sr),
+                    Kernel::Brass(b) => b.damp(sr),
                         _ => {}
                     }
                 }
@@ -780,6 +797,8 @@ impl Engine {
                     Kernel::EPluck(p) => p.damp(),
                     Kernel::Synth(s) => s.release(),
                     Kernel::Piano(p) => p.damp(),
+                    Kernel::Bowed(b) => b.damp(sr),
+                    Kernel::Brass(b) => b.damp(sr),
                     _ => {}
                 }
             }
@@ -797,6 +816,8 @@ impl Engine {
                     Kernel::EPluck(p) => p.damp(),
                     Kernel::Synth(s) => s.release(),
                     Kernel::Piano(p) => p.damp(),
+                    Kernel::Bowed(b) => b.damp(sr),
+                    Kernel::Brass(b) => b.damp(sr),
                     Kernel::Drum(_) => {} // short one-shots; let them ring out
                     Kernel::Off => {}
                 }
@@ -835,6 +856,8 @@ impl Engine {
                     Kernel::Drum(d) => d.render(&mut self.voice_buf[..frames], sr),
                     Kernel::Synth(s) => s.render(&mut self.voice_buf[..frames]),
                     Kernel::Piano(pn) => pn.render(&mut self.voice_buf[..frames]),
+                    Kernel::Bowed(b) => b.render(&mut self.voice_buf[..frames]),
+                    Kernel::Brass(b) => b.render(&mut self.voice_buf[..frames]),
                     Kernel::Off => false,
                 };
                 let th = (v.pan.clamp(-1.0, 1.0) + 1.0) * core::f32::consts::FRAC_PI_4;
@@ -2062,6 +2085,7 @@ mod tests {
     }
 
 }
+
 
 /// Measurement-only exports for sizing the higher-capacity piano soundboard (#49).
 ///
