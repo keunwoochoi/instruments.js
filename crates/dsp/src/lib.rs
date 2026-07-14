@@ -635,12 +635,17 @@ impl Engine {
                 }
             }
         }
-        // voice choice: retrigger same (track,pitch) > free slot > oldest (steal)
+        // Voice choice: sustained piano strikes must overlap. Reusing the
+        // same (track,pitch) voice chops the previous string/board tail during
+        // trills and pedal replay. Other families retain legacy retrigger
+        // semantics; piano takes a free slot, then the normal oldest steal.
         let mut slot = None;
-        for (i, v) in self.voices.iter().enumerate() {
-            if v.active() && v.track as usize == track && v.midi as u32 == midi && !v.releasing {
-                slot = Some(i);
-                break;
+        if inst != Instrument::Piano {
+            for (i, v) in self.voices.iter().enumerate() {
+                if v.active() && v.track as usize == track && v.midi as u32 == midi && !v.releasing {
+                    slot = Some(i);
+                    break;
+                }
             }
         }
         if slot.is_none() {
@@ -705,6 +710,37 @@ impl Engine {
         }
         let pedal = self.tracks[track].pedal;
         let sr = self.sample_rate;
+        if inst == Instrument::Piano {
+            // Pair note-off with the oldest still-key-held strike. Voices
+            // already deferred under pedal are excluded, so a replayed key
+            // gets its own release and every sustained tail survives until
+            // pedal-up. This is FIFO pairing for overlapping equal pitches.
+            let mut target = None;
+            let mut oldest_age = 0;
+            for (i, v) in self.voices.iter().enumerate() {
+                if v.active()
+                    && v.track as usize == track
+                    && v.midi as u32 == midi
+                    && !v.releasing
+                    && !v.pedal_held
+                    && (target.is_none() || v.age > oldest_age)
+                {
+                    target = Some(i);
+                    oldest_age = v.age;
+                }
+            }
+            if let Some(i) = target {
+                if pedal {
+                    self.voices[i].pedal_held = true;
+                } else {
+                    self.voices[i].releasing = true;
+                    if let Kernel::Piano(p) = &mut self.voices[i].kernel {
+                        p.damp();
+                    }
+                }
+            }
+            return;
+        }
         for v in self.voices.iter_mut() {
             if v.active() && v.track as usize == track && v.midi as u32 == midi && !v.releasing {
                 if pedal {
@@ -1604,6 +1640,145 @@ mod tests {
     }
 
     #[test]
+    fn piano_same_pitch_strikes_overlap_and_release_fifo() {
+        for sr in [44_100.0f32, 48_000.0] {
+            let mut e = Engine::new(sr);
+            e.set_track(0, Instrument::Piano, 0.8, 0.0);
+            e.note_on(0, 60, 0.7);
+            let _ = render_seconds(&mut e, 0.04);
+            e.note_on(0, 60, 0.8);
+            let same = || {
+                e.voices
+                    .iter()
+                    .filter(|v| v.active() && v.track == 0 && v.midi == 60)
+                    .count()
+            };
+            assert_eq!(same(), 2, "sr={sr}: repeated piano strike chopped its predecessor");
+            e.note_off(0, 60);
+            let releasing = e
+                .voices
+                .iter()
+                .filter(|v| v.active() && v.track == 0 && v.midi == 60 && v.releasing)
+                .count();
+            assert_eq!(releasing, 1, "sr={sr}: first note-off must release one oldest strike");
+            e.note_off(0, 60);
+            let releasing = e
+                .voices
+                .iter()
+                .filter(|v| v.active() && v.track == 0 && v.midi == 60 && v.releasing)
+                .count();
+            assert_eq!(releasing, 2, "sr={sr}: second note-off must release the replay");
+            let out = render_seconds(&mut e, 0.4);
+            assert!(out.iter().all(|s| s.is_finite()), "sr={sr}: repeated-note release NaN");
+        }
+    }
+
+    #[test]
+    fn piano_same_frame_note_off_pairing_is_fifo() {
+        let mut e = Engine::new(48_000.0);
+        e.set_track(0, Instrument::Piano, 0.8, 0.0);
+        e.note_on(0, 60, 0.4);
+        e.note_on(0, 60, 0.9);
+        let strikes: Vec<_> = e
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.active() && v.track == 0 && v.midi == 60)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(strikes.len(), 2);
+        assert_eq!(e.voices[strikes[0]].age, e.voices[strikes[1]].age);
+        e.note_off(0, 60);
+        assert!(e.voices[strikes[0]].releasing, "first same-frame strike was not released first");
+        assert!(!e.voices[strikes[1]].releasing, "newest same-frame strike released out of order");
+    }
+
+    #[test]
+    fn piano_pedal_replay_preserves_both_tails_until_pedal_up() {
+        let mut pedal_up_peak = [0.0f32; 2];
+        for (rate_i, sr) in [44_100.0f32, 48_000.0].into_iter().enumerate() {
+            let mut e = Engine::new(sr);
+            e.set_track(0, Instrument::Piano, 0.8, 0.0);
+            e.set_pedal(0, true);
+            for vel in [0.65, 0.85] {
+                e.note_on(0, 60, vel);
+                let _ = render_seconds(&mut e, 0.05);
+                e.note_off(0, 60);
+            }
+            let held: Vec<_> = e
+                .voices
+                .iter()
+                .filter(|v| v.active() && v.track == 0 && v.midi == 60)
+                .collect();
+            assert_eq!(held.len(), 2, "sr={sr}: pedal replay failed to overlap");
+            assert!(held.iter().all(|v| v.pedal_held && !v.releasing));
+            e.set_pedal(0, false);
+            let released = e
+                .voices
+                .iter()
+                .filter(|v| v.active() && v.track == 0 && v.midi == 60 && v.releasing)
+                .count();
+            assert_eq!(released, 2, "sr={sr}: pedal-up failed to release both strikes");
+            let out = render_seconds(&mut e, 0.5);
+            assert!(out.iter().all(|s| s.is_finite()), "sr={sr}: pedal replay NaN");
+            pedal_up_peak[rate_i] = out.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+            assert!(pedal_up_peak[rate_i] <= 1.0, "sr={sr}: pedal-up clipped");
+        }
+        let rate_delta_db = 20.0 * (pedal_up_peak[1] / pedal_up_peak[0].max(1e-9)).log10();
+        assert!(
+            rate_delta_db.abs() < 1.5,
+            "pedal-up peak drifts across rates: {} -> {} ({rate_delta_db:.2} dB)",
+            pedal_up_peak[0],
+            pedal_up_peak[1]
+        );
+    }
+
+    #[test]
+    fn piano_repeated_strikes_degrade_by_bounded_voice_stealing() {
+        let mut e = Engine::new(48_000.0);
+        e.set_track(0, Instrument::Piano, 0.25, 0.0);
+        for i in 0..(MAX_VOICES + 24) {
+            e.note_on(0, 60, 0.2 + 0.002 * i as f32);
+        }
+        assert_eq!(e.active_voices(), MAX_VOICES);
+        let out = render_seconds(&mut e, 0.1);
+        assert!(out.iter().all(|s| s.is_finite()));
+        let peak = out.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(peak <= 1.0, "forced-steal repeat phrase clipped: {peak}");
+    }
+
+    #[test]
+    fn piano_engine_reachable_note_matrix_is_finite_and_bounded() {
+        for sr in [44_100.0f32, 48_000.0] {
+            for midi in 21..=108 {
+                for vel in [1.0 / 127.0, 0.5, 1.0] {
+                    let mut e = Engine::new(sr);
+                    e.set_track(0, Instrument::Piano, 0.8, 0.0);
+                    e.note_on(0, midi, vel);
+                    let frames = (0.04 * sr) as usize;
+                    let mut done = 0;
+                    while done < frames {
+                        let n = QUANTUM_FRAMES.min(frames - done);
+                        e.process(n);
+                        for i in 0..n {
+                            let (l, r) = (e.out_l[i], e.out_r[i]);
+                            assert!(
+                                l.is_finite() && r.is_finite(),
+                                "midi {midi} vel {vel} sr {sr}: engine NaN"
+                            );
+                            assert!(
+                                l.abs() <= 1.0 && r.abs() <= 1.0,
+                                "midi {midi} vel {vel} sr {sr}: engine output out of bounds ({l}, {r})"
+                            );
+                        }
+                        done += n;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn synth_pad_sustains_and_releases() {
         let mut e = Engine::new(48_000.0);
         e.set_track(0, Instrument::SynthPad, 0.8, 0.0);
@@ -1912,3 +2087,91 @@ mod tests {
 }
 
 
+/// Measurement-only exports for sizing the higher-capacity piano soundboard (#49).
+///
+/// Off by default — `bench-scaffold` is not enabled in any shipped build, so these
+/// symbols never reach `packages/core/wasm/`. They exist so the soundboard budget in
+/// `agentic-docs/design/2026-07-13-higher-capacity-piano.md` is reproducible by a
+/// reviewer instead of being asserted:
+///
+///   cargo build -p instruments-dsp --target wasm32-unknown-unknown --release \
+///     --features bench-scaffold
+///   npm run bench:soundboard
+#[cfg(feature = "bench-scaffold")]
+#[allow(unsafe_code)]
+mod bench_scaffold {
+    /// M independent 2nd-order modal resonators, N samples. The open-loop board.
+    #[no_mangle]
+    pub extern "C" fn ij_bench_modes(m: u32, n: u32) -> f32 {
+        let m = (m as usize).min(1024);
+        let (mut y1, mut y2) = (vec![0.001f32; m], vec![0.0f32; m]);
+        let mut a1 = vec![0.0f32; m];
+        let r2 = vec![-0.999f32; m];
+        for k in 0..m {
+            a1[k] = 1.9 + 0.0001 * k as f32;
+        }
+        let mut acc = 0.0f32;
+        for _ in 0..n {
+            let mut sum = 0.0f32;
+            for k in 0..m {
+                let y = a1[k] * y1[k] + r2[k] * y2[k] + 0.0001;
+                y2[k] = y1[k];
+                y1[k] = y;
+                sum += y;
+            }
+            acc += sum;
+        }
+        acc
+    }
+
+    /// P bridge ports <-> M modes, both directions, N samples.
+    ///
+    /// This is the closed-loop coupling term of Architecture A3. It is the whole
+    /// reason the design uses a low-rank bridge-port basis rather than per-string
+    /// mode weights: projecting every string onto every mode costs O(M) *per voice*
+    /// (~25 us/voice at M=400 — unaffordable), while projecting a fixed set of P
+    /// bridge ports onto the modes costs O(P*M) *once per sample*, independent of
+    /// how many voices are sounding. Voices then only read/write their port.
+    #[no_mangle]
+    pub extern "C" fn ij_bench_ports(p: u32, m: u32, n: u32) -> f32 {
+        let p = (p as usize).min(32);
+        let m = (m as usize).min(1024);
+        let (mut y1, mut y2) = (vec![0.001f32; m], vec![0.0f32; m]);
+        let mut a1 = vec![0.0f32; m];
+        let r2 = vec![-0.999f32; m];
+        let mut phi = vec![0.0f32; m * p];
+        for k in 0..m {
+            a1[k] = 1.9 + 0.0001 * k as f32;
+            for j in 0..p {
+                phi[k * p + j] = 0.01 + 0.001 * ((k + j) % 7) as f32;
+            }
+        }
+        let port_force = vec![0.0001f32; p];
+        let mut port_vel = vec![0.0f32; p];
+        let mut acc = 0.0f32;
+        for _ in 0..n {
+            for k in 0..m {
+                let mut drive = 0.0f32;
+                for j in 0..p {
+                    drive += phi[k * p + j] * port_force[j];
+                }
+                let y = a1[k] * y1[k] + r2[k] * y2[k] + drive;
+                y2[k] = y1[k];
+                y1[k] = y;
+            }
+            for v in port_vel.iter_mut() {
+                *v = 0.0;
+            }
+            for k in 0..m {
+                let v = y1[k] - y2[k];
+                for j in 0..p {
+                    port_vel[j] += phi[k * p + j] * v;
+                }
+            }
+            for j in 0..p {
+                acc += port_vel[j];
+            }
+        }
+        acc
+    }
+}

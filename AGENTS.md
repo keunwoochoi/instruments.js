@@ -27,6 +27,8 @@
 - Evidence is immutable-input-bound: every current claim names the exact head SHA or artifact seal it validates. After any head change, rerun the evidence or label it historical before requesting review.
 - When the owner asks to wrap a progressive session, stop new scope and use `skills/wrap-session/SKILL.md` to reconcile published stacks, evidence freshness, exact heads, blockers, and resume points.
 - Keep durable architecture and policy in their owner docs. Keep changing plans, status, review evidence, and completion state in GitHub.
+- Keep filling in the PR body's "Agentic process trace" table. The **abandoned/wasted routes** row is not a formality — it is the primary record of what did not work, and it is unrecoverable from the diff.
+- **Append to the engineering journey log (issue #51) at the end of any substantial session or campaign.** One comment, never an edit to the issue body, never a local journal file. Record what was abandoned, what caught the error, verbatim owner quotes (marked as such — the agent operates the owner's GitHub account, so authorship is not evidence of voice), decisive numbers, and any harness rule you added because of a failure. The log exists so the project's process can be written up; failures are the contribution.
 
 ## Routes
 
@@ -40,12 +42,15 @@
 | New feature > 1 PR | `skills/new-design-doc/SKILL.md` | `agentic-docs/design/TEMPLATE.md` |
 | Progressive or stacked session wrap | `skills/wrap-session/SKILL.md` | `skills/finalize-pr/SKILL.md` for any potentially merge-ready PR |
 | Any issue or PR | `.github/ISSUE_TEMPLATE/` | `.github/pull_request_template.md` when opening or finalizing a PR |
+| Piano (issue #49) | `agentic-docs/design/2026-07-13-higher-capacity-piano.md` | the earlier pianoteq-class piano doc, on the product stack, for phase history |
+| Strings / horns (issue #50) | `agentic-docs/design/2026-07-13-string-and-horn-families.md` | `skills/port-audit/SKILL.md` before touching STK |
+| Ending a session or campaign | journey log — issue #51 (append one comment; never edit the body) | — |
 
 ## Repo map
 
 | Path | Owns |
 |---|---|
-| `crates/dsp/` | Rust DSP core → WASM (SoA voice engine, all instruments, mixing) |
+| `crates/dsp/` | Rust DSP core → WASM (voice bank, all instruments, mixing). **The bank is AoS and scalar today** — `Vec<Voice>`, enum-dispatched, no SIMD. The architecture doc's "SoA voice bank" is an unrealized intent, not a description; budget accordingly (#62). |
 | `packages/core` | TS public API, worklet host, voice/track management |
 | `packages/instruments` | Instrument façades, presets, GM program map |
 | `packages/midi` | Note-list scheduler, MIDI file parsing, GM drum map, Web MIDI |

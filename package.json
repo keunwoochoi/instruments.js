@@ -26,7 +26,8 @@
     "audit:listening": "scripts/audit/listening-evidence-audit.sh",
     "loop:canonicalize-reference": "python3 scripts/dev/canonicalize_reference_receipt.py",
     "audit:harness": "scripts/audit/harness-audit.sh",
-    "audit:bundle": "scripts/audit/bundle-size-audit.sh"
+    "audit:bundle": "scripts/audit/bundle-size-audit.sh",
+    "bench:soundboard": "node scripts/dev/bench-soundboard.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1",
