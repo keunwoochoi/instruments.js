@@ -712,7 +712,12 @@ impl Engine {
             // is fatal: they are self-oscillating and would sustain at full amplitude
             // forever, not merely over-ring.
             | Instrument::Cello
-            | Instrument::Trombone => true,
+            | Instrument::Trombone
+            | Instrument::Violin
+            | Instrument::Viola
+            | Instrument::Contrabass
+            | Instrument::Trumpet
+            | Instrument::FrenchHorn => true,
         };
         if !damps {
             return;
@@ -2310,7 +2315,7 @@ mod level_gates {
     fn no_instrument_clips_anywhere_in_its_range() {
         const SR: f32 = 48000.0;
         // (instrument, lowest note, highest note)
-        let cases: [(u32, u32, u32); 7] = [
+        let cases: [(u32, u32, u32); 10] = [
             (9, 21, 108),  // piano
             (6, 28, 96),   // epiano
             (4, 40, 88),   // guitar
@@ -2318,6 +2323,9 @@ mod level_gates {
             (0, 48, 96),   // marimba
             (15, 31, 72),  // cello
             (16, 40, 65),  // trombone
+            (17, 55, 96),  // violin
+            (18, 48, 88),  // viola
+            (19, 28, 60),  // contrabass
         ];
         for (inst, lo, hi) in cases {
             let mut worst = 0.0f32;
@@ -2368,7 +2376,7 @@ mod bowed_gates {
             let f0 = 440.0 * 2f32.powf((midi as f32 - 69.0) / 12.0);
             let mut cents = Vec::new();
             for vel in [0.3f32, 1.0] {
-                let mut v = BowedVoice::start(f0, vel, sr);
+                let mut v = BowedVoice::start(Instrument::Cello, f0, vel, sr);
                 let mut buf = vec![0.0f32; (2.0 * sr) as usize];
                 v.render(&mut buf);
                 let seg = &buf[(1.2 * sr) as usize..];
@@ -2402,6 +2410,57 @@ mod bowed_gates {
             );
         }
     }
+
+    /// THE WHOLE BOWED FAMILY MUST PLAY IN TUNE ACROSS ITS RANGE, not just the cello.
+    ///
+    /// The violin and viola live an octave-plus above the cello, where the loop is only ~60
+    /// samples long and the thermal-friction residual that COOL controls shows up as a
+    /// register-dependent flatness: measured -27 cents on the top notes at COOL 0.30, gone at
+    /// 0.60. This is the same mechanism as the cello's original 97-cent flatness, just
+    /// smaller and only visible up high - which is exactly why it needs the higher instruments
+    /// to catch it. Autocorrelation (not a spectral peak) because a bright violin's
+    /// fundamental can sit below its own harmonics, and only autocorrelation is octave-robust
+    /// there.
+    #[test]
+    fn bowed_family_plays_in_tune_across_range() {
+        let sr = 48000.0;
+        // (instrument, low, high) - the register that most exposes the residual
+        let cases: [(Instrument, u8, u8); 3] = [
+            (Instrument::Violin, 55, 93),
+            (Instrument::Viola, 48, 86),
+            (Instrument::Contrabass, 28, 55),
+        ];
+        for (inst, lo, hi) in cases {
+            let mut midi = lo;
+            while midi <= hi {
+                let f0 = 440.0 * 2f32.powf((midi as f32 - 69.0) / 12.0);
+                let mut v = BowedVoice::start(inst, f0, 0.7, sr);
+                let mut buf = vec![0.0f32; (2.0 * sr) as usize];
+                v.render(&mut buf);
+                let seg = &buf[(1.2 * sr) as usize..];
+                let p = sr / f0;
+                let (l0, l1) = ((p * 0.72) as usize, (p * 1.4) as usize);
+                let ac = |l: usize| -> f32 {
+                    seg[..seg.len() - l1].iter().zip(seg[l..].iter()).map(|(a, b)| a * b).sum()
+                };
+                let mut best = l0;
+                let mut bv = f32::NEG_INFINITY;
+                for l in l0..=l1 {
+                    let a = ac(l);
+                    if a > bv { bv = a; best = l; }
+                }
+                let (y0, y1, y2) = (ac(best - 1), ac(best), ac(best + 1));
+                let d = 0.5 * (y0 - y2) / (y0 - 2.0 * y1 + y2);
+                let c = 1200.0 * ((sr / (best as f32 + d)) / f0).log2();
+                assert!(
+                    c.abs() < 30.0,
+                    "{inst:?} midi {midi}: plays {c:.0} cents off - the thermal residual is \
+                     detuning the high register (COOL too slow?)"
+                );
+                midi += 3;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2418,7 +2477,7 @@ mod brass_gates {
         for midi in [41u8, 46, 53, 58] {
             for vel in [0.35f32, 1.0] {
                 let f0 = 440.0 * 2f32.powf((midi as f32 - 69.0) / 12.0);
-                let mut v = BrassVoice::start(f0, vel, sr);
+                let mut v = BrassVoice::start(Instrument::Trombone, f0, vel, sr);
                 let mut o = [0.0f32; 1];
                 for _ in 0..(sr as usize) {
                     v.render(&mut o);
@@ -2453,7 +2512,7 @@ mod brass_gates {
         let sr = 48000.0;
         for midi in [41u8, 46, 53, 58] {
             let f0 = 440.0 * 2f32.powf((midi as f32 - 69.0) / 12.0);
-            let mut v = BrassVoice::start(f0, 0.9, sr);
+            let mut v = BrassVoice::start(Instrument::Trombone, f0, 0.9, sr);
             let mut buf = vec![0.0f32; (2.2 * sr) as usize];
             v.render(&mut buf);
             let late = &buf[(1.9 * sr) as usize..];

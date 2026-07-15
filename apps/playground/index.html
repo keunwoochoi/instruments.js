@@ -91,7 +91,10 @@
           <option value="musicbox">Music box</option>
         </optgroup>
         <optgroup label="Strings">
+          <option value="violin">Violin (bowed)</option>
+          <option value="viola">Viola (bowed)</option>
           <option value="cello">Cello (bowed)</option>
+          <option value="contrabass">Contrabass (bowed)</option>
         </optgroup>
         <optgroup label="Brass">
           <option value="trombone">Trombone</option>
@@ -210,6 +213,9 @@
       bass: -24, // C3-C5 -> C1-C3: the register a bass guitar actually occupies
       cello: -12, // cello sits an octave below the keyboard as drawn
       trombone: -12, // tenor trombone: Bb2-Bb4 territory
+      violin: +12, // violin sits an octave above the keyboard as drawn (G3-E7)
+      viola: 0, // viola: C3-E6, roughly the keyboard as drawn
+      contrabass: -24, // contrabass is the lowest orchestral string (E1-G3)
     };
     const xpose = (inst) => PREVIEW_TRANSPOSE[inst] ?? 0;
 

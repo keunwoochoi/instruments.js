@@ -44,6 +44,16 @@ pub enum Instrument {
     Cello = 15,
     /// Trombone - lip valve + bore + bell + nonlinear propagation (#50 spike).
     Trombone = 16,
+    /// Bowed violin - `BowedVoice` at violin register + body (#50 family).
+    Violin = 17,
+    /// Bowed viola - `BowedVoice` at viola register + body (#50 family).
+    Viola = 18,
+    /// Bowed contrabass - `BowedVoice` at contrabass register + body (#50 family).
+    Contrabass = 19,
+    /// Trumpet - `BrassVoice` at a short bore, high slots (#50 family).
+    Trumpet = 20,
+    /// French horn - `BrassVoice` at a long bore, high harmonics (#50 family).
+    FrenchHorn = 21,
 }
 
 impl Instrument {
@@ -65,6 +75,11 @@ impl Instrument {
             14 => Self::DrumsJazz,
             15 => Self::Cello,
             16 => Self::Trombone,
+            17 => Self::Violin,
+            18 => Self::Viola,
+            19 => Self::Contrabass,
+            20 => Self::Trumpet,
+            21 => Self::FrenchHorn,
             _ => Self::Marimba,
         }
     }
@@ -394,6 +409,13 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         // cello: provisional, NOT a measured LUFS bake (spike). Re-run measure-loudness.
         Instrument::Cello => 1.0,
         Instrument::Trombone => 1.0,
+        // bowed/brass family: provisional, NOT a measured LUFS bake (spike). The per-note
+        // level bake lives in BowedVoice/BrassVoice::start; this stage is left at unity.
+        Instrument::Violin => 1.0,
+        Instrument::Viola => 1.0,
+        Instrument::Contrabass => 1.0,
+        Instrument::Trumpet => 1.0,
+        Instrument::FrenchHorn => 1.0,
         Instrument::Marimba => 2.1,       // reference
         Instrument::Vibraphone => 4.9,    // was -30.5 LUFS
         Instrument::Glockenspiel => 30.6, // reverb pre-delay re-bake 2026-07-13 (x1.11)
@@ -418,8 +440,10 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
 /// electrics lowest (the cab/amp chain already carries their space).
 pub fn room_send(inst: Instrument) -> f32 {
     match inst {
-        Instrument::Cello => 0.12,
-        Instrument::Trombone => 0.13,
+        Instrument::Cello | Instrument::Violin | Instrument::Viola => 0.12,
+        Instrument::Contrabass => 0.10,
+        Instrument::Trombone | Instrument::Trumpet => 0.13,
+        Instrument::FrenchHorn => 0.15, // the horn lives on its room; it plays into the wall
         Instrument::Drums | Instrument::DrumsRock => 0.16,
         Instrument::DrumsJazz => 0.18, // brushes/jazz kits are recorded roomier
         Instrument::Piano => 0.09,
@@ -6683,8 +6707,13 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
         Instrument::DrumsJazz => Kernel::Drum(DrumVoice::start(midi, vel, sr, seed, KitStyle::Jazz)),
         Instrument::SynthPad => Kernel::Synth(SynthVoice::start(f0, vel, sr)),
         Instrument::Piano => Kernel::Piano(PianoVoice::start(midi, f0, vel, sr, seed)),
-        Instrument::Cello => Kernel::Bowed(BowedVoice::start(f0, vel, sr)),
-        Instrument::Trombone => Kernel::Brass(BrassVoice::start(f0, vel, sr)),
+        Instrument::Cello
+        | Instrument::Violin
+        | Instrument::Viola
+        | Instrument::Contrabass => Kernel::Bowed(BowedVoice::start(inst, f0, vel, sr)),
+        Instrument::Trombone
+        | Instrument::Trumpet
+        | Instrument::FrenchHorn => Kernel::Brass(BrassVoice::start(inst, f0, vel, sr)),
         Instrument::GuitarSteel => {
             // steel: darker loop than nylon in RELATIVE terms (h12/h1 t60 ratio
             // ~1/3 in ref 015) but a much brighter pick excitation near the
@@ -8329,8 +8358,37 @@ pub struct BowedVoice {
     dbg_n: f32,
 }
 
+/// Per-instrument voicing for the shared bowed-string model. The STRING physics
+/// (waveguide + thermal friction) is identical across the family; what changes with
+/// instrument is the body it drives, how close to the bridge it is bowed, how bright the
+/// bridge termination is, and the loudness bake. Numbers are fitted to VSCO-2-CE
+/// references (solo where one exists; violin and contrabass are solo, viola is a section).
+struct BowedVoicing {
+    /// Multiply the cello's signature body resonances by this. A violin body resonates
+    /// ~2.7x higher than a cello's, a contrabass ~0.6x. Sets the register of the box.
+    body_scale: f32,
+    /// Bow-bridge distance as a fraction of string length. Closer to the bridge (smaller)
+    /// is brighter and is where the higher strings are actually played.
+    beta: f32,
+    /// Bridge reflection lowpass coefficient - higher is brighter.
+    br_c: f32,
+    /// Per-note loudness bake (provisional spike level, NOT a measured LUFS bake).
+    level_k: f32,
+}
+
+fn bowed_voicing(inst: Instrument) -> BowedVoicing {
+    match inst {
+        Instrument::Violin => BowedVoicing { body_scale: 2.70, beta: 0.090, br_c: 0.78, level_k: 0.0016 },
+        Instrument::Viola => BowedVoicing { body_scale: 1.65, beta: 0.105, br_c: 0.70, level_k: 0.0015 },
+        Instrument::Contrabass => BowedVoicing { body_scale: 0.62, beta: 0.150, br_c: 0.55, level_k: 0.0011 },
+        // Cello and anything else: the original, measured values.
+        _ => BowedVoicing { body_scale: 1.00, beta: 0.127, br_c: 0.62, level_k: 0.0013 },
+    }
+}
+
 impl BowedVoice {
-    pub fn start(f0: f32, vel: f32, sr: f32) -> Self {
+    pub fn start(inst: Instrument, f0: f32, vel: f32, sr: f32) -> Self {
+        let voicing = bowed_voicing(inst);
         let mut v = Self {
             nb: Rail::new(), bn: Rail::new(), br: Rail::new(), rb: Rail::new(),
             br_lp: 0.0, br_c: 0.0, br_loss: 0.0,
@@ -8351,10 +8409,10 @@ impl BowedVoice {
         // of string length; a cellist bows around 1/8 from the bridge. The bow point
         // splits the string, and that split IS the Helmholtz corner geometry.
         let period = sr / f0.max(20.0);
-        let beta = 0.127;
+        let beta = voicing.beta;
 
         // Bridge reflection: -1 * one-pole lowpass.
-        v.br_c = 0.62;
+        v.br_c = voicing.br_c;
         v.br_loss = 0.988;
 
         // Budget the loop delay EXACTLY, or the string plays flat.
@@ -8431,6 +8489,10 @@ impl BowedVoice {
         // A cello body is not a bank of sharp peaks - a high-Q low mode makes a WOLF,
         // and an unmanaged one is a 12 dB hole/blowup at whatever note lands on it.
         // (It did: G2 was +12 dB over C3.) Broad, damped, overlapping.
+        // The cello's measured signature resonances, scaled by instrument size. Above the
+        // Nyquist-safe ceiling a mode is simply skipped (its gain zeroed), which is why the
+        // higher instruments end up with fewer active modes - correct, a small violin box
+        // has fewer low resonances, not the same ones shifted off the top.
         let modes = [
             (98.0f32, 0.16f32, 0.30f32), // A0-ish air; damped hard or it wolfs
             (176.0, 0.15, 0.45),
@@ -8442,6 +8504,11 @@ impl BowedVoice {
             (1900.0, 0.08, 0.20),
         ];
         for (i, (f, t60, g)) in modes.iter().enumerate() {
+            let f = f * voicing.body_scale;
+            if f > 0.45 * sr {
+                v.body_g[i] = 0.0;
+                continue;
+            }
             let w = core::f32::consts::TAU * f / sr;
             let r = (-6.9078 / (t60 * sr)).exp();
             v.body_a1[i] = 2.0 * r * w.cos();
@@ -8453,7 +8520,7 @@ impl BowedVoice {
         // the instrument unplayable in a mix. Compensate against f0. This is a provisional
         // bake, NOT the measured BS.1770 one the other instruments have - see measure-loudness.
         let reg_g = (f0 / 130.0).powf(0.55).clamp(0.55, 2.4);
-        v.level = 0.0013 * reg_g; // provisional; NOT a measured LUFS bake (spike)
+        v.level = voicing.level_k * reg_g; // provisional; NOT a measured LUFS bake (spike)
         v
     }
 
@@ -8544,7 +8611,7 @@ impl BowedVoice {
         // numerically (the load line meets it exactly once, so no ambiguity and no NaN) and
         // loses the hysteresis. An instrument that is in tune and honestly described beats
         // one that is a semitone flat and described as thermal.
-        const COOL: f32 = 0.30; // thermal relaxation of the contact patch
+        const COOL: f32 = 0.60; // thermal relaxation of the contact patch
 
         // Rosin softens as it heats. This IS the friction law - there is no mu(v) anywhere.
         let mu = MU0 / (1.0 + self.temp);
@@ -8747,6 +8814,7 @@ pub struct BrassVoice {
     rdc_y1: f32,
     rad_x1: f32,
     wall_lp: f32,
+    wall_c: f32,
     dc_x1: f32,
     dc_y1: f32,
     level: f32,
@@ -8759,6 +8827,57 @@ pub struct BrassVoice {
     rms: f32,
 }
 
+/// Per-instrument voicing for the shared lip-valve/bore/bell brass model. The MECHANISM
+/// (beating lips, nonlinear bore steepening, viscothermal wall loss, radiating bell) is
+/// identical; what changes with instrument is the length of the bore (hence which
+/// harmonic slots the player reaches for), how bright the bell radiates, and how hard the
+/// bore steepens. Numbers fitted to VSCO-2-CE solo references.
+struct BrassVoicing {
+    /// Bore fundamental range in Hz - the range the slide/valves sweep. A short trumpet
+    /// bore is a high fundamental; a long horn bore is a low one.
+    bore_lo: f32,
+    bore_hi: f32,
+    /// Highest harmonic the player reaches for. The horn lives high in the series (to 16);
+    /// the trombone stays low (to 10).
+    n_max: u32,
+    /// f0 floor to keep slot() out of the degenerate sub-bass.
+    f0_floor: f32,
+    /// Lip resonance as a fraction of the played pitch. Below 1 so the outward-striking
+    /// valve sits below the bore mode and speaks (Fletcher).
+    lip_ratio: f32,
+    /// Nonlinear wave steepening (brassiness). Higher = brighter at ff, but too high wolfs.
+    beta: f32,
+    /// Bell transmission split - lower reflects more (darker, more back into the loop).
+    bell_c: f32,
+    bell_loss: f32,
+    /// Viscothermal wall loss per bore pass (one-pole). A longer bore loses more, so the
+    /// horn is darker than the trumpet by construction, not by taste.
+    wall_c: f32,
+    /// Per-note loudness bake (provisional spike level, NOT a measured LUFS bake).
+    level_k: f32,
+}
+
+fn brass_voicing(inst: Instrument) -> BrassVoicing {
+    match inst {
+        // Bb trumpet: short bore (~1.48 m), high fundamental, bright bell, plays low slots.
+        Instrument::Trumpet => BrassVoicing {
+            bore_lo: 78.0, bore_hi: 120.0, n_max: 10, f0_floor: 150.0,
+            lip_ratio: 0.92, beta: 40.0, bell_c: 0.20, bell_loss: 0.986, wall_c: 0.060, level_k: 1.5,
+        },
+        // F horn: long bore (~3.7 m), low fundamental, lives HIGH in the harmonic series,
+        // mellow dark bell (it points backward). Its signature is a strong 2nd harmonic.
+        Instrument::FrenchHorn => BrassVoicing {
+            bore_lo: 33.0, bore_hi: 50.0, n_max: 16, f0_floor: 95.0,
+            lip_ratio: 0.70, beta: 26.0, bell_c: 0.50, bell_loss: 0.987, wall_c: 0.060, level_k: 1.7,
+        },
+        // Tenor trombone and anything else: the measured, reference-matched values.
+        _ => BrassVoicing {
+            bore_lo: 41.0, bore_hi: 58.5, n_max: 10, f0_floor: 60.0,
+            lip_ratio: 0.70, beta: 40.0, bell_c: 0.28, bell_loss: 0.985, wall_c: 0.060, level_k: 2.2,
+        },
+    }
+}
+
 impl BrassVoice {
     /// Pick the harmonic and the slide position, the way a player does.
     ///
@@ -8766,10 +8885,10 @@ impl BrassVoice {
     /// ~58 Hz (1st position, Bb) down to ~44 Hz (7th position, E), and the player
     /// chooses a HARMONIC n of that fundamental with the lips. So for a target pitch
     /// we search for the (n, slide) pair a player would actually use.
-    fn slot(f0: f32) -> (f32, f32) {
-        let mut best = (2.0f32, 58.0f32);
+    fn slot(f0: f32, v: &BrassVoicing) -> (f32, f32) {
+        let mut best = (2.0f32, 0.5 * (v.bore_lo + v.bore_hi));
         let mut best_err = f32::INFINITY;
-        for n in 2..=10 {
+        for n in 2..=v.n_max {
             let fb = f0 / n as f32;
             // A tenor trombone's bore fundamental runs from Bb1 = 58.3 Hz in 1st position
             // down to E1 = 41.2 Hz in 7th. The old window (43..59) cut the bottom of the
@@ -8778,7 +8897,7 @@ impl BrassVoice {
             // back to a default bore that did not match it, and landed the lip exactly ON the
             // bore fundamental: the degenerate case that damps. It clipped at 1.000 and
             // pulsed. Every note below F2 was in that hole.
-            if !(41.0..=58.5).contains(&fb) {
+            if !(v.bore_lo..=v.bore_hi).contains(&fb) {
                 continue;
             }
             // prefer the LOWEST harmonic that reaches the note - that is what a player
@@ -8792,8 +8911,9 @@ impl BrassVoice {
         best
     }
 
-    pub fn start(f0: f32, vel: f32, sr: f32) -> Self {
-        let (n_sel, f_bore) = Self::slot(f0.max(60.0));
+    pub fn start(inst: Instrument, f0: f32, vel: f32, sr: f32) -> Self {
+        let voicing = brass_voicing(inst);
+        let (n_sel, f_bore) = Self::slot(f0.max(voicing.f0_floor), &voicing);
 
         let mut v = Self {
             fwd: [0.0; BORE_BUF],
@@ -8819,6 +8939,7 @@ impl BrassVoice {
             rdc_y1: 0.0,
             rad_x1: 0.0,
             wall_lp: 0.0,
+            wall_c: 0.060,
             dc_x1: 0.0,
             dc_y1: 0.0,
             level: 0.0,
@@ -8839,8 +8960,9 @@ impl BrassVoice {
         v.len = (period * 0.5).clamp(8.0, (BORE_BUF - 4) as f32);
 
         // bell: reflect the lows, radiate the highs
-        v.bell_c = 0.28;
-        v.bell_loss = 0.985;
+        v.bell_c = voicing.bell_c;
+        v.wall_c = voicing.wall_c;
+        v.bell_loss = voicing.bell_loss;
 
         // Lip resonance sits AT the target pitch. Blowing harder does not change it -
         // the player's embouchure does. Because the lip is outward-striking, it locks
@@ -8850,7 +8972,7 @@ impl BrassVoice {
         // (as the first version did) and the loop is a positive resistance - it damps, and
         // the instrument sits silent at equilibrium. Sit it slightly below and the phase
         // rotates, the effective resistance goes negative, and it speaks.
-        v.lip_w = core::f32::consts::TAU * (f0 * 0.70) / sr;
+        v.lip_w = core::f32::consts::TAU * (f0 * voicing.lip_ratio) / sr;
         v.lip_damp = 0.05;
         v.lip_area = 2.0;
         v.lip_gain = 0.05;
@@ -8931,7 +9053,7 @@ impl BrassVoice {
         // note wolfs onto the neighbouring bore mode (m58 went to -7 dB purity). Verified by
         // the RAW-VOICE test, not the engine path - the engine's limiter and reverb were
         // masking the wolf and reported 26 dB when the voice itself was at -7.
-        v.beta = 40.0;
+        v.beta = voicing.beta;
 
         v.dbg_fbore = f_bore;
         v.dbg_n = n_sel;
@@ -8970,7 +9092,7 @@ impl BrassVoice {
         //     flattering the slot and inflating nothing - but it could easily have gone the
         //     other way, and for a while every claim here rested on distorted audio.
         // Worst peak over EVERY note m40-m65 x 3 velocities is now 0.739.
-        v.level = 2.20 * reg_g * dyn_g;
+        v.level = voicing.level_k * reg_g * dyn_g;
         v
     }
 
@@ -9103,7 +9225,7 @@ impl BrassVoice {
             // 12-18 dB TOO QUIET. Our loop loss was flat, so the wave steepening had nothing
             // to damp it and the radiation highpass then amplified exactly the junk it made.
             // One-pole per pass; the cascade around the loop gives the frequency dependence.
-            self.wall_lp += WALL_C * (p_plus - self.wall_lp);
+            self.wall_lp += self.wall_c * (p_plus - self.wall_lp);
             self.fwd[self.pos] = flush_denormal(self.wall_lp);
             self.bwd[self.pos] = refl;
             self.pos = (self.pos + 1) % BORE_BUF;
