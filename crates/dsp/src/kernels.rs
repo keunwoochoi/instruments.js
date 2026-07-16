@@ -8351,6 +8351,11 @@ pub struct BowedVoice {
 
     dc_x1: f32,
     dc_y1: f32,
+    // bow noise (stochastic stick-slip air)
+    bow_noise: f32,
+    noise_st: u32,
+    noise_bp: f32,  // bandpass state (lowpass of the highpassed noise)
+    noise_hp: f32,  // highpass state
     // radiation brightness tilt (one-zero highpass)
     tilt: f32,
     tilt_x1: f32,
@@ -8387,6 +8392,10 @@ struct BowedVoicing {
     br_c: f32,
     /// Per-note loudness bake (provisional spike level, NOT a measured LUFS bake).
     level_k: f32,
+    /// Bow noise level: the stochastic micro-slips of the stick-slip contact make broadband
+    /// air, band-passed by the string and body. Real and audible; more on the violin (thin
+    /// string, fast bow) than the contrabass. Kept low so it reads as air, not hiss.
+    bow_noise: f32,
     /// Radiation brightness tilt (one-zero highpass coefficient, 0..1). The bridge/body
     /// radiates high frequencies more efficiently than low (radiation resistance rises with
     /// frequency); this lifts the upper harmonics the dark Helmholtz corner leaves too weak.
@@ -8404,11 +8413,11 @@ struct BowedVoicing {
 
 fn bowed_voicing(inst: Instrument) -> BowedVoicing {
     match inst {
-        Instrument::Violin => BowedVoicing { body_scale: 2.70, beta: 0.075, br_c: 0.95, level_k: 0.0016, tilt: 0.55, speak: 0.030, vib_rate: 5.0, vib_depth: 9.0 },
-        Instrument::Viola => BowedVoicing { body_scale: 1.65, beta: 0.085, br_c: 0.92, level_k: 0.0015, tilt: 0.50, speak: 0.040, vib_rate: 5.2, vib_depth: 9.0 },
-        Instrument::Contrabass => BowedVoicing { body_scale: 0.62, beta: 0.110, br_c: 0.80, level_k: 0.0011, tilt: 0.35, speak: 0.070, vib_rate: 4.0, vib_depth: 4.0 },
+        Instrument::Violin => BowedVoicing { body_scale: 2.70, beta: 0.075, br_c: 0.95, level_k: 0.0016, bow_noise: 0.14, tilt: 0.55, speak: 0.030, vib_rate: 5.0, vib_depth: 9.0 },
+        Instrument::Viola => BowedVoicing { body_scale: 1.65, beta: 0.085, br_c: 0.92, level_k: 0.0015, bow_noise: 0.11, tilt: 0.50, speak: 0.040, vib_rate: 5.2, vib_depth: 9.0 },
+        Instrument::Contrabass => BowedVoicing { body_scale: 0.62, beta: 0.110, br_c: 0.80, level_k: 0.0011, bow_noise: 0.05, tilt: 0.35, speak: 0.070, vib_rate: 4.0, vib_depth: 4.0 },
         // Cello and anything else: the original, measured values.
-        _ => BowedVoicing { body_scale: 1.00, beta: 0.080, br_c: 0.90, level_k: 0.0010, tilt: 0.45, speak: 0.050, vib_rate: 4.8, vib_depth: 7.0 }, // cello
+        _ => BowedVoicing { body_scale: 1.00, beta: 0.080, br_c: 0.90, level_k: 0.0010, bow_noise: 0.09, tilt: 0.45, speak: 0.050, vib_rate: 4.8, vib_depth: 7.0 }, // cello
     }
 }
 
@@ -8427,6 +8436,7 @@ impl BowedVoice {
             body_a1: [0.0; 8], body_r2: [0.0; 8], body_g: [0.0; 8],
             body_y1: [0.0; 8], body_y2: [0.0; 8],
             dc_x1: 0.0, dc_y1: 0.0,
+            bow_noise: 0.0, noise_st: 0x2545_F491, noise_bp: 0.0, noise_hp: 0.0,
             tilt: 0.0, tilt_x1: 0.0,
             vib_buf: [0.0; VIB_BUF], vib_pos: 0, vib_phase: 0.0,
             vib_inc: 0.0, vib_amp: 0.0, vib_base: 0.0, vib_env: 0.0,
@@ -8556,6 +8566,8 @@ impl BowedVoice {
         //   A = depth_cents * ln2 * sr / (1200 * 2*pi * rate).
         // Base delay keeps the read strictly in the past even at the trough.
         v.tilt = voicing.tilt;
+        v.bow_noise = voicing.bow_noise;
+        v.noise_st = 0x2545_F491 ^ (f0.to_bits());
         v.vib_inc = core::f32::consts::TAU * voicing.vib_rate / sr;
         v.vib_amp = voicing.vib_depth * core::f32::consts::LN_2 * sr
             / (1200.0 * core::f32::consts::TAU * voicing.vib_rate.max(0.5));
@@ -8725,7 +8737,18 @@ impl BowedVoice {
             // 160-mode board) was added here and measured NO CHANGE AT ALL, at any gain:
             // the signal ARRIVING at the bridge has no high frequencies for a body to
             // radiate. That is what rules the body out and puts the fault in the string.
-            let drive = at_bridge;
+            // bow noise: white -> bandpass (the bridge/body region), gated by the bow envelope
+            // and by whether the string is slipping (noise is strongest during slip). Injected
+            // at the bridge so the body filters it, the way real bow noise reaches the ear.
+            self.noise_st = self.noise_st.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let white = (self.noise_st >> 9) as f32 * (2.0 / 8_388_608.0) - 1.0;
+            self.noise_hp = 0.7 * self.noise_hp + 0.3 * white;
+            let hp = white - self.noise_hp; // highpass ~ upper band
+            self.noise_bp = 0.6 * self.noise_bp + 0.4 * hp; // tame the very top
+            let slip = if self.stuck { 0.4 } else { 1.0 };
+            let noise = self.noise_bp * self.bow_noise * self.env * slip;
+
+            let drive = at_bridge + noise;
             let mut body = 0.0;
             for i in 0..8 {
                 let y = self.body_a1[i] * self.body_y1[i]
