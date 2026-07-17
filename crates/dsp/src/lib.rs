@@ -2321,12 +2321,22 @@ mod level_gates {
     fn no_instrument_clips_anywhere_in_its_range() {
         const SR: f32 = 48000.0;
         // (instrument, lowest note, highest note)
-        let cases: [(u32, u32, u32); 11] = [
+        // Every EXPOSED instrument, and stepped every SEMITONE (a hot note hides between a
+        // coarse grid - the matrix scorecard found guitar-steel/bass/marimba clipping on
+        // notes the old every-3rd-semitone gate stepped over, and the steel/electric/distorted
+        // guitars were not covered at all).
+        let cases: [(u32, u32, u32); 17] = [
             (9, 21, 108),  // piano
             (6, 28, 96),   // epiano
-            (4, 40, 88),   // guitar
+            (4, 40, 88),   // guitar nylon
+            (10, 40, 88),  // guitar steel
+            (11, 40, 88),  // guitar electric
+            (12, 40, 88),  // guitar distorted
             (5, 28, 67),   // bass
             (0, 48, 96),   // marimba
+            (1, 53, 96),   // vibraphone
+            (2, 79, 105),  // glockenspiel
+            (3, 72, 105),  // music box
             (15, 31, 72),  // cello
             (16, 40, 65),  // trombone
             (17, 55, 96),  // violin
@@ -2343,7 +2353,7 @@ mod level_gates {
                     let mut e = Engine::new(SR);
                     e.set_track(0, Instrument::from_u32(inst), 1.0, 0.0);
                     e.note_on(0, midi, vel);
-                    for _ in 0..500 {
+                    for _ in 0..300 {
                         e.process(128);
                         for &v in e.out_l[..128].iter() {
                             if v.abs() > worst {
@@ -2353,7 +2363,7 @@ mod level_gates {
                         }
                     }
                 }
-                midi += 3;
+                midi += 1;
             }
             assert!(
                 worst < 0.95,
