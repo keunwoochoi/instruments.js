@@ -58,6 +58,12 @@ pub enum Instrument {
     Saxophone = 22,
     /// Tonewheel drawbar organ - additive (fills GM 16-23).
     Organ = 23,
+    /// Xylophone - bright short wooden bars, modal (GM 14).
+    Xylophone = 24,
+    /// Tubular bells / chimes - long inharmonic bell partials, modal (GM 15).
+    TubularBells = 25,
+    /// Celesta - soft struck steel bars, modal (GM 9).
+    Celesta = 26,
 }
 
 impl Instrument {
@@ -86,6 +92,9 @@ impl Instrument {
             21 => Self::FrenchHorn,
             22 => Self::Saxophone,
             23 => Self::Organ,
+            24 => Self::Xylophone,
+            25 => Self::TubularBells,
+            26 => Self::Celesta,
             _ => Self::Marimba,
         }
     }
@@ -424,6 +433,9 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::FrenchHorn => 1.0,
         Instrument::Saxophone => 1.0,
         Instrument::Organ => 1.0,
+        Instrument::Xylophone => 5.2,
+        Instrument::TubularBells => 8.3,
+        Instrument::Celesta => 8.0,
         Instrument::Marimba => 1.70,       // reference
         Instrument::Vibraphone => 4.9,    // was -30.5 LUFS
         Instrument::Glockenspiel => 30.6, // reverb pre-delay re-bake 2026-07-13 (x1.11)
@@ -454,6 +466,9 @@ pub fn room_send(inst: Instrument) -> f32 {
         Instrument::FrenchHorn => 0.15, // the horn lives on its room; it plays into the wall
         Instrument::Saxophone => 0.12,
         Instrument::Organ => 0.10,
+        Instrument::Xylophone => 0.10,
+        Instrument::TubularBells => 0.14,
+        Instrument::Celesta => 0.12,
         Instrument::Drums | Instrument::DrumsRock => 0.16,
         Instrument::DrumsJazz => 0.18, // brushes/jazz kits are recorded roomier
         Instrument::Piano => 0.09,
@@ -6605,6 +6620,35 @@ pub fn start_voice(inst: Instrument, midi: u32, vel: f32, sr: f32, seed: u32) ->
             0.0,
             seed,
         )),
+        Instrument::Xylophone => {
+            // hard bright mallet, rosewood/synthetic bars tuned to the 3rd (a 12th up),
+            // short decay that shortens toward the top of the keyboard
+            let key = ((midi as f32 - 65.0) / 30.0).clamp(0.0, 1.0);
+            let t = (0.45 - 0.22 * key).clamp(0.12, 0.5);
+            Kernel::Modal(ModalVoice::start(f0, vel, sr, &[
+                ModeDef { ratio: 1.0, amp: 1.0, t60: t },
+                ModeDef { ratio: 3.0, amp: 0.45, t60: t * 0.35 },
+                ModeDef { ratio: 6.5, amp: 0.18, t60: t * 0.18 },
+                ModeDef { ratio: 9.7, amp: 0.06, t60: t * 0.10 },
+            ], 0.55, 0.11, 0.0, seed))
+        }
+        Instrument::TubularBells => Kernel::Modal(ModalVoice::start(f0, vel, sr, &[
+            // a chime's fundamental is WEAK; the strong 2nd/3rd define the "strike tone",
+            // the upper partials are inharmonic (Rossing). Long decay - several seconds.
+            ModeDef { ratio: 1.0, amp: 0.40, t60: 5.0 },
+            ModeDef { ratio: 2.0, amp: 1.00, t60: 4.5 },
+            ModeDef { ratio: 3.01, amp: 0.60, t60: 3.5 },
+            ModeDef { ratio: 4.17, amp: 0.35, t60: 2.5 },
+            ModeDef { ratio: 5.43, amp: 0.18, t60: 1.8 },
+            ModeDef { ratio: 6.80, amp: 0.08, t60: 1.2 },
+        ], 1.0, 0.10, 0.0, seed)),
+        Instrument::Celesta => Kernel::Modal(ModalVoice::start(f0, vel, sr, &[
+            // struck steel bars with felt hammers over resonators - like a glock but WARMER
+            // and gentler (softer strike, quicker overtone decay)
+            ModeDef { ratio: 1.0, amp: 1.0, t60: 1.6 },
+            ModeDef { ratio: 4.0, amp: 0.16, t60: 0.55 },
+            ModeDef { ratio: 10.1, amp: 0.05, t60: 0.28 },
+        ], 1.0, 0.11, 0.0, seed)),
         Instrument::MusicBox => Kernel::Modal(ModalVoice::start(
             f0,
             vel,

@@ -35,7 +35,10 @@ export interface ParsedMidi {
 /** GM program number (0-based) → instruments.js family. */
 export function gmProgramToGroup(program: number): string {
   if (program < 8) return "piano";
-  if (program < 16) return program === 8 || program === 11 ? "vibraphone" : "mallet"; // celesta/glock/musicbox/vibes/marimba/xylo/bells/dulcimer
+  if (program < 16) {
+    // chromatic percussion, GM 8-15
+    return ["celesta", "glockenspiel", "musicbox", "vibraphone", "marimba", "xylophone", "tubularbells", "musicbox"][program - 8]!;
+  }
   if (program < 24) return "organ"; // drawbar organ
   if (program === 24) return "guitar"; // nylon
   if (program === 25) return "guitar-steel";

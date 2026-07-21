@@ -695,7 +695,8 @@ impl Engine {
         let damps = match inst {
             // Free-ringing struck bars: no damper on the instrument, so note-off does
             // nothing. This is correct and deliberate - do not "fix" it.
-            Instrument::Marimba | Instrument::Glockenspiel | Instrument::MusicBox => false,
+            Instrument::Marimba | Instrument::Glockenspiel | Instrument::MusicBox
+            | Instrument::Xylophone | Instrument::TubularBells | Instrument::Celesta => false,
             // One-shot kits: the hit is the note.
             Instrument::Drums | Instrument::DrumsRock | Instrument::DrumsJazz => false,
             // Damped/sustained families.
@@ -2331,7 +2332,7 @@ mod level_gates {
         // coarse grid - the matrix scorecard found guitar-steel/bass/marimba clipping on
         // notes the old every-3rd-semitone gate stepped over, and the steel/electric/distorted
         // guitars were not covered at all).
-        let cases: [(u32, u32, u32); 18] = [
+        let cases: [(u32, u32, u32); 21] = [
             (9, 21, 108),  // piano
             (6, 28, 96),   // epiano
             (4, 40, 88),   // guitar nylon
@@ -2350,6 +2351,9 @@ mod level_gates {
             (19, 28, 60),  // contrabass
             (20, 53, 84),  // trumpet
             (23, 36, 96),  // organ
+            (24, 65, 108), // xylophone
+            (25, 48, 89),  // tubular bells
+            (26, 60, 108), // celesta
         ];
         for (inst, lo, hi) in cases {
             let mut worst = 0.0f32;

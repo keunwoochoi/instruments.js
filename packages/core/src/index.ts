@@ -57,6 +57,9 @@ export type InstrumentGroup =
   | "contrabass"
   | "trumpet"
   | "organ"
+  | "xylophone"
+  | "tubularbells"
+  | "celesta"
   // naming aliases (Keunwoo 2026-07-12): resolve to the same engines
   | "guitar-acoustic"
   | "guitar-acoustic-nylon"
@@ -89,6 +92,9 @@ const INST = {
   contrabass: 19,
   trumpet: 20,
   organ: 23,
+  xylophone: 24,
+  tubularBells: 25,
+  celesta: 26,
 } as const;
 
 /**
@@ -121,6 +127,9 @@ const GROUP_TO_INSTRUMENT: Record<InstrumentGroup, number> = {
   contrabass: INST.contrabass,
   trumpet: INST.trumpet,
   organ: INST.organ,
+  xylophone: INST.xylophone,
+  tubularbells: INST.tubularBells,
+  celesta: INST.celesta,
   // "acoustic"/"electric bass" naming aliases (Keunwoo 2026-07-12) — canonical names above stay
   "guitar-acoustic": INST.guitar,
   "guitar-acoustic-nylon": INST.guitar,
