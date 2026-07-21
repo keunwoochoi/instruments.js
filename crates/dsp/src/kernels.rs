@@ -9763,13 +9763,19 @@ impl BrassVoice {
 ///      real tenor sax), not the clarinet's odd-only. A true conical bore was not needed - the
 ///      nonlinear bore steepening (beta = 8) generates the even harmonics a cone would, and a
 ///      one-pole wall loss (wall_c = 0.12) gives the correct rolloff. Fitted to VCSL.
-/// REMAINING, and it is the hard one: the oscillation is WEAK (rms ~0.004) and speaks only at
-/// ff; below ~vel 0.9 and above ~m67 it does not start. The loop gain is only marginally >1
-/// and does not scale with blowing pressure, so there is no dynamic range. This is the
-/// reed-bore COUPLING (the flow<->pressure impedance, normalised to 1 here) and the operating
-/// point being dragged out of the negative-resistance region by the bore DC pressure. That is
-/// the last blocker before the sax is playable, and it wants a real coupling/impedance model,
-/// not another parameter sweep.
+/// REMAINING (updated 2026-07-20): IGNITION IS FIXED - it now oscillates at EVERY velocity,
+/// not just ff. The blocker was the mouth pressure gamma sitting BELOW the oscillation
+/// threshold at low velocity (pm 0.28+0.20*vv -> gamma 0.28-0.48; the threshold is ~0.55 here,
+/// loss-raised from the ideal 1/3), plus a startup seed that scaled with velocity so soft notes
+/// never got a kick. Fixed: gamma 0.72+0.08*vv (above threshold always) and a fixed ignition
+/// kick. (This cost many wasted iterations to a TESTING bug - a regex that edited BrassVoice's
+/// pm instead of the reed's, count=1 hitting the first match; it also silently corrupted the
+/// trombone until caught. Lesson logged.)
+/// The STRUCTURAL blocker that remains: the limit-cycle AMPLITUDE is tiny (rms ~0.012) and does
+/// NOT scale with gamma (0.60->0.82 barely moves it), so there is no dynamic range, and the
+/// high notes go mode-ambiguous (f0/2 ~ f0 at m70). The reed-bore coupling delivers too little
+/// energy per cycle - almost certainly the flow<->pressure impedance (Zc normalised to 1). That
+/// wants a from-scratch, reference-validated reed-junction reimplementation, not a sweep. Dormant.
 /// Single-reed woodwind (saxophone). A cousin of BrassVoice - same bore waveguide, bell and
 /// viscothermal wall loss - but the valve is a REED, not a lip, and that flips two things:
 ///
@@ -9861,7 +9867,7 @@ impl ReedVoice {
 
         // breath: harder = more pressure = brighter + louder. A sax has a wide dynamic range.
         let vv = vel.clamp(0.05, 1.0);
-        v.pm = 0.28 + 0.20 * vv;
+        v.pm = 0.72 + 0.08 * vv; // gamma above the oscillation threshold at all velocities
         v.env_rate = 1.0 - (-1.0 / (0.020 * sr)).exp();
 
         v.beta = 8.0; // bore steepening -> even harmonics (the conical-bore full series, approximated) (a sax gets brassy when pushed, but less than brass)
@@ -9875,7 +9881,7 @@ impl ReedVoice {
         // perturbed; from perfect silence it never starts. (The brass has the same need - it
         // kicks the lip velocity.)
         for i in 0..(v.len as usize).min(BORE_BUF - 1) {
-            v.fwd[i] = 0.05 * vv;
+            v.fwd[i] = 0.25; // fixed ignition kick (velocity-independent)
         }
         v
     }
