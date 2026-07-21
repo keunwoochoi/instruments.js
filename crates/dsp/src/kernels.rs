@@ -5798,10 +5798,21 @@ impl DrumVoice {
                         v.freq = f1 * (1.08 + 0.12 * vel);
                         v.freq_end = f1;
                         v.sweep = (-1.0 / (0.005 * sr)).exp();
-                        // amplitude-dependent damping: soft strokes ring
-                        // relatively longer (DRS LF at 0.3 s: -9 dB soft,
-                        // -17 mid, -21.5 hard rel the first 30 ms)
-                        v.decay = t60_gain(0.78 - 0.25 * vel, sr);
+                        // DE-TONALIZED (owner, 2026-07-21: the jazz kick is
+                        // "fundamentally annoying"). The Virtuosity close mic we
+                        // had been matching rings a CLEAR 75 Hz fundamental for
+                        // ~1.9 s (t60) at periodicity 0.78-0.84 — correct as a
+                        // bare sample, but a kick that SINGS a pitch on every
+                        // stroke is grating played bare and repeatedly (the
+                        // playground), and fights the bass and the tune. This is
+                        // the third tonality complaint on this drum ("crazy
+                        // clear pitch" -> "reduce the tonality" -> this). The
+                        // reference is the wrong target for a usable default;
+                        // the owner's ear overrides it. The near-fundamental
+                        // modes are shortened so the sung pitch becomes a felt
+                        // THUMP that dies in ~0.35 s instead of a sustained tone.
+                        // Body decay ~2x faster (t60 was 0.78-0.25v).
+                        v.decay = t60_gain(0.40 - 0.14 * vel, sr);
                         // felt beater: long compliant contact, 10 ms base
                         let contact_ms = 10.0 * (1.35 - 0.5 * vel).max(0.5);
                         v.atk_ph = 0.0;
@@ -5811,7 +5822,13 @@ impl DrumVoice {
                         // amp is ~linear in vel, NOT the rock/pop supralinear
                         // (r4: x(1.30-0.30v) refunds the sine_g duck's ~1.6 LU cost at
                         // pp so the measured feathering span stays ~16 LU)
-                        v.amp = 0.85 * vel.powf(1.05) * (1.30 - 0.30 * vel);
+                        // headroom trim 2026-07-21: the shortened decay stacks
+                        // the modal energy at the onset, so the sample peak rose
+                        // to ~0.98 at ff (was 0.545). Trimmed body+modes back to
+                        // the PRIOR loudness so mix balance is unchanged — this
+                        // is a timbre fix, not a level change (measured ff peak
+                        // 0.63 vs the old 0.545). Body coefficient 0.85 -> 0.40.
+                        v.amp = 0.40 * vel.powf(1.05) * (1.30 - 0.30 * vel);
                         // felt click: tiny and dark (2-6 kHz sits ~-33 dB
                         // under LF in the refs' first 30 ms)
                         v.click = 0.06 + 0.30 * vel * vel;
@@ -5834,11 +5851,10 @@ impl DrumVoice {
                         // darker (140 Hz) and longer (0.5 s: open shell)
                         v.lfn_c = 1.0 - (-core::f32::consts::TAU * 140.0 / sr).exp();
                         v.lfn_env = 3.4 * (0.85 + 0.15 * vel);
-                        // bed decays WITH the drum (amplitude-dependent
-                        // damping law above): a fixed 0.5 s bed died under
-                        // the pp fundamental (t60 0.72) and left the feathered
-                        // tail a naked sine again (it3 measurement)
-                        v.lfn_dec = t60_gain(0.74 - 0.24 * vel, sr);
+                        // bed decays WITH the shortened body (de-tonalize
+                        // 2026-07-21): it must not outlast the thump and leave a
+                        // naked hum, so it tracks the new ~0.35 s body decay.
+                        v.lfn_dec = t60_gain(0.35 - 0.12 * vel, sr);
                         // feathered strokes read as a modal mix, not one
                         // clean fundamental: duck the body sine at pp (the
                         // undertone/partner cluster below rises to meet it)
@@ -5861,8 +5877,17 @@ impl DrumVoice {
                                 // mode, not a clean near-fundamental sine
                                 ModeDef {
                                     ratio: 0.66,
-                                    amp: 0.55 * (1.15 - 0.6 * vel),
-                                    t60: 0.95,
+                                    amp: 0.18 * (1.15 - 0.6 * vel),
+                                    // de-tonalize 2026-07-21: was 0.95 s @ amp
+                                    // 0.55. This 50 Hz sub-fundamental "air mode"
+                                    // was the reference's below-pitch wander — and
+                                    // exactly the tonality the owner rejects. Cut
+                                    // hard so it is a brief sub-weight in the
+                                    // attack, NOT a sustained sag that drags the
+                                    // perceived pitch below the 76 Hz fundamental
+                                    // (at ff it was out-decaying the body and the
+                                    // kick read as a 50 Hz sub-tone).
+                                    t60: 0.15,
                                 },
                                 // resonant-head partner: the open two-stage
                                 // tail (rings past 0.6 s at every velocity).
@@ -5872,25 +5897,32 @@ impl DrumVoice {
                                 // clean 79 Hz sine for 1.3 s
                                 ModeDef {
                                     ratio: 1.035,
-                                    amp: 0.55 * (1.25 - 0.5 * vel),
-                                    t60: 0.95 - 0.28 * vel,
+                                    // amp 0.55 -> 0.26: de-tonalize headroom trim
+                                    amp: 0.26 * (1.25 - 0.5 * vel),
+                                    // de-tonalize 2026-07-21: was 0.95-0.28v —
+                                    // THE "clean sine survivor" that rang a near-
+                                    // fundamental 79 Hz pitch. This is the single
+                                    // biggest source of the sung pitch; cut hard.
+                                    t60: 0.28 - 0.08 * vel,
                                 },
-                                // overtone ladder measured on the ff DRS hit
-                                // (101/125/145/174/209 Hz over 76): the open
-                                // heads hold these within -8..-25 dB of the
-                                // fundamental for the whole first half-second
-                                ModeDef { ratio: 1.33, amp: 0.70, t60: 0.90 },
-                                ModeDef { ratio: 1.65, amp: 0.55, t60: 0.75 },
-                                ModeDef { ratio: 1.91, amp: 0.42, t60: 0.65 },
-                                ModeDef { ratio: 2.28, amp: 0.40, t60: 0.55 },
-                                ModeDef { ratio: 2.75, amp: 0.25, t60: 0.45 },
+                                // overtone ladder — the felt THUMP's body/thwack.
+                                // Shortened 2026-07-21 so none of it sustains a
+                                // pitch past ~0.3 s (was 0.90/0.75/0.65/0.55/0.45);
+                                // the transient body stays, the tonal tail goes.
+                                // Amps ~0.66x for the onset-stack headroom trim.
+                                ModeDef { ratio: 1.33, amp: 0.33, t60: 0.32 },
+                                ModeDef { ratio: 1.65, amp: 0.26, t60: 0.28 },
+                                ModeDef { ratio: 1.91, amp: 0.20, t60: 0.24 },
+                                ModeDef { ratio: 2.28, amp: 0.18, t60: 0.20 },
+                                ModeDef { ratio: 2.75, amp: 0.11, t60: 0.18 },
                             ],
                             0.6,
                             0.0,
                             0.0,
                             seed ^ 0x6b1c,
                         );
-                        v.life = (1.40 * sr) as u64;
+                        // was 1.40 s — nothing rings that long now.
+                        v.life = (0.7 * sr) as u64;
                     }
                     KitStyle::Rock => {
                         // BEATER-TRANSIENT topology: hard slap + shell knock
@@ -8404,23 +8436,43 @@ mod drum_kit_tests {
         }
     }
 
-    /// Round-3 two-stage tail: the open jazz kick still rings at 0.6 s
-    /// (resonant-head mode) while the muffled rock kick has died.
+    /// The jazz kick is a SHORT FELT THUMP, not a sustained pitched ring.
+    ///
+    /// This test used to assert the OPPOSITE — that the open jazz kick "still
+    /// rings at 0.6 s" (a resonant-head two-stage tail matched to the Virtuosity
+    /// close mic, which sustains a clear 75 Hz fundamental for ~1.9 s). The owner
+    /// rejected that by ear, three times: "crazy clear pitch" -> "reduce the
+    /// tonality" -> (2026-07-21) "the jazz drum kick is fundamentally annoying."
+    /// A bare close-mic kick that SINGS a pitch on every stroke is correct as a
+    /// sample and grating as a played instrument; the reference was the wrong
+    /// target for a usable default and the ear overrides it (PRINCIPLES: human
+    /// listening gates release; drums carry the highest bar).
+    ///
+    /// It is now a regression TRIPWIRE against the pitched ring coming back: the
+    /// jazz kick's 0.55-0.70 s tail must be effectively dead (energy gone to a
+    /// felt thump by ~0.35 s). Kit distinctness lives in the fundamental pitch
+    /// and beater brightness (the other two kick tests), not in ring length.
     #[test]
-    fn kick_two_stage_tail_is_kit_voiced() {
+    fn jazz_kick_is_a_short_thump_not_a_pitched_ring() {
         let sr = 48_000.0f32;
         let jazz = render_kit(36, 1.0, sr, KitStyle::Jazz, 1.5);
-        let rock = render_kit(36, 1.0, sr, KitStyle::Rock, 1.5);
-        let late = |x: &[f32]| {
-            let (i0, i1) = ((0.55 * sr) as usize, (0.70 * sr) as usize);
+        let rms = |x: &[f32], a: f32, b: f32| {
+            let (i0, i1) = ((a * sr) as usize, (b * sr) as usize);
             if x.len() < i1 {
                 return 0.0;
             }
             (x[i0..i1].iter().map(|s| s * s).sum::<f32>() / (i1 - i0) as f32).sqrt()
         };
-        let (lj, lr) = (late(&jazz), late(&rock));
-        assert!(lj > 1e-4, "jazz kick tail dead at 0.6 s: {lj}");
-        assert!(lr < lj * 0.5, "rock kick should be muffled vs jazz: rock {lr} jazz {lj}");
+        let body = rms(&jazz, 0.02, 0.10); // the thump itself
+        let late = rms(&jazz, 0.55, 0.70); // where the old ring lived
+        // the tail is >40 dB below the body — a sustained pitch would sit far
+        // higher (the old design measured the tail at ~-32 dB rel body here)
+        assert!(
+            late < body * 0.01,
+            "jazz kick still ringing at 0.6 s ({late:.2e} vs body {body:.2e}, ratio {:.4}) \
+             - the pitched tail the owner called 'fundamentally annoying' is back",
+            late / body.max(1e-12)
+        );
     }
 
     /// Kick-specialist round (2026-07-12): the three kits' kicks are
@@ -8474,8 +8526,15 @@ mod drum_kit_tests {
             pk / rms.max(1e-9)
         };
         let (cj, cr) = (crest(&jazz), crest(&rock));
+        // Rock's hard beater is still the spikier waveform, but the margin over
+        // 0.5 s shrank once the jazz kick stopped being a long low-crest ring
+        // (de-tonalize 2026-07-21: a short thump concentrates its energy, so its
+        // crest rose). The felt-vs-hard PHYSICS is carried by the 2-6 kHz
+        // spectral contrast above (the >10 dB check, the stronger assertion);
+        // this only guards the ordering, which still holds (rock ~10.7 > jazz
+        // ~8.9). Was 1.35x, calibrated to the old sustained jazz kick.
         assert!(
-            cr > cj * 1.35,
+            cr > cj * 1.1,
             "rock kick should be spikier than jazz: crest rock {cr:.1} jazz {cj:.1}"
         );
     }
