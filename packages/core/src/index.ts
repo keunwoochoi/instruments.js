@@ -158,12 +158,21 @@ export interface TrackOptions {
 }
 
 export interface Track {
+  /** The instrument currently mounted on this track (see `setInstrument`). */
   readonly instrument: InstrumentGroup;
   readonly index: number;
   noteOn(midiPitch: number, velocity?: number, timeSeconds?: number): void;
   noteOff(midiPitch: number, timeSeconds?: number): void;
   /** Sustain pedal (CC64): while down, note-offs are deferred until pedal-up. */
   pedal(on: boolean, timeSeconds?: number): void;
+  /**
+   * Re-point this track at a different instrument, reusing the same slot, gain,
+   * and pan. Lets a live surface (e.g. a keyboard whose instrument the user
+   * switches) run on ONE track instead of leaking a slot per instrument and
+   * exhausting the engine's track limit. Sounding voices keep ringing on their
+   * old instrument; the next `noteOn` uses the new one.
+   */
+  setInstrument(instrument: InstrumentGroup): void;
   set(options: TrackOptions): void;
 }
 
@@ -335,9 +344,28 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
     return idx;
   }
 
-  function makeTrack(instrument: InstrumentGroup, idx: number): Track {
+  function makeTrack(instrument: InstrumentGroup, idx: number, opts: TrackOptions): Track {
+    // Mutable slot state so re-pointing the instrument or nudging gain/pan
+    // preserves the fields the caller did not touch (the "track" event carries
+    // all three, so each field must be remembered, not defaulted every time).
+    let curInst = instrument;
+    let curGain = opts.gain ?? 0.8;
+    let curPan = opts.pan ?? 0;
+    const reconfigure = () => {
+      post({
+        type: "event",
+        when: 0,
+        kind: "track",
+        track: idx,
+        inst: GROUP_TO_INSTRUMENT[curInst] ?? 0,
+        gain: curGain,
+        pan: curPan,
+      });
+    };
     return {
-      instrument,
+      get instrument() {
+        return curInst;
+      },
       index: idx,
       noteOn(midiPitch, velocity = 96, timeSeconds = 0) {
         resumeIfNeeded();
@@ -356,16 +384,15 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
       pedal(on, timeSeconds = 0) {
         post({ type: "event", when: timeSeconds, kind: "pedal", track: idx, on: on ? 1 : 0 });
       },
+      setInstrument(next: InstrumentGroup) {
+        if (next === curInst) return;
+        curInst = next;
+        reconfigure();
+      },
       set(o: TrackOptions) {
-        post({
-          type: "event",
-          when: 0,
-          kind: "track",
-          track: idx,
-          inst: GROUP_TO_INSTRUMENT[instrument] ?? 0,
-          gain: o.gain ?? 0.8,
-          pan: o.pan ?? 0,
-        });
+        if (o.gain !== undefined) curGain = o.gain;
+        if (o.pan !== undefined) curPan = o.pan;
+        reconfigure();
       },
     };
   }
@@ -427,7 +454,7 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
     output: node,
     createTrack(instrument, opts = {}) {
       const idx = allocTrack(instrument, opts);
-      return makeTrack(instrument, idx);
+      return makeTrack(instrument, idx, opts);
     },
     async play(notes, options = {}) {
       await ready;
