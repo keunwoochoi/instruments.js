@@ -2,7 +2,8 @@
 // for headroom/sanity checks. Usage: node scripts/dev/render-arr.mjs <demoId> <out.wav>
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { DEMOS } from "../../apps/playground/demos.mjs";
+import { DEMOS, processMidi } from "../../apps/playground/demos.mjs";
+import { parseMidi } from "../../packages/midi/dist/index.js";
 
 const WASM = fileURLToPath(new URL("../../packages/core/wasm/instruments_dsp.wasm", import.meta.url));
 const IDX = {
@@ -19,8 +20,9 @@ const id = process.argv[2], out = process.argv[3];
 const demo = DEMOS.find((d) => d.id === id);
 if (!demo) { console.error(`no demo ${id}; have: ${DEMOS.map((d) => d.id).join(", ")}`); process.exit(2); }
 const SR = 48000, Q = 128;
-const notes = demo.build();
-const total = Math.round((demo.seconds + 2.5) * SR);
+const midiPath = fileURLToPath(new URL("../../apps/playground/" + demo.midi.replace(/^\.\//, ""), import.meta.url));
+const notes = processMidi(parseMidi((await readFile(midiPath)).buffer), demo);
+const total = Math.round((Math.max(...notes.map((n) => n.endSeconds)) + 2.5) * SR);
 
 const { instance } = await WebAssembly.instantiate(await readFile(WASM), {});
 const x = instance.exports;

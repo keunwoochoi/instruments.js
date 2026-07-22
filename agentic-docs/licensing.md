@@ -44,6 +44,28 @@ The permissive license is part of the product. This file is the single owner of 
 | Greg Sullivan E-Pianos (github.com/sfzinstruments/GregSullivan.E-Pianos, fetched 2026-07-12) | CC-BY-3.0 (verified: repo LICENSE = full CC-BY 3.0 legal code; README attribution statement) | Wurlitzer EP200 4-velocity ladders (bark/attack/harmonic-balance targets) + Pianet T long-decay sanity refs, EP round (scratchpad only). Corpus caveats in evals/reference-manifest.json (peak-normalized, trimmed tails, built-in tremolo on low notes) | not committed; attribute Greg Sullivan if references ever ship |
 | jRhodes3c/3d (sfzinstruments) | CC **BY-NC** 4.0 — NOT usable | none (rejected at license check 2026-07-12; LICENSE grants BY-SA to Strudel only). Best free Rhodes set otherwise; author invites license requests at jjlearman@gmail.com — a human-side email could unlock it | n/a |
 
+## Demo music (bundled MIDI — COMMITTED and shipped in the playground showcase)
+
+Unlike the reference audio above (scratchpad-only), these MIDI files ARE committed to
+the repo (`apps/playground/midi/`) and served by the falling-notes showcase. Only
+**Public-Domain** works qualify: both the composition (composer d. >70 yr) AND the
+sequence must be free to redistribute. Every file below is Mutopia Project MIDI whose
+per-piece page states **Public Domain** for the sequence itself — verified 2026-07-22.
+CC-BY-SA Mutopia pieces (e.g. Bach Invention 1, Debussy Prélude 4) were rejected to
+keep the shipped demo permissive. PD requires no attribution; composer + source kept
+anyway.
+
+| file (`apps/playground/midi/`) | work / composer | source | license | sha256 (first 12) |
+|---|---|---|---|---|
+| joplin-entertainer.mid | The Entertainer — Scott Joplin | mutopiaproject.org/ftp/JoplinS/entertainer | Public Domain | 33e4e81ee64f |
+| joplin-elite-syncopations.mid | Elite Syncopations — Scott Joplin | mutopiaproject.org/ftp/JoplinS/EliteSyncopations | Public Domain | 28e41b9b3d0a |
+| debussy-clair-de-lune.mid | Clair de Lune (Suite Bergamasque) — Claude Debussy | mutopiaproject.org/ftp/DebussyC/L75 | Public Domain | 4eee9a1546ff |
+| debussy-arabesque-1.mid | Première Arabesque — Claude Debussy | mutopiaproject.org/ftp/DebussyC/L66 | Public Domain | 6732dc107996 |
+| bach-invention-2.mid | Invention No. 2, BWV 773 — J.S. Bach | mutopiaproject.org/ftp/BachJS/BWV773 | Public Domain | b61e1e4d4a42 |
+
+The showcase re-voices some pieces onto different instruments (Arabesque→harp,
+Elite Syncopations→vibraphone, Invention→organ) — arranging PD works is unrestricted.
+
 ## Port ledger
 
 Every ported file: `| path | origin file | origin license | date | PR | notes |`

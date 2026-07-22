@@ -62,7 +62,9 @@
 </div>
 <script type="module">
 import { createEngine } from "../../packages/core/dist/index.js";
-import { DEMOS } from "./demos.mjs";
+import { parseMidi } from "../../packages/midi/dist/index.js";
+import { DEMOS, processMidi } from "./demos.mjs";
+const midiCache = new Map(); // demo.id -> processed note list (fetch+parse once)
 
 // ---- per-instrument colours -----------------------------------------------
 const COLORS = {
@@ -70,6 +72,8 @@ const COLORS = {
   "guitar-electric":"#38c6c6", "guitar-distorted":"#e0705a", marimba:"#e0b34a",
   glockenspiel:"#7ad7f0", strings:"#9a8cff", synthpad:"#9a8cff",
   trumpet:"#ff9d42", violin:"#ff7aa8", viola:"#d98cff", cello:"#b07cff",
+  harp:"#6fe0b4", organ:"#7aa8ff", vibraphone:"#e0b34a", celesta:"#7ad7f0",
+  xylophone:"#e0b34a", tubularbells:"#9a8cff",
   percussion:"#8b95a8", drums:"#8b95a8", "drums-jazz":"#8b95a8", "drums-rock":"#8b95a8",
 };
 const colorFor = (g) => COLORS[g] || "#8b95a8";
@@ -128,24 +132,30 @@ DEMOS.forEach((d,i)=>{
   b.onclick=()=>selectDemo(d,b);
   demosEl.appendChild(b);
 });
-function selectDemo(d,btn){
+async function selectDemo(d,btn){
   if(playing) stop();
   current=d;
   document.querySelectorAll(".demo").forEach(e=>e.classList.remove("sel"));
   btn.classList.add("sel");
-  loadDemo();
+  await loadDemo();
 }
-function loadDemo(){
-  notes=current.build();
+async function loadDemo(){
+  if(!midiCache.has(current.id)){
+    hint.textContent=`loading ${current.name}…`; hint.style.display="";
+    const buf=await fetch(current.midi).then(r=>{ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); });
+    midiCache.set(current.id, processMidi(parseMidi(buf), current));
+  }
+  notes=midiCache.get(current.id);
   const pitched=notes.filter(n=>!n.isDrum && !DRUM_KITS.has(n.instrumentGroup));
   hasDrums=notes.some(n=>n.isDrum || DRUM_KITS.has(n.instrumentGroup));
   pitchLo=Math.min(...pitched.map(n=>n.midiPitch));
   pitchHi=Math.max(...pitched.map(n=>n.midiPitch));
   computeKeyboard();
-  dur=current.seconds;
+  dur=Math.max(...notes.map(n=>n.endSeconds));
   buildLegend();
-  hint.textContent=`${current.name} — ${current.combo}`;
+  hint.textContent=`${current.name} — ${current.genre}`;
   hint.style.display="";
+  draw(-1);
 }
 function buildLegend(){
   const groups=[...new Set(notes.map(n=> (n.isDrum||DRUM_KITS.has(n.instrumentGroup))?"drums":n.instrumentGroup))];
@@ -292,7 +302,7 @@ function drawProgress(e){
     await engine.ready;
     statusEl.textContent="engine live";
     playBtn.disabled=false;
-    loadDemo(); draw(-1);
+    await loadDemo();
   }catch(err){ statusEl.textContent="engine failed: "+err.message; }
 })();
 </script>
