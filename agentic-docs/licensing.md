@@ -65,16 +65,30 @@ NC bars a shippable library) and any commercial-site MIDI of PD compositions (th
 site claims copyright on its sequence). The owner asked to "use them" but the CC0
 set is both cleaner and multi-instrument, so it was preferred.
 
+### Owner-curated recognisable demos (2026-07-22 policy reversal)
+
+The earlier gate on this surface (commit 56ca64b, "the composition and the MIDI
+sequence are both copyrighted, and a library meant to ship permissively cannot carry
+unlicensed music … cannot go IN the repo") is **superseded by owner direction**.
+Verbatim, 2026-07-22: *"just do it. ignore the commit rule bc i never wanted it."*
+The purpose of the demo page is to show the physical-model instruments sounding
+good on music a listener actually recognises — abstraction does not sell the
+product; "Sad But True" through our distorted-guitar model does. Three owner-named
+transcriptions (MuScriptor medium, MPS, 2026-07-22) are committed under this
+decision. They are NOT under a permissive licence; the policy question of shipping
+copyrighted demo MIDI in a publishable repo is open and named here, not silently
+absorbed. PR / release gating on these files is a separate owner decision.
+
 | file (`apps/playground/midi/`) | work | source | licence | sha256 (first 12) |
 |---|---|---|---|---|
-| cc0-overture-2021.mid | Overture 2021 (orchestral rock) | github.com/m-malandro/CC0-midis | CC0-1.0 | 40859ffbb910 |
-| cc0-arena-rock.mid | Arena Rock | github.com/m-malandro/CC0-midis | CC0-1.0 | 5093061f0d9d |
-| cc0-do-you-remember.mid | Do You Remember | github.com/m-malandro/CC0-midis | CC0-1.0 | 8f087f270f8a |
-| bach-toccata-fugue-dm.mid | Toccata & Fugue in D minor, BWV 565 — J.S. Bach | mutopiaproject.org/ftp/BachJS/BWV565 | Public Domain | 1aabd00967ad |
-| bach-invention-2.mid | Invention No. 2, BWV 773 — J.S. Bach | mutopiaproject.org/ftp/BachJS/BWV773 | Public Domain | b61e1e4d4a42 |
+| you-and-i.mid | "you and i" — keunwoo.OOO (2026) | MuScriptor medium transcript of owner's own recording | TBD — owner work, licence not yet recorded | 3f79e0c52aef |
+| hayoung.mid | "Windup" — Hayoung Lyou | MuScriptor medium transcript | NO licence held — third-party work, demo-only | 0dc378fb921 |
+| sad-but-true.mid | "Sad But True (Remastered)" — Metallica | MuScriptor medium transcript | NO licence held — third-party work, demo-only | 005ad01293b |
 
-The two Bach pieces are re-voiced onto the organ (arranging PD works is unrestricted);
-the CC0 pieces keep their own General-MIDI instrumentation.
+The two Bach pieces and the three CC0 pieces above remain clean-permissive. The
+"＋ Your MIDI" client-side path (commit 56ca64b) stays as the no-commit escape
+hatch for any listener who wants to hear their own copyrighted file through the
+engine without the repo carrying it.
 
 ## Port ledger
 

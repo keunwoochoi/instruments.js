@@ -19,6 +19,29 @@
  */
 
 export const DEMOS = [
+  { id: "you-and-i", name: "you and i", genre: "keunwoo.OOO · piano/vocal ballad",
+    combo: "piano · drums · strings · bass · guitar · woodwind", midi: "./midi/you-and-i.mid",
+    instrument: null, excerpt: 60,
+    mix: {
+      piano: { gain: 0.36, pan: 0.12 }, drums: { gain: 0.18, pan: 0 },
+      strings: { gain: 0.22, pan: -0.2 }, bass: { gain: 0.42, pan: 0 },
+      guitar: { gain: 0.30, pan: -0.18 }, woodwind: { gain: 0.26, pan: 0.22 },
+    } },
+  { id: "windup", name: "Windup", genre: "Hayoung Lyou · piano-forward",
+    combo: "piano · drums · bass · electric guitar", midi: "./midi/hayoung.mid",
+    instrument: null, excerpt: 60,
+    mix: {
+      piano: { gain: 0.40, pan: 0.10 }, drums: { gain: 0.18, pan: 0 },
+      bass: { gain: 0.44, pan: 0 }, "guitar-electric": { gain: 0.28, pan: -0.25 },
+      "guitar-distorted": { gain: 0.30, pan: -0.10 },
+    } },
+  { id: "sad-but-true", name: "Sad But True", genre: "Metallica · heavy groove",
+    combo: "distorted guitar · drums · bass · synth · strings", midi: "./midi/sad-but-true.mid",
+    instrument: null, excerpt: 60,
+    mix: {
+      "guitar-distorted": { gain: 0.34, pan: -0.18 }, drums: { gain: 0.20, pan: 0 },
+      bass: { gain: 0.40, pan: 0 }, synth: { gain: 0.26, pan: 0.25 }, strings: { gain: 0.20, pan: 0.18 },
+    } },
   { id: "overture", name: "Overture 2021", genre: "Orchestral rock · full band",
     combo: "drums · strings · brass · guitar · piano · bass", midi: "./midi/cc0-overture-2021.mid",
     instrument: null, excerpt: 58,
