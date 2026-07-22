@@ -12,6 +12,8 @@ const IDX = {
   "guitar-steel": 10, "guitar-electric": 11, "guitar-distorted": 12,
   "drums-rock": 13, "drums-jazz": 14, cello: 15, trombone: 16, violin: 17,
   viola: 18, contrabass: 19, trumpet: 20, organ: 23,
+  synth: 8, woodwind: 23, brass: 20, strings8: 8, harp: 27, vibraphone: 1,
+  xylophone: 24, celesta: 26, glockenspiel2: 2,
 };
 const DRUM = new Set(["drums", "percussion", "drums-rock", "drums-jazz"]);
 const drumGroup = (g) => (["drums", "drums-rock", "drums-jazz"].includes(g) ? g : "drums");
@@ -31,12 +33,13 @@ const p = x.ij_engine_new(SR);
 // one track per resolved group; apply the demo mix (gain/pan)
 const trackOf = new Map();
 let nextTrack = 0;
+const SCALE = Number(process.env.SCALE ?? 1);
 const resolve = (rawGroup, isDrum) => {
   const g = isDrum ? drumGroup(rawGroup) : rawGroup;
   if (!trackOf.has(g)) {
     const t = nextTrack++;
-    const m = demo.mix?.[g] ?? {};
-    x.ij_set_track(p, t, IDX[g] ?? 0, m.gain ?? 0.8, m.pan ?? 0);
+    const m = demo.mix?.[g] ?? demo.mix?.[rawGroup] ?? {};
+    x.ij_set_track(p, t, IDX[g] ?? 0, (m.gain ?? 0.8) * SCALE, m.pan ?? 0);
     trackOf.set(g, t);
   }
   return trackOf.get(g);

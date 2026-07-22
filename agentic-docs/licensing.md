@@ -47,24 +47,34 @@ The permissive license is part of the product. This file is the single owner of 
 ## Demo music (bundled MIDI — COMMITTED and shipped in the playground showcase)
 
 Unlike the reference audio above (scratchpad-only), these MIDI files ARE committed to
-the repo (`apps/playground/midi/`) and served by the falling-notes showcase. Only
-**Public-Domain** works qualify: both the composition (composer d. >70 yr) AND the
-sequence must be free to redistribute. Every file below is Mutopia Project MIDI whose
-per-piece page states **Public Domain** for the sequence itself — verified 2026-07-22.
-CC-BY-SA Mutopia pieces (e.g. Bach Invention 1, Debussy Prélude 4) were rejected to
-keep the shipped demo permissive. PD requires no attribution; composer + source kept
-anyway.
+the repo (`apps/playground/midi/`) and served by the falling-notes showcase, so the
+licence must permit redistribution. Two clean families qualify; both verified
+2026-07-22:
 
-| file (`apps/playground/midi/`) | work / composer | source | license | sha256 (first 12) |
+- **CC0 1.0** original multitrack pieces (github.com/m-malandro/CC0-midis, LICENSE =
+  full CC0 legal code). CC0 = public-domain dedication, no restrictions, no
+  attribution. These carry real General-MIDI instrument assignments, so
+  `packages/midi` gmProgramToGroup routes each part across the library — the
+  multi-instrument demos the owner asked for.
+- **Public-Domain** Bach organ works from the Mutopia Project, whose per-piece page
+  states Public Domain for the sequence itself. (CC-BY-SA Mutopia pieces, e.g. Bach
+  Invention 1, were rejected to keep the demo permissive.)
+
+Rejected on purpose: MAESTRO and similar performance datasets (CC-BY-**NC**-SA — the
+NC bars a shippable library) and any commercial-site MIDI of PD compositions (the
+site claims copyright on its sequence). The owner asked to "use them" but the CC0
+set is both cleaner and multi-instrument, so it was preferred.
+
+| file (`apps/playground/midi/`) | work | source | licence | sha256 (first 12) |
 |---|---|---|---|---|
-| joplin-entertainer.mid | The Entertainer — Scott Joplin | mutopiaproject.org/ftp/JoplinS/entertainer | Public Domain | 33e4e81ee64f |
-| joplin-elite-syncopations.mid | Elite Syncopations — Scott Joplin | mutopiaproject.org/ftp/JoplinS/EliteSyncopations | Public Domain | 28e41b9b3d0a |
-| debussy-clair-de-lune.mid | Clair de Lune (Suite Bergamasque) — Claude Debussy | mutopiaproject.org/ftp/DebussyC/L75 | Public Domain | 4eee9a1546ff |
-| debussy-arabesque-1.mid | Première Arabesque — Claude Debussy | mutopiaproject.org/ftp/DebussyC/L66 | Public Domain | 6732dc107996 |
+| cc0-overture-2021.mid | Overture 2021 (orchestral rock) | github.com/m-malandro/CC0-midis | CC0-1.0 | 40859ffbb910 |
+| cc0-arena-rock.mid | Arena Rock | github.com/m-malandro/CC0-midis | CC0-1.0 | 5093061f0d9d |
+| cc0-do-you-remember.mid | Do You Remember | github.com/m-malandro/CC0-midis | CC0-1.0 | 8f087f270f8a |
+| bach-toccata-fugue-dm.mid | Toccata & Fugue in D minor, BWV 565 — J.S. Bach | mutopiaproject.org/ftp/BachJS/BWV565 | Public Domain | 1aabd00967ad |
 | bach-invention-2.mid | Invention No. 2, BWV 773 — J.S. Bach | mutopiaproject.org/ftp/BachJS/BWV773 | Public Domain | b61e1e4d4a42 |
 
-The showcase re-voices some pieces onto different instruments (Arabesque→harp,
-Elite Syncopations→vibraphone, Invention→organ) — arranging PD works is unrestricted.
+The two Bach pieces are re-voiced onto the organ (arranging PD works is unrestricted);
+the CC0 pieces keep their own General-MIDI instrumentation.
 
 ## Port ledger
 
