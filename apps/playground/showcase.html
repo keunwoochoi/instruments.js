@@ -27,6 +27,9 @@
   .demo b{display:block;font-size:13px;font-weight:600}
   .demo span{font-size:11px;color:var(--tx2)}
   .demo.sel span{color:var(--accent)}
+  .demo.local{border-style:dashed;border-color:var(--line)}
+  .demo.local b{color:var(--good)}
+  .demo.local.sel{border-style:solid}
   .transport{margin-left:auto;display:flex;align-items:center;gap:12px}
   .play{cursor:pointer;border:0;background:var(--accent);color:#161307;font-weight:700;
     border-radius:24px;padding:9px 20px;font:inherit;font-size:14px}
@@ -132,6 +135,40 @@ DEMOS.forEach((d,i)=>{
   b.onclick=()=>selectDemo(d,b);
   demosEl.appendChild(b);
 });
+// "Your MIDI" — load ANY .mid the user has, entirely client-side. Nothing is
+// uploaded, fetched, or committed; the file never leaves this machine. This is
+// how you play a copyrighted song (a pop hit, Michael Jackson, whatever) through
+// the engine without the project ever redistributing it.
+const localBtn=document.createElement("button");
+localBtn.className="demo local"; localBtn.innerHTML=`<b>＋ Your MIDI</b><span>drop a .mid — local only</span>`;
+const fileInput=document.createElement("input");
+fileInput.type="file"; fileInput.accept=".mid,.midi,audio/midi"; fileInput.style.display="none";
+localBtn.onclick=()=>fileInput.click();
+fileInput.onchange=(e)=>{ const f=e.target.files?.[0]; if(f) loadLocalFile(f); };
+demosEl.appendChild(localBtn); demosEl.appendChild(fileInput);
+// drag-and-drop anywhere on the page
+["dragover","drop"].forEach(t=>document.addEventListener(t,(e)=>e.preventDefault()));
+document.addEventListener("drop",(e)=>{ const f=[...(e.dataTransfer?.files||[])].find(f=>/\.midi?$/i.test(f.name)); if(f) loadLocalFile(f); });
+
+async function loadLocalFile(file){
+  if(playing) stop();
+  let buf; try{ buf=await file.arrayBuffer(); }catch{ statusEl.textContent="could not read file"; return; }
+  let parsed; try{ parsed=parseMidi(buf); }
+  catch(err){ statusEl.textContent=`could not parse ${file.name}: ${err.message}`; hint.textContent=`✗ ${file.name} is not a readable MIDI file`; hint.style.display=""; return; }
+  document.querySelectorAll(".demo").forEach(x=>x.classList.remove("sel"));
+  localBtn.classList.add("sel");
+  current={ id:"local:"+file.name, name:file.name.replace(/\.midi?$/i,""), genre:"your MIDI · local only, never committed",
+    instrument:null, excerpt:600, defaultGain:0.34, mix:{ drums:{gain:0.18} } };
+  midiCache.set(current.id, processMidi(parsed, current));
+  notes=midiCache.get(current.id);
+  const pitched=notes.filter(n=>!n.isDrum && !DRUM_KITS.has(n.instrumentGroup));
+  if(!pitched.length){ hint.textContent=`${current.name}: no pitched notes to show`; hint.style.display=""; return; }
+  hasDrums=notes.some(n=>n.isDrum || DRUM_KITS.has(n.instrumentGroup));
+  pitchLo=Math.min(...pitched.map(n=>n.midiPitch)); pitchHi=Math.max(...pitched.map(n=>n.midiPitch));
+  computeKeyboard(); dur=Math.max(...notes.map(n=>n.endSeconds)); buildLegend();
+  statusEl.textContent=`loaded "${current.name}" — ${notes.length} notes, ${dur.toFixed(0)}s (local)`;
+  hint.textContent=`${current.name} — press Play`; hint.style.display=""; draw(-1);
+}
 async function selectDemo(d,btn){
   if(playing) stop();
   current=d;
@@ -166,12 +203,16 @@ function buildLegend(){
 }
 
 // ---- track management (reuse across demos; never leak toward the 16 limit) --
+let trackLimitHit=false;
 function trackFor(group,isDrum){
   const key=isDrum?kitKey(group):group;
   let t=trackCache.get(key);
-  const mix=current.mix?.[key] ?? current.mix?.[group] ?? {};
-  if(!t){ t=engine.createTrack(key, {gain:mix.gain??0.7, pan:mix.pan??0}); trackCache.set(key,t); }
-  else t.set({gain:mix.gain??0.7, pan:mix.pan??0});
+  const g=current.mix?.[key]?.gain ?? current.mix?.[group]?.gain ?? current.defaultGain ?? 0.7;
+  const pan=current.mix?.[key]?.pan ?? current.mix?.[group]?.pan ?? 0;
+  if(!t){
+    try{ t=engine.createTrack(key,{gain:g,pan}); trackCache.set(key,t); }
+    catch{ trackLimitHit=true; return null; } // 16-track limit — degrade loudly, not silently
+  } else t.set({gain:g,pan});
   return t;
 }
 
@@ -179,15 +220,17 @@ function trackFor(group,isDrum){
 async function play(){
   if(!engine || playing) return;
   await engine.ready;
-  playing=true; hint.style.display="none";
+  playing=true; hint.style.display="none"; trackLimitHit=false;
   playBtn.textContent="■ Stop"; playBtn.classList.add("stop");
   t0=engine.context.currentTime+LEAD;
   for(const nt of notes){
     const isDrum=!!nt.isDrum || DRUM_KITS.has(nt.instrumentGroup);
     const tr=trackFor(nt.instrumentGroup,isDrum);
+    if(!tr) continue; // instrument dropped at the track limit
     tr.noteOn(nt.midiPitch, nt.velocity, t0+nt.startSeconds);
     if(!isDrum) tr.noteOff(nt.midiPitch, t0+nt.endSeconds);
   }
+  if(trackLimitHit) statusEl.textContent="⚠ this file uses more instruments than the 16-track demo limit — some were dropped";
   loop();
 }
 function stop(){
