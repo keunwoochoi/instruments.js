@@ -1,0 +1,65 @@
+name: Deploy playground to GitHub Pages
+
+# Publishes apps/playground/showcase.html (the interactive demo) to Pages.
+# dist/ is gitignored, so we build it in CI (pure `tsc`, no Rust — the WASM is
+# committed) and assemble a minimal self-contained site. The engine uses no
+# SharedArrayBuffer / cross-origin isolation, so plain HTTPS Pages is enough.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/playground/**'
+      - 'packages/core/**'
+      - 'packages/midi/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build            # tsc per workspace → packages/*/dist
+      - name: Assemble site
+        run: |
+          set -euo pipefail
+          rm -rf _site && mkdir -p _site/apps/playground _site/packages/core _site/packages/midi
+          cp -R apps/playground/. _site/apps/playground/
+          cp -R packages/core/dist packages/core/worklet packages/core/wasm _site/packages/core/
+          cp -R packages/midi/dist _site/packages/midi/
+          touch _site/.nojekyll
+          cat > _site/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <meta http-equiv="refresh" content="0; url=./apps/playground/showcase.html">
+          <title>instruments.js — physical-modeling demo</title>
+          <p><a href="./apps/playground/showcase.html">instruments.js playground →</a></p>
+          HTML
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
