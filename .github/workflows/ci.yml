@@ -47,9 +47,9 @@ jobs:
       - run: node scripts/dev/render-demo.mjs   # numeric render gates (peak/NaN/budget)
       - run: node scripts/dev/render-demo.mjs --bench
       # bundle contract needs BUILT dist + a wasm toolchain; it must run after build.
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+      # Use the runner's preinstalled rustup — dtolnay/rust-toolchain conflicts with
+      # ubuntu-22.04's partial preinstalled toolchain ("detected conflict: manifest-rustc").
+      - run: rustup target add wasm32-unknown-unknown
       - run: npm run audit:bundle   # public bundle-size contract + shipped-WASM freshness (#46)
       - run: npm run test:transport-baseline
   e2e:
