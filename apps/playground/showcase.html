@@ -358,10 +358,30 @@ function unlockAudio(){
     audioPrimed=true;
   }
 }
+let audioWarmed=false, starting=false;
 async function play(){
-  if(!engine || playing) return;
+  if(!engine || playing || starting) return;
+  if(!notes.length) return;            // nothing loaded yet — don't start a phantom (silent) playback
+  starting=true;
+  const cold=!audioWarmed;             // first play of the session: the AudioContext is cold
   unlockAudio();                       // sync resume within the gesture (iOS)
   await engine.ready; await resumeCtx();
+  // iOS/iPadOS: right after the first resume the context clock reads ~0 and
+  // then jumps to the hardware base time. Scheduling against the pre-jump value
+  // puts every note in the past → silence (only the FIRST play; a warm context
+  // is fine, which is why switching songs "fixed" it). Let the clock settle once.
+  if(cold){
+    // Don't schedule against a cold clock. Right after the first resume the
+    // AudioContext clock reads ~0 and only starts ticking (iOS can jump it) a
+    // moment later; timestamped notes queued before that land in the past →
+    // silence (keys work because they're untimed/immediate). Wait for the clock
+    // to actually advance, bounded so it can't hang, then a short settle.
+    const c0=engine.context.currentTime, deadline=performance.now()+700;
+    while(engine.context.currentTime<=c0 && performance.now()<deadline){ await new Promise(r=>setTimeout(r,25)); }
+    await new Promise(r=>setTimeout(r,120));
+    audioWarmed=true;
+  }
+  starting=false;
   playing=true; hint.hidden=true; trackLimitHit=false;
   playGlyph.classList.add("hide");
   t0=engine.context.currentTime+LEAD;
