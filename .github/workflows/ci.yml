@@ -35,6 +35,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: npm ci || npm install
+      - run: sudo apt-get update && sudo apt-get install -y libsndfile1  # native lib for Python `soundfile` (audit:loop, renders)
       - run: python3 -m pip install -r scripts/dev/requirements-loop.txt
       - run: npm run audit:loop
       - run: npm run typecheck --workspaces --if-present
@@ -60,6 +61,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: npm ci || npm install
+      - run: sudo apt-get update && sudo apt-get install -y libsndfile1  # native lib for Python `soundfile` (listening e2e)
       - run: python3 -m pip install -r scripts/dev/requirements-loop.txt
       - run: npm run build --workspaces --if-present
       - run: npx playwright install --with-deps chromium webkit
