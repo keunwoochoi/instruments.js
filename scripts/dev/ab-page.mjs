@@ -30,7 +30,7 @@ const rows = pairs.map((f, i) => `
     <td class="verdict"><button data-v="A">A</button><button data-v="~">~</button><button data-v="B">B</button></td>
   </tr>`).join("");
 
-const html = `<!doctype html><meta charset="utf-8"><title>instruments.js A/B</title>
+const html = `<!doctype html><meta charset="utf-8"><title>physical-instruments.js A/B</title>
 <style>
   body{font:14px system-ui;margin:2rem auto;max-width:70rem;background:#191512;color:#eee}
   table{border-collapse:collapse;width:100%} td{padding:.45rem .6rem;border-bottom:1px solid #333}

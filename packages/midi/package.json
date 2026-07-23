@@ -1,7 +1,7 @@
 {
   "name": "@instrumentsjs/midi",
   "version": "0.0.0",
-  "description": "Standard MIDI File parsing, GM mapping, and pedal extraction for instruments.js",
+  "description": "Standard MIDI File parsing, GM mapping, and pedal extraction for physical-instruments.js",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "sideEffects": false,

@@ -6,7 +6,7 @@
     "build": "webpack --mode production"
   },
   "dependencies": {
-    "instruments.js": "file:../../../packages/core"
+    "physical-instruments.js": "file:../../../packages/core"
   },
   "devDependencies": {
     "html-webpack-plugin": "^5.6.0",

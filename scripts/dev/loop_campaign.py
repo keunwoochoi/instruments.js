@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and run a reproducible instruments.js reference-matching campaign."""
+"""Validate and run a reproducible physical-instruments.js reference-matching campaign."""
 
 import argparse
 import datetime as dt

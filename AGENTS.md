@@ -1,4 +1,4 @@
-# instruments.js — Agent Constitution & Router
+# physical-instruments.js — Agent Constitution & Router
 
 > Read `PRINCIPLES.md` first. It is the constitutional law of this repo.
 > This file owns: the operating constitution and routing. Details live in owned docs (see routes).

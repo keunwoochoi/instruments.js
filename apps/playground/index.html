@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>instruments.js playground</title>
+  <title>physical-instruments.js playground</title>
   <style>
     :root { color-scheme: light dark; --accent: #e07840; --key-w: 44px; }
     * { box-sizing: border-box; }
@@ -46,7 +46,7 @@
   </style>
 </head>
 <body>
-  <h1>instruments.js <span class="badge" id="size-badge">…</span></h1>
+  <h1>physical-instruments.js <span class="badge" id="size-badge">…</span></h1>
   <p class="sub">Physical-modeled instruments in your browser. No samples were harmed — none exist.
     &nbsp;·&nbsp; <a href="./showcase.html" style="color:#f5b544">🎹 Showcase →</a> (falling-notes demos across genres)</p>
 
@@ -144,7 +144,7 @@
       const el = $("status");
       el.textContent = t;
       el.style.cssText = isError ? "color:#d33;opacity:1;font-weight:600" : "";
-      if (isError) console.error("instruments.js:", t);
+      if (isError) console.error("physical-instruments.js:", t);
     };
     window.addEventListener("error", (e) => status(`page error: ${e.message}`, true));
     window.addEventListener("unhandledrejection", (e) => status(`error: ${e.reason?.message ?? e.reason}`, true));

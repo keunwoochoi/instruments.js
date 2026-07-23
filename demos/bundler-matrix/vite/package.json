@@ -8,7 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "instruments.js": "file:../../../packages/core"
+    "physical-instruments.js": "file:../../../packages/core"
   },
   "devDependencies": {
     "vite": "^6.0.0"

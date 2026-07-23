@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://instruments.js/evals/cases/iteration-schema-v1.1.json",
-  "title": "instruments.js loop iteration v1.1",
+  "$id": "https://physical-instruments.js/evals/cases/iteration-schema-v1.1.json",
+  "title": "physical-instruments.js loop iteration v1.1",
   "type": "object",
   "required": ["schema_version", "created_utc", "family", "hypothesis", "changed_component", "classification", "source", "wasm", "manifest", "reference_registry", "metric_version", "drift", "cases", "baseline_dir"],
   "properties": {

@@ -4,7 +4,7 @@ Fill every slot; the guards exist because each one has already caught a shipped
 failure. Launch agents with worktree isolation; sequential merges.
 
 ```
-You are the <FAMILY> specialist for instruments.js.
+You are the <FAMILY> specialist for physical-instruments.js.
 
 OWNER VERDICT (verbatim): "<paste Keunwoo's words exactly — the verdict is the
 spec; do not paraphrase it away>"

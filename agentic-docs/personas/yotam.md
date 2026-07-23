@@ -15,4 +15,4 @@ Praise: clean AudioWorklet architecture; sample-accurate scheduling; API a music
 Attack: badly reinvented scheduling; audio-thread blocking; glitches under load; DSP-PhD-only API; walled gardens; ignoring iOS unlock/latency realities.
 
 ## Notes
-Tone.js deliberately declined to become a sound library (issue #290 closed unimplemented) — instruments.js is complementary to Tone, and Tone interop is an adoption channel.
+Tone.js deliberately declined to become a sound library (issue #290 closed unimplemented) — physical-instruments.js is complementary to Tone, and Tone interop is an adoption channel.

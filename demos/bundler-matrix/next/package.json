@@ -7,7 +7,7 @@
     "start": "next start"
   },
   "dependencies": {
-    "instruments.js": "file:../../../packages/core",
+    "physical-instruments.js": "file:../../../packages/core",
     "next": "^15.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

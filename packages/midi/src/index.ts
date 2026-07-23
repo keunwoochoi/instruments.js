@@ -1,9 +1,9 @@
 /**
- * Standard MIDI File parsing for instruments.js.
+ * Standard MIDI File parsing for physical-instruments.js.
  * Formats 0 and 1, metrical division, tempo maps, running status, GM program →
  * instrument-family mapping, channel-10 drums, CC64 sustain pedal.
  *
- * Structurally compatible with instruments.js core's NoteEvent — no import needed,
+ * Structurally compatible with physical-instruments.js core's NoteEvent — no import needed,
  * the two packages stay decoupled.
  */
 
@@ -32,7 +32,7 @@ export interface ParsedMidi {
   format: number;
 }
 
-/** GM program number (0-based) → instruments.js family. */
+/** GM program number (0-based) → physical-instruments.js family. */
 export function gmProgramToGroup(program: number): string {
   if (program < 8) return "piano";
   if (program < 16) {

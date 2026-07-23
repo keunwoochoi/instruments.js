@@ -1,6 +1,6 @@
 # Bundler matrix — worklet + WASM loading smoke tests
 
-The adoption-critical promise: `npm install instruments.js` → sound with ZERO bundler
+The adoption-critical promise: `npm install physical-instruments.js` → sound with ZERO bundler
 configuration. Each fixture is a minimal real app checked headlessly by
 `scripts/dev/e2e-fixture.mjs <url>` (click Start → `#status` must read "engine live").
 

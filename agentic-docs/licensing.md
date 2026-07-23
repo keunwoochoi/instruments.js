@@ -1,6 +1,6 @@
 # Licensing ledger & clean-room policy
 
-instruments.js is dual-licensed **MIT OR Apache-2.0** (user's choice, Rust-ecosystem convention).
+physical-instruments.js is dual-licensed **MIT OR Apache-2.0** (user's choice, Rust-ecosystem convention).
 The permissive license is part of the product. This file is the single owner of porting policy and provenance.
 
 ## Clean-room policy (papers-only for copyleft)

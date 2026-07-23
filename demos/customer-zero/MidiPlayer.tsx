@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CanonicalNote } from "@music-to-score/contracts";
-import { createEngine, type Engine, type NoteEvent } from "instruments.js";
+import { createEngine, type Engine, type NoteEvent } from "physical-instruments.js";
 
 export type PlaybackEvent = { midi: number; start: number; duration: number; velocity: number; family: "piano" | "bass" | "guitar" | "drums" };
 
@@ -79,7 +79,7 @@ function toNoteEvents(events: readonly PlaybackEvent[]): NoteEvent[] {
   }));
 }
 
-/** Synthesized browser preview (instruments.js) with one shared timeline for every score part. */
+/** Synthesized browser preview (physical-instruments.js) with one shared timeline for every score part. */
 export function MidiPlayer({ notes }: { notes: readonly CanonicalNote[] }) {
   const plan = useMemo(() => createPlaybackPlan(notes), [notes]);
   const duration = plan.reduce((maximum, event) => Math.max(maximum, event.start + event.duration), 0);

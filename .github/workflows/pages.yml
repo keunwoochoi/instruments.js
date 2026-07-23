@@ -47,8 +47,8 @@ jobs:
           <!doctype html>
           <meta charset="utf-8">
           <meta http-equiv="refresh" content="0; url=./apps/playground/showcase.html">
-          <title>instruments.js — physical-modeling demo</title>
-          <p><a href="./apps/playground/showcase.html">instruments.js playground →</a></p>
+          <title>physical-instruments.js — physical-modeling demo</title>
+          <p><a href="./apps/playground/showcase.html">physical-instruments.js playground →</a></p>
           HTML
       - uses: actions/upload-pages-artifact@v3
         with:

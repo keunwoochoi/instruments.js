@@ -1,5 +1,5 @@
 /**
- * instruments.js AudioWorklet processor (plain JS — served verbatim, never bundled).
+ * physical-instruments.js AudioWorklet processor (plain JS — served verbatim, never bundled).
  *
  * Contract with packages/core:
  * - main thread compiles the WASM module (fetch is unavailable in this scope) and

@@ -24,8 +24,8 @@ The corpus remains private and content-addressed. Git stores normalized source m
 
 ### Current-state audit
 
-- The exact acoustic matrix at commit [`e59291d`](https://github.com/keunwoochoi/instruments.js/blob/e59291d1f7450e7c5e0f0ac2e07995fd37e3f885/evals/cases/drums.json) contains only four cases: pop kick ff, rock kick mf, rock snare ff, and held-out jazz brush mf. The audit finding is tracked in [issue #43](https://github.com/keunwoochoi/instruments.js/issues/43).
-- The exact reference contract at [`e59291d`](https://github.com/keunwoochoi/instruments.js/blob/e59291d1f7450e7c5e0f0ac2e07995fd37e3f885/evals/reference-manifest.json) identifies the existing `virtuosity-drums` material as CC0 and declares room bleed, but it does not make the four-case matrix source-diverse.
+- The exact acoustic matrix at commit [`e59291d`](https://github.com/keunwoochoi/physical-instruments.js/blob/e59291d1f7450e7c5e0f0ac2e07995fd37e3f885/evals/cases/drums.json) contains only four cases: pop kick ff, rock kick mf, rock snare ff, and held-out jazz brush mf. The audit finding is tracked in [issue #43](https://github.com/keunwoochoi/physical-instruments.js/issues/43).
+- The exact reference contract at [`e59291d`](https://github.com/keunwoochoi/physical-instruments.js/blob/e59291d1f7450e7c5e0f0ac2e07995fd37e3f885/evals/reference-manifest.json) identifies the existing `virtuosity-drums` material as CC0 and declares room bleed, but it does not make the four-case matrix source-diverse.
 - The four declared pop/rock/jazz files are absent from the visible scratchpad, while implementation comments attribute rock material to CC-BY Muldjord/Naked sources that the generic manifest can incorrectly inherit as Virtuosity/CC0. Unregistered references currently receive an empty corpus contract rather than a license/invalid-axis failure. P0/P1 must close these trust holes before acquisition or fitting.
 - A staged Virtuosity receipt already records real soft/mid/hard jazz-kick close hits plus matched mid and overhead perspectives, without level normalization. This is useful tune evidence but cannot be its own held-out source.
 

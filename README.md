@@ -1,4 +1,4 @@
-# instruments.js
+# physical-instruments.js
 
 **Beautiful physical-modeled instruments for the browser.**
 `npm install` → piano, guitar, marimba in tens of kilobytes. No samples. Works offline. One `noteOn()` call. Full multi-track arrangements, one engine.
@@ -16,7 +16,7 @@
 > ```
 
 ```ts
-import { createEngine } from "instruments.js";
+import { createEngine } from "physical-instruments.js";
 import { parseMidi } from "@instrumentsjs/midi";
 
 const engine = await createEngine();               // lazy AudioContext, gesture-safe

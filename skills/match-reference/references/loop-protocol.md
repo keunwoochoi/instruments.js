@@ -1,6 +1,6 @@
 # match-reference loop protocol (agent runbook)
 
-You are improving ONE instrument family of the instruments.js Rust DSP engine until
+You are improving ONE instrument family of the physical-instruments.js Rust DSP engine until
 its renders match real reference recordings. You work in an isolated git worktree.
 (Updated 2026-07-12 per the modeling & loop audit — trust gates, mr_stft, manifest
 masking, standardized auditions. Owner-approved.)

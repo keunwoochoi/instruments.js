@@ -1,6 +1,6 @@
 // The zero-config test: no workletUrl/wasmUrl overrides — the library's
 // import.meta.url resolution must survive Vite dev AND build.
-import { createEngine } from "instruments.js";
+import { createEngine } from "physical-instruments.js";
 
 const status = (t) => (document.getElementById("status").textContent = t);
 document.getElementById("start").addEventListener("click", async () => {

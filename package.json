@@ -1,5 +1,5 @@
 {
-  "name": "instruments.js-monorepo",
+  "name": "physical-instruments.js-monorepo",
   "private": true,
   "version": "0.0.0",
   "description": "Beautiful physical-modeled instruments for the browser — monorepo root",

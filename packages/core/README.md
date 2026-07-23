@@ -1,4 +1,4 @@
-# instruments.js (core)
+# physical-instruments.js (core)
 
 The public API: engine lifecycle, worklet host, WASM handshake, voice/track management, scheduling, offline render.
 

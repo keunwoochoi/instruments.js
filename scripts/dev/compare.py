@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI for the versioned instruments.js reference-comparison metric kernel."""
+"""CLI for the versioned physical-instruments.js reference-comparison metric kernel."""
 
 import argparse
 import json

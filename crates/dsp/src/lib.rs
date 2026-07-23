@@ -1,4 +1,4 @@
-//! instruments.js DSP core.
+//! physical-instruments.js DSP core.
 //!
 //! Constraints (AGENTS.md constitution #4, architecture doc 2026-07-11):
 //! - Allocation-free after `Engine::new` — the audio thread never touches the allocator.

@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { createEngine } from "instruments.js";
+import { createEngine } from "physical-instruments.js";
 
 // Zero-config test: SSR-safety (import at module level in a client component
 // that still renders on the server) + import.meta.url asset resolution.

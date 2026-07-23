@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://instruments.js/evals/reference-manifest-schema-v2.json",
-  "title": "instruments.js reference contract registry v2",
+  "$id": "https://physical-instruments.js/evals/reference-manifest-schema-v2.json",
+  "title": "physical-instruments.js reference contract registry v2",
   "type": "object",
   "required": ["schema_version", "corpora", "contracts"],
   "properties": {

@@ -1,4 +1,4 @@
-import { createEngine } from "instruments.js";
+import { createEngine } from "physical-instruments.js";
 const status = (t) => (document.getElementById("status").textContent = t);
 document.getElementById("start").addEventListener("click", async () => {
   try {

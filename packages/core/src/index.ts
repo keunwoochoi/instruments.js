@@ -1,5 +1,5 @@
 /**
- * instruments.js public API — v0, implemented.
+ * physical-instruments.js public API — v0, implemented.
  *
  * Constraints (PRINCIPLES.md, architecture doc 2026-07-11):
  * - SSR-safe: importing this module never touches window/AudioContext/fetch.
@@ -257,7 +257,7 @@ export interface RenderOptions extends PlayOptions {
 
 async function fetchWasmBytes(url: string | URL): Promise<ArrayBuffer> {
   const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`instruments.js: failed to fetch WASM (${resp.status}) from ${url}`);
+  if (!resp.ok) throw new Error(`physical-instruments.js: failed to fetch WASM (${resp.status}) from ${url}`);
   return resp.arrayBuffer();
 }
 
@@ -308,16 +308,16 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
       else if (msg.type === "error") {
         // before ready: fail init; after ready (a settled promise ignores
         // reject): still loud — runtime errors must never disappear
-        console.error(`instruments.js worklet: ${msg.message}`);
-        reject(new Error(`instruments.js worklet: ${msg.message}`));
+        console.error(`physical-instruments.js worklet: ${msg.message}`);
+        reject(new Error(`physical-instruments.js worklet: ${msg.message}`));
       }
       else if (msg.type === "stats" && statsCb) statsCb(msg);
     };
     // never-silent guards: clone failures and processor crashes must reject loudly
     node.port.onmessageerror = () =>
-      reject(new Error("instruments.js: worklet message failed to deserialize (structured-clone unsupported)"));
+      reject(new Error("physical-instruments.js: worklet message failed to deserialize (structured-clone unsupported)"));
     node.onprocessorerror = () =>
-      reject(new Error("instruments.js: AudioWorklet processor crashed during construction/render"));
+      reject(new Error("physical-instruments.js: AudioWorklet processor crashed during construction/render"));
   });
   postInit(node.port, wasm);
 
@@ -330,7 +330,7 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
   };
 
   function allocTrack(instrument: InstrumentGroup, opts: TrackOptions, at = 0): number {
-    if (nextTrack >= MAX_TRACKS) throw new Error(`instruments.js: track limit (${MAX_TRACKS}) reached`);
+    if (nextTrack >= MAX_TRACKS) throw new Error(`physical-instruments.js: track limit (${MAX_TRACKS}) reached`);
     const idx = nextTrack++;
     post({
       type: "event",
@@ -441,7 +441,7 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
     return (group: InstrumentGroup, events: WorkletEvent[]): number => {
       let idx = groupTracks.get(group);
       if (idx === undefined) {
-        if (nextTrack >= MAX_TRACKS) throw new Error(`instruments.js: track limit (${MAX_TRACKS}) reached`);
+        if (nextTrack >= MAX_TRACKS) throw new Error(`physical-instruments.js: track limit (${MAX_TRACKS}) reached`);
         idx = nextTrack++;
         groupTracks.set(group, idx);
         const m = mix?.[group] ?? {};
@@ -517,7 +517,7 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
       });
       let offError: Error | null = null;
       offNode.port.onmessage = (ev: MessageEvent) => {
-        if (ev.data.type === "error") offError = new Error(`instruments.js worklet: ${ev.data.message}`);
+        if (ev.data.type === "error") offError = new Error(`physical-instruments.js worklet: ${ev.data.message}`);
       };
       offNode.connect(off.destination);
       // progress via suspend/resume checkpoints (~1 s apart)
