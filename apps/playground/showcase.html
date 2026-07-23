@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>instruments.js — showcase</title>
+<title>instruments.js</title>
 <style>
   :root{
     --bg:#0b0d12; --panel:#141821; --line:#242b38; --tx:#e7ecf5; --tx2:#8b95a8;
@@ -14,11 +14,33 @@
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     -webkit-font-smoothing:antialiased;overflow:hidden}
   .app{display:flex;flex-direction:column;height:100%}
-  header{display:flex;align-items:center;gap:16px;padding:12px 18px;border-bottom:1px solid var(--line);flex:none}
-  header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.02em}
-  header h1 .dim{color:var(--tx2);font-weight:400}
-  .status{margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--tx2)}
-  .bar{display:flex;align-items:center;gap:10px;padding:10px 18px;border-bottom:1px solid var(--line);flex:none;flex-wrap:wrap}
+  header{display:flex;align-items:center;gap:12px;padding:8px 18px;border-bottom:1px solid var(--line);flex:none}
+  header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.02em;white-space:nowrap}
+  .status{margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--tx2);white-space:nowrap}
+  /* transport bar: centered player + instrument info + youtube link */
+  .transport{display:flex;align-items:center;gap:14px;justify-content:center;flex-wrap:wrap}
+  .tbtn{cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--tx);
+    border-radius:20px;padding:6px 0;font:inherit;font-size:13px;line-height:1;transition:.15s;
+    width:40px;height:32px;display:inline-flex;align-items:center;justify-content:center}
+  .tbtn:hover:not(:disabled){border-color:var(--tx2)}
+  .tbtn:disabled{opacity:.4;cursor:default}
+  .play{cursor:pointer;border:0;background:var(--accent);color:#161307;font-weight:700;
+    border-radius:20px;padding:0;font:inherit;font-size:14px;transition:.15s;
+    width:56px;height:32px;display:inline-flex;align-items:center;justify-content:center}
+  .play:hover:not(:disabled){filter:brightness(1.08)}
+  .play:disabled{opacity:.5;cursor:default}
+  .play.stop{background:var(--panel);color:var(--tx);border:1px solid var(--line)}
+  .scrub{flex:1;min-width:100px;max-width:300px;height:6px;background:var(--line);border-radius:3px;cursor:pointer;position:relative;margin:0 4px}
+  .scrub .fill{position:absolute;left:0;top:0;height:100%;background:var(--accent);border-radius:3px;transition:width .05s linear}
+  .time{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--tx2);white-space:nowrap;min-width:64px;text-align:center}
+  .combo{font-size:11.5px;color:var(--tx);white-space:nowrap;
+    background:#1a1f2e;border-radius:6px;padding:6px 12px}
+  .ytlink{font-size:12px;color:var(--accent);text-decoration:none;
+    border:1px solid var(--accent);background:transparent;border-radius:14px;padding:5px 12px;
+    white-space:nowrap;transition:.15s}
+  .ytlink:hover{background:var(--accent);color:#161307}
+  .ytlink[hidden]{display:none}
+  .bar{display:flex;align-items:center;gap:10px;padding:6px 18px;border-bottom:1px solid var(--line);flex:none;flex-wrap:wrap}
   .demos{display:flex;gap:6px;flex-wrap:wrap}
   .demo{cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--tx2);
     border-radius:8px;padding:7px 12px;font:inherit;font-size:13px;line-height:1.2;text-align:left;transition:.15s}
@@ -30,14 +52,6 @@
   .demo.local{border-style:dashed;border-color:var(--line)}
   .demo.local b{color:var(--good)}
   .demo.local.sel{border-style:solid}
-  .transport{margin-left:auto;display:flex;align-items:center;gap:12px}
-  .play{cursor:pointer;border:0;background:var(--accent);color:#161307;font-weight:700;
-    border-radius:24px;padding:9px 20px;font:inherit;font-size:14px}
-  .play:disabled{opacity:.5;cursor:default}
-  .play.stop{background:var(--panel);color:var(--tx);border:1px solid var(--line)}
-  .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--tx2);align-items:center}
-  .legend .k{display:inline-flex;align-items:center;gap:5px}
-  .legend .sw{width:10px;height:10px;border-radius:3px}
   .stage{flex:1;position:relative;min-height:0}
   canvas{display:block;width:100%;height:100%}
   .hint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
@@ -48,14 +62,21 @@
 <body>
 <div class="app">
   <header>
-    <h1>instruments.js <span class="dim">· showcase</span></h1>
-    <div class="status" id="status">loading…</div>
+    <h1>instruments.js</h1>
+    <div class="status" id="status"></div>
   </header>
   <div class="bar">
     <div class="demos" id="demos"></div>
+  </div>
+  <div class="bar">
     <div class="transport">
-      <div class="legend" id="legend"></div>
-      <button class="play" id="play" disabled>▶ Play</button>
+      <button class="tbtn" id="back10" title="back 10s" disabled>«10</button>
+      <button class="play" id="play" disabled>▶</button>
+      <button class="tbtn" id="fwd10" title="forward 10s" disabled>10»</button>
+      <div class="scrub" id="scrub"><div class="fill" id="scrubFill"></div></div>
+      <div class="time" id="time">0:00 / 0:00</div>
+      <span class="combo" id="combo"></span>
+      <a class="ytlink" id="ytlink" target="_blank" rel="noopener" title="hear the original" hidden>Listen original on YouTube</a>
     </div>
   </div>
   <div class="stage">
@@ -85,10 +106,21 @@ const kitKey = (g) => (["drums-rock","drums-jazz"].includes(g) ? g : "drums");
 // GM drum lanes we visualise
 const DRUM_LANE = { 36:"Kick", 35:"Kick", 38:"Snare", 40:"Snare", 42:"Hat", 44:"Hat", 46:"Hat", 51:"Ride", 53:"Ride", 49:"Crash", 57:"Crash" };
 const LANES = ["Kick","Snare","Hat","Ride","Crash"];
+// Drum column: falling bars in a left strip, one lane wide each — pitched
+// notes and their keyboard shift right by `drumColW` so drums sit *next to*
+// the piano roll, not as a strip bolted above the keybed.
+const LANE_W = 26;
+let drumColW = 0;
 
 const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
 const statusEl = document.getElementById("status"), hint = document.getElementById("hint");
 const playBtn = document.getElementById("play");
+const back10Btn = document.getElementById("back10");
+const fwd10Btn = document.getElementById("fwd10");
+const scrubEl = document.getElementById("scrub"), scrubFill = document.getElementById("scrubFill");
+const timeEl = document.getElementById("time");
+const ytlinkEl = document.getElementById("ytlink");
+const comboEl = document.getElementById("combo");
 let dpr = 1, W = 0, H = 0;
 
 function resize(){
@@ -157,7 +189,7 @@ async function loadLocalFile(file){
   catch(err){ statusEl.textContent=`could not parse ${file.name}: ${err.message}`; hint.textContent=`✗ ${file.name} is not a readable MIDI file`; hint.style.display=""; return; }
   document.querySelectorAll(".demo").forEach(x=>x.classList.remove("sel"));
   localBtn.classList.add("sel");
-  current={ id:"local:"+file.name, name:file.name.replace(/\.midi?$/i,""), genre:"your MIDI · local only, never committed",
+  current={ id:"local:"+file.name, name:file.name.replace(/\.midi?$/i,""), genre:"your MIDI — local only, never committed",
     instrument:null, excerpt:600, defaultGain:0.34, mix:{ drums:{gain:0.18} } };
   midiCache.set(current.id, processMidi(parsed, current));
   notes=midiCache.get(current.id);
@@ -165,9 +197,10 @@ async function loadLocalFile(file){
   if(!pitched.length){ hint.textContent=`${current.name}: no pitched notes to show`; hint.style.display=""; return; }
   hasDrums=notes.some(n=>n.isDrum || DRUM_KITS.has(n.instrumentGroup));
   pitchLo=Math.min(...pitched.map(n=>n.midiPitch)); pitchHi=Math.max(...pitched.map(n=>n.midiPitch));
-  computeKeyboard(); dur=Math.max(...notes.map(n=>n.endSeconds)); buildLegend();
+  computeKeyboard(); dur=Math.max(...notes.map(n=>n.endSeconds));
   statusEl.textContent=`loaded "${current.name}" — ${notes.length} notes, ${dur.toFixed(0)}s (local)`;
   hint.textContent=`${current.name} — press Play`; hint.style.display=""; draw(-1);
+  updateYtLink(); updateCombo();
 }
 async function selectDemo(d,btn){
   if(playing) stop();
@@ -189,17 +222,10 @@ async function loadDemo(){
   pitchHi=Math.max(...pitched.map(n=>n.midiPitch));
   computeKeyboard();
   dur=Math.max(...notes.map(n=>n.endSeconds));
-  buildLegend();
   hint.textContent=`${current.name} — ${current.genre}`;
   hint.style.display="";
+  playOffset=0; updateTransport(); updateYtLink(); updateCombo();
   draw(-1);
-}
-function buildLegend(){
-  const groups=[...new Set(notes.map(n=> (n.isDrum||DRUM_KITS.has(n.instrumentGroup))?"drums":n.instrumentGroup))];
-  document.getElementById("legend").innerHTML=groups.map(g=>{
-    const label = g==="drums" ? "drums" : g.replace("guitar-","");
-    return `<span class="k"><span class="sw" style="background:${colorFor(g)}"></span>${label}</span>`;
-  }).join("");
 }
 
 // ---- track management (reuse across demos; never leak toward the 16 limit) --
@@ -216,19 +242,26 @@ function trackFor(group,isDrum){
   return t;
 }
 
-// ---- playback -------------------------------------------------------------
+// ---- playback (seek-aware) -----------------------------------------------
+// Playback schedules all notes at absolute AudioContext times. Seeking = stop +
+// replay from new offset. `playOffset` is seconds into the demo; `t0` is the
+// AudioContext time at which playOffset maps.
+let playOffset=0;
 async function play(){
   if(!engine || playing) return;
   await engine.ready;
   playing=true; hint.style.display="none"; trackLimitHit=false;
-  playBtn.textContent="■ Stop"; playBtn.classList.add("stop");
+  playBtn.textContent="■"; playBtn.classList.add("stop");
+  back10Btn.disabled=false; fwd10Btn.disabled=false;
   t0=engine.context.currentTime+LEAD;
+  const off=playOffset;
   for(const nt of notes){
+    const ntStart=nt.startSeconds-off; if(ntStart<0) continue; // already passed
     const isDrum=!!nt.isDrum || DRUM_KITS.has(nt.instrumentGroup);
     const tr=trackFor(nt.instrumentGroup,isDrum);
-    if(!tr) continue; // instrument dropped at the track limit
-    tr.noteOn(nt.midiPitch, nt.velocity, t0+nt.startSeconds);
-    if(!isDrum) tr.noteOff(nt.midiPitch, t0+nt.endSeconds);
+    if(!tr) continue;
+    tr.noteOn(nt.midiPitch, nt.velocity, t0+ntStart);
+    if(!isDrum){ const ntEnd=nt.endSeconds-off; if(ntEnd>0) tr.noteOff(nt.midiPitch, t0+ntEnd); }
   }
   if(trackLimitHit) statusEl.textContent="⚠ this file uses more instruments than the 16-track demo limit — some were dropped";
   loop();
@@ -236,16 +269,50 @@ async function play(){
 function stop(){
   playing=false; cancelAnimationFrame(raf);
   if(engine) engine.stop();
-  playBtn.textContent="▶ Play"; playBtn.classList.remove("stop");
-  draw(-1); // reset to idle frame
-  hint.style.display="";
+  playBtn.textContent="▶"; playBtn.classList.remove("stop");
+  back10Btn.disabled=true; fwd10Btn.disabled=true;
+  draw(playOffset); hint.style.display="";
+}
+function seek(newOff){
+  const wasPlaying=playing;
+  if(wasPlaying) stop();
+  playOffset=Math.max(0,Math.min(dur,newOff));
+  updateTransport();
+  draw(playOffset);
+  if(wasPlaying) play();
 }
 playBtn.onclick=()=> playing?stop():play();
+back10Btn.onclick=()=> seek(playOffset-10);
+fwd10Btn.onclick=()=> seek(playOffset+10);
+scrubEl.addEventListener("click",(ev)=>{
+  const r=scrubEl.getBoundingClientRect();
+  const p=Math.max(0,Math.min(1,(ev.clientX-r.left)/r.width));
+  seek(p*dur);
+});
+document.addEventListener("keydown",(e)=>{
+  if(e.target.tagName==="INPUT") return;
+  if(e.code==="Space"){ e.preventDefault(); playing?stop():play(); }
+  else if(e.code==="ArrowLeft") seek(playOffset-5);
+  else if(e.code==="ArrowRight") seek(playOffset+5);
+});
+function fmtTime(s){ s=Math.max(0,Math.round(s)); const m=Math.floor(s/60),ss=s%60; return `${m}:${ss<10?"0":""}${ss}`; }
+function updateTransport(){
+  const p=dur>0?Math.max(0,Math.min(1,playOffset/dur)):0;
+  scrubFill.style.width=`${p*100}%`;
+  timeEl.textContent=`${fmtTime(playOffset)} / ${fmtTime(dur)}`;
+}
+function updateYtLink(){
+  if(current?.youtube){ ytlinkEl.href=current.youtube; ytlinkEl.hidden=false; }
+  else ytlinkEl.hidden=true;
+}
+function updateCombo(){
+  comboEl.textContent = current?.combo ?? "";
+}
 
 // ---- rendering ------------------------------------------------------------
 function loop(){
-  const e=engine.context.currentTime-t0;
-  draw(e);
+  const e=engine.context.currentTime-t0+playOffset;
+  draw(e); updateTransport();
   if(e>dur+2.2){ stop(); return; }
   raf=requestAnimationFrame(loop);
 }
@@ -343,7 +410,6 @@ function drawProgress(e){
   try{
     engine=await createEngine();
     await engine.ready;
-    statusEl.textContent="engine live";
     playBtn.disabled=false;
     await loadDemo();
   }catch(err){ statusEl.textContent="engine failed: "+err.message; }
