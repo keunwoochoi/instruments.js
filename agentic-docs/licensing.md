@@ -86,16 +86,22 @@ absorbed. PR / release gating on these files is a separate owner decision.
 | axel-f.mid | "Axel F" — Harold Faltermeyer | github.com/Possibly93/possibly93.github.io | NO licence held — third-party work, demo-only | 82060c2c34ed |
 | tico-tico.mid | "Tico Tico no Fubá" — Zequinha de Abreu | github.com/Possibly93/possibly93.github.io | NO licence held — third-party work, demo-only | e6863924cfd5 |
 | orange-blossom-special.mid | "Orange Blossom Special" — Ervin T. Rouse | github.com/Possibly93/possibly93.github.io | NO licence held — third-party work, demo-only | b74f7e77f5be |
-| beethoven-symphony-5-mvt1.mid | Symphony №5, Op.67, Mvt I — L.v. Beethoven | mutopiaproject.org/ftp/BeethovenLv/O67/Symphony5_1 | Public Domain | 0ce1bca911ba |
+| beethoven-symphony-5-mvt1.mid | Symphony №5, Op.67, Mvt I — L.v. Beethoven | Murelo medium transcript (2026-07-24) of Kleiber / Wiener Philharmoniker 1974 recording (first 60s) | composition Public Domain — performance is NOT licensed, demo-only | 4dfa2351f039 |
 | chopin-nocturne-op9-no2.mid | Nocturne in E♭, Op.9 №2 — F.F. Chopin | mutopiaproject.org/ftp/ChopinFF/O9/chopin_nocturne_op9_n2 | CC-BY-SA 3.0 (Mutopia, typeset 2014) | e202d3941ce5 |
-| bach-toccata-fugue-dm.mid | Toccata & Fugue in D minor, BWV 565 — J.S. Bach | mutopiaproject.org/ftp/BachJS/BWV565 | Public Domain | 1aabd00967ad |
-| bach-invention-2.mid | Invention No. 2, BWV 773 — J.S. Bach | mutopiaproject.org/ftp/BachJS/BWV773 | Public Domain | b61e1e4d4a42 |
+| bach-toccata-fugue-dm.mid | Toccata & Fugue in D minor, BWV 565 — J.S. Bach | Murelo medium transcript (2026-07-24) of a 9:21 organ performance (youtube ho9rZjlsyYY) | composition Public Domain — performance is NOT licensed, demo-only | 99f6f6edb8f3 |
+| bach-invention-2.mid | Invention No. 2 in C minor, BWV 773 — J.S. Bach | Murelo medium transcript (2026-07-24) of Glenn Gould's performance (youtube lb-LhVJszWE) | composition Public Domain — performance is NOT licensed, demo-only | d49c515b4439 |
 
-The Bach pieces and the Beethoven Symphony are re-voiced onto the engine's
-strings/woodwind/percussion groups via gmProgramToGroup. The Chopin Nocturne
-is solo-piano as-typeset. The "＋ Your MIDI" client-side path (commit 56ca64b)
-stays as the no-commit escape hatch for any listener who wants to hear their
-own copyrighted file through the engine without the repo carrying it.
+The Beethoven Symphony and the two Bach works are now real-performance
+transcripts (2026-07-24), re-voiced onto the engine's orchestral /
+organ / piano groups via gmProgramToGroup. Beethoven Mvt I keeps the
+transcription's per-part routing (strings / woodwind / brass / timpani /
+bass; the brass motif falls onto guitar-distorted and trombone as honest
+stand-ins — see demos.mjs). The two Bach pieces are force-voiced — BWV 565
+to organ (its iconic sound) and BWV 773 to piano (honouring Gould). The
+Chopin Nocturne stays solo-piano as-typeset. The "＋ Your MIDI" client-side
+path (commit 56ca64b) stays as the no-commit escape hatch for any listener
+who wants to hear their own copyrighted file through the engine without
+the repo carrying it.
 
 ## Port ledger
 
