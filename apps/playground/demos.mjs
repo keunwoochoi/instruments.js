@@ -10,9 +10,13 @@
  *   • Owner-named tracks: MuScriptor medium transcripts (MPS, 2026-07-22) of
  *     the owner's own recordings or third-party works / see licensing.md for
  *     per-file provenance and licence status.
- *   • Public-Domain classical (Mutopia Project): Beethoven Symphony №5 Mvt I,
- *     Chopin Nocturne Op.9 №2, plus the two Bach organ works (re-voiced to
- *     organ). Mutopia PD sequences are clean-permissive.
+ *   • Public-Domain classical — two sources side by side:
+ *     – Chopin Nocturne Op.9 №2: Mutopia Project typeset (CC-BY-SA), solo piano.
+ *     – Beethoven Symphony №5 Mvt I, Bach BWV 565, Bach BWV 773: Murelo
+ *       medium transcripts (2026-07-24) of real performances (Kleiber/VPO,
+ *       a 9:21 organ performance, Gould respectively). The compositions are
+ *       Public Domain; the performances are not. Re-voiced onto the engine's
+ *       piano / organ / orchestral groups — see licensing.md.
  *   • Web MIDI from a public archive (github.com/Possibly93/possibly93.github.io,
  *     /c/programs/midi/songs/, verified 2026-07-22): recognised pop/jazz/rock/
  *     latin/folk instrumentals. These are third-party works, demo-only.
@@ -74,14 +78,22 @@ export const DEMOS = [
     youtube: "https://www.youtube.com/watch?v=otkUpr7B5Eo",
     instrument: null, excerpt: 60,
     mix: { piano: { gain: 0.44, pan: 0 } } },
-  { id: "beethoven-5", name: "Symphony №5 - Mvt I", genre: "L.v. Beethoven - orchestral",
-    combo: "strings / woodwind / timpani",
+  { id: "beethoven-5", name: "Symphony №5 - Mvt I", genre: "L.v. Beethoven - orchestral (Kleiber / Wiener Philharmoniker)",
+    combo: "strings / woodwind / brass / timpani",
     midi: "./midi/beethoven-symphony-5-mvt1.mid", instrument: null, excerpt: 60,
-    youtube: "https://www.youtube.com/watch?v=J26C7z1M1EU",
+    youtube: "https://www.youtube.com/watch?v=PPl8nIbzMj0",
+    // Murelo medium transcript (2026-07-24) of the first 60s of
+    // Kleiber's 1974 VPO recording. The transcription routes the famous
+    // G-G-G-Eb motif onto guitar-distorted (an honest stand-in for brass
+    // until the trumpet/trombone models carry it) / french_horn onto
+    // trombone / contrabass onto engine-bass — see licensing.md.
     mix: {
-      woodwind: { gain: 0.26, pan: 0.20 }, violin: { gain: 0.34, pan: -0.10 },
+      strings: { gain: 0.30, pan: -0.05 }, violin: { gain: 0.34, pan: -0.10 },
       viola: { gain: 0.30, pan: 0.10 }, cello: { gain: 0.32, pan: -0.15 },
-      contrabass: { gain: 0.36, pan: 0 }, percussion: { gain: 0.22, pan: 0 },
+      contrabass: { gain: 0.36, pan: 0 }, bass: { gain: 0.40, pan: 0 },
+      woodwind: { gain: 0.26, pan: 0.20 }, trombone: { gain: 0.28, pan: 0.10 },
+      "guitar-distorted": { gain: 0.30, pan: 0 }, piano: { gain: 0.28, pan: 0 },
+      percussion: { gain: 0.24, pan: 0 },
     } },
   { id: "axel-f", name: "Axel F", genre: "Harold Faltermeyer - 80s synth theme",
     combo: "synth / bass / drums / strings / mallets / woodwind",
@@ -114,16 +126,21 @@ export const DEMOS = [
     } },
   { id: "toccata", name: "Toccata & Fugue in D minor", genre: "Baroque - J.S. Bach (BWV 565)",
     combo: "organ", midi: "./midi/bach-toccata-fugue-dm.mid",
-    instrument: "organ", excerpt: 52,
-    // Slow the famous opening flourish (0–12s) by 1.5× / it raced past at the
-    // MIDI's 120 BPM placeholder tempo. A real organist lingers here. Excerpt
-    // stays at 52s source material; the stretched intro adds ~6s, so the clip
-    // plays for ~58s.
-    stretch: [{ from: 0, to: 12, factor: 1.5 }],
+    instrument: "organ", excerpt: 60,
+    // Murelo medium transcript (2026-07-24) of a real 9:21 organ
+    // performance (youtube above). Tempo is taken from the performer, so the
+    // 120-BPM placeholder stretch that the Mutopia typeset needed is gone.
+    youtube: "https://www.youtube.com/watch?v=ho9rZjlsyYY",
     mix: { organ: { gain: 0.44 } } },
-  { id: "invention", name: "Invention No. 2", genre: "Baroque - J.S. Bach (BWV 773)",
-    combo: "organ", midi: "./midi/bach-invention-2.mid",
-    instrument: "organ", excerpt: 49, mix: { organ: { gain: 0.5 } } },
+  { id: "invention", name: "Invention No. 2 in C minor", genre: "Baroque - J.S. Bach (BWV 773) — Glenn Gould",
+    combo: "piano", midi: "./midi/bach-invention-2.mid",
+    instrument: "piano", excerpt: 60,
+    youtube: "https://www.youtube.com/watch?v=lb-LhVJszWE",
+    // Murelo medium transcript (2026-07-24) of Gould's performance
+    // (https://www.youtube.com/watch?v=lb-LhVJszWE). Re-voiced to piano to
+    // honour the source performance; the transcription's ~30 acoustic_guitar
+    // notes are mis-classifications the re-voicing suppresses.
+    mix: { piano: { gain: 0.44, pan: 0 } } },
 ];
 
 /**
