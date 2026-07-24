@@ -162,8 +162,17 @@ const DRUM_KITS = new Set(["drums","drums-rock","drums-jazz","percussion"]);
 const kitKey = (g) => (["drums-rock","drums-jazz"].includes(g) ? g : "drums");
 
 // ---- drum view: lanes, colours, GM mapping, and a preview note per lane ----
-const DRUM_LANE = { 36:"Kick", 35:"Kick", 38:"Snare", 40:"Snare", 37:"Snare",
-  42:"Hat", 44:"Hat", 46:"Hat", 51:"Ride", 53:"Ride", 59:"Ride", 49:"Crash", 57:"Crash", 55:"Crash" };
+// Map every GM percussion pitch to one of the 5 lanes the way the drum MODEL
+// voices it (kernels.rs DrumVoice::start): explicit kick / hat / ride / crash,
+// and EVERYTHING ELSE — snare, all toms, and the aux percussion the model plays
+// through its "tom-ish" membrane fallback — shows on Snare. So no drum hit is
+// ever invisible (e.g. YYZ's agogo intro at pitch 67 is a tom-ish membrane hit).
+const DRUM_KICK = new Set([35, 36]);
+const DRUM_HAT  = new Set([42, 44, 46]);
+const DRUM_RIDE = new Set([51, 53, 59]);
+const DRUM_CRASH = new Set([49, 52, 55, 57]);
+const drumLane = (p) => DRUM_KICK.has(p) ? "Kick" : DRUM_HAT.has(p) ? "Hat"
+  : DRUM_RIDE.has(p) ? "Ride" : DRUM_CRASH.has(p) ? "Crash" : "Snare";
 const LANES = ["Kick","Snare","Hat","Ride","Crash"];
 const LANE_COLOR = { Kick:"#5b8dff", Snare:"#f5b544", Hat:"#7ad7f0", Ride:"#59d499", Crash:"#ff7aa8" };
 const LANE_NOTE  = { Kick:36, Snare:38, Hat:42, Ride:51, Crash:49 }; // what a pad click sounds
@@ -542,7 +551,7 @@ function drawDrumColumn(e, PW, yKbd){
   for(const n of notes){
     const isDrum=!!n.isDrum || DRUM_KITS.has(n.instrumentGroup);
     if(!isDrum) continue;
-    const lane=LANES.indexOf(DRUM_LANE[n.midiPitch]); if(lane<0) continue;
+    const lane=LANES.indexOf(drumLane(n.midiPitch)); if(lane<0) continue;
     const dt=n.startSeconds-e;
     if(dt>LOOKAHEAD || dt<-0.22) continue;
     const cx=PW+lane*LANE_W+LANE_W/2, col=LANE_COLOR[LANES[lane]], vel=(n.velocity??96)/127;
@@ -634,7 +643,7 @@ function onMidiMessage(ev){
   if(cmd!==0x90 && cmd!==0x80 && !(cmd===0xb0 && d1===64)) return;
   resumeCtx();
   if(cmd===0x90 && d2>0){
-    if(chan===9){ previewDrum?.noteOn(d1,d2); const ln=LANES.indexOf(DRUM_LANE[d1]); if(ln>=0) drumPulses.set(ln,performance.now()); }
+    if(chan===9){ previewDrum?.noteOn(d1,d2); const ln=LANES.indexOf(drumLane(d1)); if(ln>=0) drumPulses.set(ln,performance.now()); }
     else { previewInst?.noteOn(d1,d2); heldPreview.set(d1,true); }
     ensureRaf();
   } else if(cmd===0x80 || (cmd===0x90 && d2===0)){
