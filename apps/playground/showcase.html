@@ -333,8 +333,12 @@ let trackLimitHit=false;
 function trackFor(group,isDrum){
   const key=isDrum?kitKey(group):group;
   let t=trackCache.get(key);
-  const g=current.mix?.[key]?.gain ?? current.mix?.[group]?.gain ?? current.defaultGain ?? 0.7;
-  const pan=current.mix?.[key]?.pan ?? current.mix?.[group]?.pan ?? 0;
+  // Drums route to a kit-specific track (drums / -rock / -jazz), but a demo's mix
+  // usually carries only a generic `drums` entry — fall back to it so a genre kit
+  // doesn't miss the lookup, drop to defaultGain (0.7), and blast the mix (Windup).
+  const m=current.mix?.[key] ?? (isDrum ? current.mix?.drums : current.mix?.[group]);
+  const g=m?.gain ?? current.defaultGain ?? 0.7;
+  const pan=m?.pan ?? 0;
   if(!t){
     try{ t=engine.createTrack(key,{gain:g,pan}); trackCache.set(key,t); }
     catch{ trackLimitHit=true; return null; } // 16-track limit — degrade loudly, not silently
