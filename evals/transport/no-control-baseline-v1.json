@@ -5,7 +5,7 @@
     "corpus_contract_sha256": "cd5ca747c88a4c7f7d105b0a40fe8da646d70a81d3e0c02f0b9923c4359fe156",
     "case_manifest_sha256": "f52bc4ac4ded6cd5587f467cdffa3505334dcee83fa3f3c2e150d9533f04e042",
     "eval_code_sha256": "728c7e211eb012985c2a50ef0ae503a830fd840ba822774b751ba0d374d1cfba",
-    "shipped_wasm_sha256": "680e66a1878336d2a3b4b287f90548e011412fb4f99288c28a734d091b87b818"
+    "shipped_wasm_sha256": "2128adb04a7cfe6224f9237b52882dbcf1b0598bb992fe2642dde84aa92e2964"
   },
   "references": {
     "all-instrument-transport-torture|quantum-delivery|44100|offset=0|chunk=1": {

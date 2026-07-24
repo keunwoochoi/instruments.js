@@ -424,12 +424,17 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
     // Re-baked 2026-07-23 across ALL 29 instruments with pyloudnorm (BS.1770
     // integrated LUFS, K-weighted) via scripts/dev/measure-loudness.{mjs,py} —
     // families referenced to marimba at vel 0.8 / gain 1.0. Perceptual, not RMS.
-    // The bowed-string + organ families, previously provisional at unity, are now
-    // measured. Trumpet/Saxophone/FrenchHorn are >10 dB low at the SOURCE (a
-    // model-level deficit, not a mix decision): their true factors were ×11.7 /
-    // ×7.3 / ×59, so makeup is CLAMPED to 3.0× and full loudness-match is deferred
-    // to a model fix (Sax + FrenchHorn are also dormant / not GM-reachable). The
-    // ×factor comments are the measured correction over the PREVIOUS value.
+    // 26 instruments land at -22.5 LUFS ±~1 dB (the ×factor comments are the
+    // measured correction over the PREVIOUS value).
+    //
+    // THREE are peak-limited, not loudness-limited: contrabass, pizzicato, and
+    // trumpet have such high crest factor that they clip (peak >= 0.95 at vel 1,
+    // the no_instrument_clips gate) BEFORE reaching -22.5. Each is capped at its
+    // loudest non-clipping makeup and therefore sits below the reference:
+    // contrabass -28.4, pizzicato -25.0, trumpet -40.8 LUFS. Trumpet stays quiet
+    // until a model-level fix lowers its crest factor — no bus gain can make it
+    // both loud and clean. Saxophone + FrenchHorn stay clamped (dormant / not
+    // GM-reachable). All four are deferred model work.
     match inst {
         Instrument::Marimba => 1.70,          // reference (LUFS -22.5)
         Instrument::Vibraphone => 3.92,       // ×0.80
@@ -450,14 +455,10 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::Cello => 0.50,            // ×0.50 (was ~6 dB hot)
         Instrument::Viola => 0.69,            // ×0.69
         Instrument::Violin => 1.43,           // ×1.43
-        Instrument::Contrabass => 2.30,       // ×2.30 (was ~7 dB low)
+        Instrument::Contrabass => 1.17,       // headroom-capped (LUFS-match x2.30 clipped; crest factor) -> peak ~0.92, ~6 dB under -22.5
         Instrument::Organ => 0.85,            // ×0.85
         Instrument::Trombone => 1.46,         // ×1.46 (healthy)
-        // Trumpet un-clamped to full LUFS match (owner call 2026-07-23, judge by
-        // ear — it is user-selectable). Sax/FrenchHorn stay clamped: dormant/WIP,
-        // and ×7.3/×59 would amplify an unfinished model. Source-level model fix
-        // for the brass family remains deferred.
-        Instrument::Trumpet => 11.7,          // ×11.7 full (source ~21 dB low)
+        Instrument::Trumpet => 1.42,          // headroom-capped: huge crest factor clips long before -22.5; loudest clean = quiet. model fix needed
         Instrument::Saxophone => 3.0,         // ×7.3 CLAMPED — dormant/WIP
         Instrument::FrenchHorn => 3.0,        // ×59 CLAMPED — dormant/WIP
         // later mallets: re-verified
@@ -465,7 +466,7 @@ pub fn makeup_gain(inst: Instrument) -> f32 {
         Instrument::TubularBells => 7.30,     // ×0.88
         Instrument::Celesta => 6.40,          // ×0.80
         Instrument::Harp => 0.281,            // ×0.67
-        Instrument::Pizzicato => 0.59,        // ×1.73
+        Instrument::Pizzicato => 0.44,        // headroom-capped (LUFS-match x1.73 clipped) -> peak ~0.92
     }
 }
 
