@@ -10,13 +10,15 @@
  *   • Owner-named tracks: MuScriptor medium transcripts (MPS, 2026-07-22) of
  *     the owner's own recordings or third-party works / see licensing.md for
  *     per-file provenance and licence status.
- *   • Public-Domain classical — two sources side by side:
- *     – Chopin Nocturne Op.9 №2: Mutopia Project typeset (CC-BY-SA), solo piano.
- *     – Beethoven Symphony №5 Mvt I, Bach BWV 565, Bach BWV 773: Murelo
- *       medium transcripts (2026-07-24) of real performances (Kleiber/VPO,
- *       a 9:21 organ performance, Gould respectively). The compositions are
- *       Public Domain; the performances are not. Re-voiced onto the engine's
- *       piano / organ / orchestral groups — see licensing.md.
+ *   • Public-Domain classical — Murelo medium transcripts (2026-07-24) of
+ *     real performances: Chopin Nocturne Op.9 №2 (Seong-Jin Cho/DG, solo
+ *     piano), Beethoven Symphony №5 Mvt I (Kleiber/Wiener Philharmoniker),
+ *     Bach BWV 565 organ, Bach BWV 773 (Glenn Gould, re-voiced piano). The
+ *     compositions are Public Domain; the performances are not, demo-only.
+ *     The Beethoven transcript's mis-assigned instruments are re-routed to
+ *     the score's real orchestra (violin/viola/cello/contrabass/timpani/
+ *     oboe/english-horn/bassoon/clarinet/flute) by pitch-aware monotonic
+ *     alignment against the Mutopia Project typeset — see licensing.md.
  *   • Web MIDI from a public archive (github.com/Possibly93/possibly93.github.io,
  *     /c/programs/midi/songs/, verified 2026-07-22): recognised pop/jazz/rock/
  *     latin/folk instrumentals. These are third-party works, demo-only.
@@ -73,9 +75,12 @@ export const DEMOS = [
       bass: { gain: 0.46, pan: 0 }, drums: { gain: 0.20, pan: 0 },
       strings: { gain: 0.22, pan: 0.20 }, vibraphone: { gain: 0.28, pan: -0.10 },
     } },
-  { id: "chopin", name: "Nocturne Op.9 №2", genre: "Frédéric Chopin - solo piano",
+  { id: "chopin", name: "Nocturne Op.9 №2 in E♭", genre: "Frédéric Chopin - solo piano — Seong-Jin Cho (DG)",
     combo: "piano", midi: "./midi/chopin-nocturne-op9-no2.mid",
-    youtube: "https://www.youtube.com/watch?v=otkUpr7B5Eo",
+    youtube: "https://www.youtube.com/watch?v=QR10Od1cLaM",
+    // Murelo medium transcript (2026-07-24) of Seong-Jin Cho's recording.
+    // Clean single-instrument piano transcript (1,352 notes, no spurious
+    // instruments) — the engine's piano model carries it directly.
     instrument: null, excerpt: 60,
     mix: { piano: { gain: 0.44, pan: 0 } } },
   { id: "beethoven-5", name: "Symphony №5 - Mvt I", genre: "L.v. Beethoven - orchestral (Kleiber / Wiener Philharmoniker)",
@@ -83,17 +88,20 @@ export const DEMOS = [
     midi: "./midi/beethoven-symphony-5-mvt1.mid", instrument: null, excerpt: 60,
     youtube: "https://www.youtube.com/watch?v=PPl8nIbzMj0",
     // Murelo medium transcript (2026-07-24) of the first 60s of
-    // Kleiber's 1974 VPO recording. The transcription routes the famous
-    // G-G-G-Eb motif onto guitar-distorted (an honest stand-in for brass
-    // until the trumpet/trombone models carry it) / french_horn onto
-    // trombone / contrabass onto engine-bass — see licensing.md.
+    // Kleiber's 1974 VPO recording. The Murelo instrument labels were
+    // mis-assigned (acoustic_piano, electric_bass, distorted_guitar,
+    // string_ensemble catch-all); the notes are re-routed to the score's
+    // real orchestra by pitch-aware monotonic alignment against the
+    // Mutopia Project typeset (violin/viola/cello/contrabass/timpani/
+    // oboe/english-horn/bassoon/clarinet/flute) — see licensing.md.
+    // English horn (GM 69) -> engine trombone; flute/oboe/clarinet ->
+    // woodwind; timpani -> engine percussion. The famous G-G-G-Eb motif
+    // falls on strings (correct) followed by horns and woodwind.
     mix: {
       strings: { gain: 0.30, pan: -0.05 }, violin: { gain: 0.34, pan: -0.10 },
       viola: { gain: 0.30, pan: 0.10 }, cello: { gain: 0.32, pan: -0.15 },
-      contrabass: { gain: 0.36, pan: 0 }, bass: { gain: 0.40, pan: 0 },
-      woodwind: { gain: 0.26, pan: 0.20 }, trombone: { gain: 0.28, pan: 0.10 },
-      "guitar-distorted": { gain: 0.30, pan: 0 }, piano: { gain: 0.28, pan: 0 },
-      percussion: { gain: 0.24, pan: 0 },
+      contrabass: { gain: 0.36, pan: 0 }, woodwind: { gain: 0.28, pan: 0.20 },
+      trombone: { gain: 0.30, pan: 0.10 }, percussion: { gain: 0.26, pan: 0 },
     } },
   { id: "axel-f", name: "Axel F", genre: "Harold Faltermeyer - 80s synth theme",
     combo: "synth / bass / drums / strings / mallets / woodwind",
