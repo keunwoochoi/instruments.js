@@ -29,6 +29,24 @@ const CASES = [
   ["guitar-distorted", 12, [[40, 0], [47, 0], [52, 0.5]]],
   ["drums-rock", 13, [[36, 0], [38, 0.3], [42, 0.45], [36, 0.6], [38, 0.9]]],
   ["drums-jazz", 14, [[36, 0], [38, 0.3], [42, 0.45], [36, 0.6], [38, 0.9]]],
+  // sustained families: a single held note is the fair per-voice loudness unit
+  // (a 3-note phrase would stack overlapping voices and read hot). Re-struck each
+  // 1.2 s loop by the harness. Mid-range, comfortable, vel 0.8.
+  ["cello", 15, [[52, 0]]],
+  ["trombone", 16, [[52, 0]]],
+  ["violin", 17, [[67, 0]]],
+  ["viola", 18, [[60, 0]]],
+  ["contrabass", 19, [[40, 0]]],
+  ["trumpet", 20, [[67, 0]]],
+  ["frenchhorn", 21, [[57, 0]]],
+  ["saxophone", 22, [[58, 0]]],
+  ["organ", 23, [[60, 0]]],
+  // percussive / plucked: decaying phrases like the mallet reference families
+  ["xylophone", 24, [[72, 0], [79, 0.3], [84, 0.6]]],
+  ["tubularbells", 25, [[60, 0], [67, 0.3], [72, 0.6]]],
+  ["celesta", 26, [[72, 0], [79, 0.3], [84, 0.6]]],
+  ["harp", 27, [[48, 0], [55, 0.3], [60, 0.6]]],
+  ["pizzicato", 28, [[48, 0], [55, 0.3], [60, 0.6]]],
 ];
 
 // --wav-dir <dir>: also write per-family mono WAVs for the pyloudnorm (BS.1770

@@ -421,44 +421,48 @@ pub fn body_defaults(inst: Instrument) -> (f32, &'static [(f32, f32, f32)]) {
 /// and derives these from RMS against the marimba reference. Re-run after any
 /// preset change and paste the table it prints.
 pub fn makeup_gain(inst: Instrument) -> f32 {
-    // Measured 2026-07-11 with pyloudnorm (BS.1770 integrated LUFS, K-weighted) via
-    // scripts/dev/measure-loudness.{mjs,py} — all families referenced to marimba at
-    // vel 0.8 / gain 1.0. Perceptual, not RMS: K-weighting is why glock/music box
-    // need far more gain than RMS suggested and why the piano needed −4.4 LU.
-    // Re-run both scripts after any preset change and paste the corrected values.
+    // Re-baked 2026-07-23 across ALL 29 instruments with pyloudnorm (BS.1770
+    // integrated LUFS, K-weighted) via scripts/dev/measure-loudness.{mjs,py} —
+    // families referenced to marimba at vel 0.8 / gain 1.0. Perceptual, not RMS.
+    // The bowed-string + organ families, previously provisional at unity, are now
+    // measured. Trumpet/Saxophone/FrenchHorn are >10 dB low at the SOURCE (a
+    // model-level deficit, not a mix decision): their true factors were ×11.7 /
+    // ×7.3 / ×59, so makeup is CLAMPED to 3.0× and full loudness-match is deferred
+    // to a model fix (Sax + FrenchHorn are also dormant / not GM-reachable). The
+    // ×factor comments are the measured correction over the PREVIOUS value.
     match inst {
-        // cello: provisional, NOT a measured LUFS bake (spike). Re-run measure-loudness.
-        Instrument::Cello => 1.0,
-        Instrument::Trombone => 1.0,
-        // bowed/brass family: provisional, NOT a measured LUFS bake (spike). The per-note
-        // level bake lives in BowedVoice/BrassVoice::start; this stage is left at unity.
-        Instrument::Violin => 1.0,
-        Instrument::Viola => 1.0,
-        Instrument::Contrabass => 1.0,
-        Instrument::Trumpet => 1.0,
-        Instrument::FrenchHorn => 1.0,
-        Instrument::Saxophone => 1.0,
-        Instrument::Organ => 1.0,
-        Instrument::Xylophone => 5.2,
-        Instrument::TubularBells => 8.3,
-        Instrument::Celesta => 8.0,
-        Instrument::Harp => 0.42,
-        Instrument::Pizzicato => 0.34,
-        Instrument::Marimba => 1.70,       // reference
-        Instrument::Vibraphone => 4.9,    // was -30.5 LUFS
-        Instrument::Glockenspiel => 30.6, // reverb pre-delay re-bake 2026-07-13 (x1.11)
-        Instrument::MusicBox => 14.8,     // was -35.6 LUFS
-        Instrument::Guitar => 0.184,       // reverb pre-delay re-bake 2026-07-13 (x1.16)
-        Instrument::Bass => 1.32,         // reverb pre-delay re-bake 2026-07-13 (x1.09)
-        Instrument::EPiano => 1.17,       // EP r2 tine/pickup rebuild, reverb-flat re-bake 2026-07-13 (×1.05)
-        Instrument::Drums => 0.58,        // drums r4 0.61 x room 0.95 (verify by sweep)
-        Instrument::SynthPad => 0.51,     // reverb pre-delay re-bake 2026-07-13 (x1.08)
-        Instrument::Piano => 0.0053, // P1 per-key calibration re-bake (per-key LUFS trims raised the mid; was -14.9 LUFS at 0.130, x0.51 per measure-loudness)
-        Instrument::GuitarSteel => 0.255,   // body-round 0.387 x room 0.94 (verify by sweep)
-        Instrument::GuitarElectric => 0.416, // reverb pre-delay re-bake 2026-07-13 (x1.08)
-        Instrument::GuitarDistorted => 0.135, // reverb pre-delay re-bake 2026-07-13 (x1.06)
-        Instrument::DrumsRock => 0.38,      // drums r4 0.41 x room 0.93 (verify by sweep)
-        Instrument::DrumsJazz => 0.56,      // reverb pre-delay re-bake 2026-07-13 (x1.17)
+        Instrument::Marimba => 1.70,          // reference (LUFS -22.5)
+        Instrument::Vibraphone => 3.92,       // ×0.80
+        Instrument::Glockenspiel => 24.8,     // ×0.81
+        Instrument::MusicBox => 12.6,         // ×0.85
+        Instrument::Guitar => 0.149,          // ×0.81
+        Instrument::Bass => 1.60,             // ×1.21
+        Instrument::EPiano => 0.95,           // ×0.81
+        Instrument::Drums => 0.49,            // ×0.84
+        Instrument::SynthPad => 0.41,         // ×0.81
+        Instrument::Piano => 0.0055,          // ×1.04
+        Instrument::GuitarSteel => 0.311,     // ×1.22
+        Instrument::GuitarElectric => 0.337,  // ×0.81
+        Instrument::GuitarDistorted => 0.108, // ×0.80
+        Instrument::DrumsRock => 0.32,        // ×0.84
+        Instrument::DrumsJazz => 0.94,        // ×1.67
+        // bowed strings + organ: newly measured (were provisional unity)
+        Instrument::Cello => 0.50,            // ×0.50 (was ~6 dB hot)
+        Instrument::Viola => 0.69,            // ×0.69
+        Instrument::Violin => 1.43,           // ×1.43
+        Instrument::Contrabass => 2.30,       // ×2.30 (was ~7 dB low)
+        Instrument::Organ => 0.85,            // ×0.85
+        Instrument::Trombone => 1.46,         // ×1.46 (healthy)
+        // source >10 dB low → CLAMPED to 3.0×; full match needs a model fix
+        Instrument::Trumpet => 3.0,           // true ×11.7 clamped (source ~21 dB low)
+        Instrument::Saxophone => 3.0,         // true ×7.3 clamped — dormant/WIP
+        Instrument::FrenchHorn => 3.0,        // true ×59 clamped — dormant/WIP
+        // later mallets: re-verified
+        Instrument::Xylophone => 4.42,        // ×0.85
+        Instrument::TubularBells => 7.30,     // ×0.88
+        Instrument::Celesta => 6.40,          // ×0.80
+        Instrument::Harp => 0.281,            // ×0.67
+        Instrument::Pizzicato => 0.59,        // ×1.73
     }
 }
 
